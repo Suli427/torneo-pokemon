@@ -788,6 +788,85 @@ function useApiCache() {
     return turns;
   }, [executeMove]);
 
+  // Resuelve un turno en el que el usuario cambia de Pokémon en vez de
+  // atacar. El cambio se trata como una acción de prioridad 0 sujeta al
+  // mismo criterio de orden que resolveTurn (prioridad y velocidad): si el
+  // rival es más rápido, ataca primero contra el Pokémon saliente antes de
+  // completarse el cambio; si no, el cambio se completa antes y el rival
+  // ataca ya contra el Pokémon recién entrado. El PS del saliente se
+  // conserva para cuando vuelva a entrar; solo se reinician sus stages.
+  const resolveSwitchTurn = useCallback(async (outgoing, incoming, opponent, opponentMove, opponentTrainerId) => {
+    const turns = [];
+
+    const attackTarget = async (target) => {
+      if (opponent.hp <= 0 || target.hp <= 0) return;
+      if (!statusPreMoveCheck(opponent, turns)) {
+        if (opponent.hp <= 0) turns.push({ type: "faint", pokemon: opponent.name });
+        return;
+      }
+      const result = await executeMove(opponent, target, opponentMove);
+      let inlineEffect = null;
+      const extraEvents = [];
+      for (const ev of result.events || []) {
+        if (!inlineEffect && ev.inline) inlineEffect = ev.text;
+        else extraEvents.push(ev);
+      }
+      turns.push({
+        type: "move",
+        pokemon: opponent.name,
+        trainerId: opponentTrainerId,
+        move: displayMoveName(opponentMove.name),
+        hit: result.hit,
+        crit: result.crit,
+        status: result.status,
+        damage: result.damage,
+        target: target.name,
+        effectText: inlineEffect,
+      });
+      turns.push(...extraEvents);
+      if (target.hp <= 0) turns.push({ type: "faint", pokemon: target.name });
+    };
+
+    const oppPrio = opponentMove.priority || 0;
+    let oppFirst;
+    if (oppPrio !== 0) oppFirst = oppPrio > 0;
+    else {
+      const spOpp = getEffectiveSpeed(opponent), spOut = getEffectiveSpeed(outgoing);
+      oppFirst = spOpp !== spOut ? spOpp > spOut : Math.random() < 0.5;
+    }
+
+    if (oppFirst) await attackTarget(outgoing);
+
+    if (outgoing.hp > 0) {
+      turns.push({ type: "statusText", text: `¡Vuelve, ${outgoing.name}!` });
+    }
+    outgoing.statStages = { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 };
+    turns.push({ type: "statusText", text: `¡Adelante, ${incoming.name}!` });
+
+    if (!oppFirst) await attackTarget(incoming);
+
+    for (const poke of [incoming, opponent]) {
+      if (poke.hp <= 0) continue;
+      if (poke.status === "burn") {
+        const dmg = Math.max(1, Math.floor(poke.maxHp / 16));
+        poke.hp = Math.max(0, poke.hp - dmg);
+        turns.push({ type: "statusText", text: `${poke.name} sufre el daño de la quemadura` });
+      } else if (poke.status === "poison") {
+        const dmg = Math.max(1, Math.floor(poke.maxHp / 8));
+        poke.hp = Math.max(0, poke.hp - dmg);
+        turns.push({ type: "statusText", text: `${poke.name} sufre el daño del veneno` });
+      } else {
+        continue;
+      }
+      if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
+    }
+
+    incoming.justFellAsleep = false;
+    opponent.justFellAsleep = false;
+
+    return turns;
+  }, [executeMove]);
+
   // Combate 1 contra 1 por turnos hasta que uno de los dos se quede a 0 PS
   // (IA para ambos lados).
   const simulateDuel = useCallback(async (pa, pb, trainerAId, trainerBId) => {
@@ -855,7 +934,7 @@ function useApiCache() {
     return pokes;
   }, [getPokemon, getType, getMoveset]);
 
-  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, chooseMove };
+  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, typeMultiplier };
 }
 
 /* ---------------------------------------------------------------
@@ -907,6 +986,50 @@ function ComingSoonModal({ open, onClose, title }) {
           PRÓXIMAMENTE
         </div>
       </div>
+    </div>
+  );
+}
+
+// Clasifica un multiplicador de tipo ya calculado por el motor (el mismo
+// que usa computeDamage) en las 5 categorías visibles en el selector.
+function effectivenessMeta(mult) {
+  if (mult === 0) return { label: "Inmune", color: "#5c6178" };
+  if (mult === 0.25 || mult === 0.5) return { label: "Poco eficaz", color: "#e3350d" };
+  if (mult === 1) return { label: "Eficaz", color: "#8a8fa3" };
+  if (mult === 2) return { label: "Supereficaz", color: "#5fae5f" };
+  if (mult === 4) return { label: "¡Hipereficaz!", color: "#2ecc71", strong: true };
+  return null;
+}
+
+// Fila compacta con los 6 miembros del equipo de un entrenador: el activo
+// destacado, los debilitados en gris/opacidad reducida con una marca.
+function TeamStatusRow({ team, activeIndex }) {
+  return (
+    <div className="flex gap-1.5">
+      {team.map((p, i) => {
+        const fainted = p.hp <= 0;
+        const isActive = i === activeIndex;
+        return (
+          <div
+            key={i}
+            title={`${p.name}${fainted ? " (debilitado)" : isActive ? " (activo)" : ""}`}
+            className="relative w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all"
+            style={{
+              background: "#0e1018",
+              border: isActive ? "2px solid #f2b705" : "1px solid #262a3a",
+              opacity: fainted ? 0.4 : 1,
+              transform: isActive ? "scale(1.15)" : "scale(1)",
+            }}
+          >
+            {p.sprite
+              ? <img src={p.sprite} alt={p.name} className="w-6 h-6 object-contain" style={{ filter: fainted ? "grayscale(100%)" : "none" }} />
+              : <span className="text-[9px] text-[#5c6178]">{p.name[0]}</span>}
+            {fainted && (
+              <span className="absolute inset-0 flex items-center justify-center text-[#e3350d] text-[13px] font-bold leading-none">×</span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1027,6 +1150,8 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   const [log, setLog] = useState([]);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null); // { winnerId, loserId, remaining }
+  const [showSwitchMenu, setShowSwitchMenu] = useState(false);
+  const [effectiveness, setEffectiveness] = useState({}); // { [moveName]: multiplier }
   const logEndRef = useRef(null);
 
   useEffect(() => {
@@ -1042,6 +1167,30 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [log]);
 
+  const pa = teamA?.[idxA];
+  const pb = teamB?.[idxB];
+  const userPoke = userSide === "a" ? pa : pb;
+  const aiPoke = userSide === "a" ? pb : pa;
+
+  // Efectividad de cada movimiento del usuario contra el rival activo:
+  // reutiliza el multiplicador real del motor, recalculado cuando cambia
+  // el Pokémon rival (nuevo activo por cambio o por debilitamiento).
+  useEffect(() => {
+    if (!userPoke || !aiPoke) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        userPoke.moves.map(async (m) => {
+          if (m.damageClass === "status") return [m.name, null];
+          const mult = await api.typeMultiplier([m.type], aiPoke.types);
+          return [m.name, mult];
+        })
+      );
+      if (!cancelled) setEffectiveness(Object.fromEntries(entries));
+    })();
+    return () => { cancelled = true; };
+  }, [api, userPoke, aiPoke]);
+
   if (!teamA || !teamB) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-[#9aa0b4]">
@@ -1051,12 +1200,56 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     );
   }
 
-  const pa = teamA[idxA];
-  const pb = teamB[idxB];
-  const userPoke = userSide === "a" ? pa : pb;
-  const aiPoke = userSide === "a" ? pb : pa;
   const userTrainer = userSide === "a" ? trainerA : trainerB;
   const aiTrainer = userSide === "a" ? trainerB : trainerA;
+  const userTeam = userSide === "a" ? teamA : teamB;
+  const aiTeam = userSide === "a" ? teamB : teamA;
+  const userIdx = userSide === "a" ? idxA : idxB;
+  const aiIdx = userSide === "a" ? idxB : idxA;
+
+  // Busca el siguiente Pokémon con vida a partir de fromIdx (en orden de
+  // equipo, con vuelta al principio). -1 si no queda ninguno con vida.
+  // Necesario porque, con el cambio voluntario, el Pokémon activo puede
+  // "saltar" a un índice cualquiera del equipo: ya no vale asumir que el
+  // equipo se consume en orden estrictamente secuencial 0,1,2...5.
+  function nextAliveIndex(team, fromIdx) {
+    for (let step = 1; step <= team.length; step++) {
+      const idx = (fromIdx + step) % team.length;
+      if (team[idx].hp > 0) return idx;
+    }
+    return -1;
+  }
+
+  // A partir de los índices "candidatos" (el activo actual de cada lado
+  // tras resolver el turno), decide el índice final: si el candidato
+  // sigue con vida, se queda; si se debilitó, entra el siguiente vivo de
+  // la fila. Si algún lado se queda sin ninguno vivo, termina el combate;
+  // el número de Pokémon en pie se cuenta directamente (no por posición de
+  // índice), para que sea correcto también cuando hay cambios de por medio.
+  function finalizeIndices(candidateIdxA, candidateIdxB) {
+    const finalIdxA = teamA[candidateIdxA].hp > 0 ? candidateIdxA : nextAliveIndex(teamA, candidateIdxA);
+    const finalIdxB = teamB[candidateIdxB].hp > 0 ? candidateIdxB : nextAliveIndex(teamB, candidateIdxB);
+
+    if (finalIdxA === -1 || finalIdxB === -1) {
+      const aWiped = finalIdxA === -1;
+      const remaining = aWiped
+        ? teamB.filter((p) => p.hp > 0).length
+        : teamA.filter((p) => p.hp > 0).length;
+      // Al terminar el combate no hay "siguiente" Pokémon en el bando
+      // derrotado: se deja el candidato (el que acaba de debilitarse) para
+      // poder seguir mostrando su tarjeta a 0 PS.
+      setIdxA(aWiped ? candidateIdxA : finalIdxA);
+      setIdxB(!aWiped ? candidateIdxB : finalIdxB);
+      setResult({
+        winnerId: aWiped ? trainerB.id : trainerA.id,
+        loserId: aWiped ? trainerA.id : trainerB.id,
+        remaining,
+      });
+    } else {
+      setIdxA(finalIdxA);
+      setIdxB(finalIdxB);
+    }
+  }
 
   async function handleUserMove(move) {
     if (busy || result) return;
@@ -1066,27 +1259,28 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     const moveB = userSide === "a" ? aiMove : move;
     const turns = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id);
     setLog((l) => [...l, ...turns]);
+    finalizeIndices(idxA, idxB);
+    setBusy(false);
+  }
 
-    let newIdxA = idxA, newIdxB = idxB;
-    if (pa.hp <= 0) newIdxA = idxA + 1;
-    else if (pb.hp <= 0) newIdxB = idxB + 1;
+  async function handleUserSwitch(targetIdx) {
+    if (busy || result) return;
+    if (targetIdx === userIdx || userTeam[targetIdx].hp <= 0) return;
+    setBusy(true);
+    setShowSwitchMenu(false);
 
-    if (newIdxA >= teamA.length || newIdxB >= teamB.length) {
-      const aWon = newIdxB >= teamB.length;
-      const remaining = aWon ? teamA.length - newIdxA : teamB.length - newIdxB;
-      // Al terminar el combate no hay "siguiente" Pokémon: nos quedamos en el
-      // último índice válido para poder seguir mostrando su tarjeta a 0 PS.
-      setIdxA(Math.min(newIdxA, teamA.length - 1));
-      setIdxB(Math.min(newIdxB, teamB.length - 1));
-      setResult({
-        winnerId: aWon ? trainerA.id : trainerB.id,
-        loserId: aWon ? trainerB.id : trainerA.id,
-        remaining,
-      });
-    } else {
-      setIdxA(newIdxA);
-      setIdxB(newIdxB);
-    }
+    const outgoing = userTeam[userIdx];
+    const incoming = userTeam[targetIdx];
+    const opponent = aiTeam[aiIdx];
+    const opponentTrainerId = userSide === "a" ? trainerB.id : trainerA.id;
+    const aiMove = await api.chooseMove(opponent, outgoing);
+    const turns = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId);
+    setLog((l) => [...l, ...turns]);
+
+    // El elegido pasa a ser el candidato a activo del usuario; si el rival
+    // lo debilita antes de que pueda actuar, finalizeIndices ya se encarga
+    // de avanzar al siguiente vivo de la fila (sin elección adicional).
+    finalizeIndices(userSide === "a" ? targetIdx : idxA, userSide === "a" ? idxB : targetIdx);
     setBusy(false);
   }
 
@@ -1094,6 +1288,11 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <TeamStatusRow team={userTeam} activeIndex={userIdx} />
+        <TeamStatusRow team={aiTeam} activeIndex={aiIdx} />
+      </div>
+
       <div className="flex items-center gap-3">
         <BattlerCard poke={userPoke} label={`Tú (${userTrainer.name})`} />
         <div className="text-[10px] text-[#5c6178] font-display">VS</div>
@@ -1122,41 +1321,107 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
         </div>
       ) : !result ? (
         <div>
-          <div className="text-xs text-[#8a8fa3] mb-2">Movimientos de {userPoke.name}</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {userPoke.moves.map((m, i) => {
-              const isStatus = m.damageClass === "status" || (!m.power && !m.specialDamage);
-              const categoryLabel = isStatus ? "Estado" : m.damageClass === "special" ? "Especial" : "Físico";
-              const powerLabel = isStatus ? "—" : (m.power ?? "Variable");
-              const effectSummary = moveEffectSummary(m);
-              return (
-                <button
-                  key={i}
-                  disabled={busy}
-                  onClick={() => handleUserMove(m)}
-                  className="rounded-lg p-3 text-left disabled:opacity-50"
-                  style={{ background: "#14161f", border: "1px solid #262a3a" }}
-                >
-                  <div className="flex items-center justify-between mb-1 gap-2">
-                    <span className="text-white font-semibold text-sm">{displayMoveName(m.name)}</span>
-                    <TypeBadge type={m.type} />
-                  </div>
-                  <div className="text-[11px] text-[#8a8fa3] mb-1.5">
-                    {categoryLabel} · Potencia {powerLabel} · Precisión {m.accuracy ?? "—"} · PP {m.pp ?? "—"}
-                  </div>
-                  <div
-                    className="text-[11px] text-[#6b7086] leading-snug mb-1"
-                    style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
-                  >
-                    {m.description}
-                  </div>
-                  {effectSummary && (
-                    <div className="text-[11px] font-semibold" style={{ color: "#f2b705" }}>{effectSummary}</div>
-                  )}
-                </button>
-              );
-            })}
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowSwitchMenu(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold"
+                style={{
+                  background: !showSwitchMenu ? "#e3350d22" : "#14161f",
+                  border: !showSwitchMenu ? "1px solid #e3350d" : "1px solid #262a3a",
+                  color: !showSwitchMenu ? "#ff6b4a" : "#8a8fa3",
+                }}
+              >
+                Atacar
+              </button>
+              <button
+                onClick={() => setShowSwitchMenu(true)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold"
+                style={{
+                  background: showSwitchMenu ? "#e3350d22" : "#14161f",
+                  border: showSwitchMenu ? "1px solid #e3350d" : "1px solid #262a3a",
+                  color: showSwitchMenu ? "#ff6b4a" : "#8a8fa3",
+                }}
+              >
+                Cambiar Pokémon
+              </button>
+            </div>
           </div>
+
+          {showSwitchMenu ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {userTeam.map((p, i) => {
+                if (i === userIdx) return null;
+                const fainted = p.hp <= 0;
+                return (
+                  <button
+                    key={i}
+                    disabled={busy || fainted}
+                    onClick={() => handleUserSwitch(i)}
+                    className="rounded-lg p-3 text-left disabled:opacity-40 flex items-center gap-3"
+                    style={{ background: "#14161f", border: "1px solid #262a3a" }}
+                  >
+                    {p.sprite && <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" style={{ filter: fainted ? "grayscale(100%)" : "none" }} />}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-white font-semibold text-sm truncate">
+                        {p.name} {fainted && <span className="text-[#e3350d] text-[10px] font-bold">(debilitado)</span>}
+                      </div>
+                      <div className="text-[11px] text-[#8a8fa3]">{Math.max(0, p.hp)} / {p.maxHp} PS</div>
+                      <div className="flex gap-1 mt-1">
+                        {p.types.map((t) => <TypeBadge key={t} type={t} />)}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {userPoke.moves.map((m, i) => {
+                const isStatus = m.damageClass === "status" || (!m.power && !m.specialDamage);
+                const categoryLabel = isStatus ? "Estado" : m.damageClass === "special" ? "Especial" : "Físico";
+                const powerLabel = isStatus ? "—" : (m.power ?? "Variable");
+                const effectSummary = moveEffectSummary(m);
+                const eff = isStatus ? null : effectivenessMeta(effectiveness[m.name]);
+                return (
+                  <button
+                    key={i}
+                    disabled={busy}
+                    onClick={() => handleUserMove(m)}
+                    className="rounded-lg p-3 text-left disabled:opacity-50"
+                    style={{ background: "#14161f", border: "1px solid #262a3a" }}
+                  >
+                    <div className="flex items-center justify-between mb-1 gap-2">
+                      <span className="text-white font-semibold text-sm">{displayMoveName(m.name)}</span>
+                      <div className="flex items-center gap-1">
+                        {eff && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+                            style={{ background: eff.color + "26", color: eff.color, border: `1px solid ${eff.color}66`, ...(eff.strong ? { fontWeight: 900 } : {}) }}
+                          >
+                            {eff.label}
+                          </span>
+                        )}
+                        <TypeBadge type={m.type} />
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-[#8a8fa3] mb-1.5">
+                      {categoryLabel} · Potencia {powerLabel} · Precisión {m.accuracy ?? "—"} · PP {m.pp ?? "—"}
+                    </div>
+                    <div
+                      className="text-[11px] text-[#6b7086] leading-snug mb-1"
+                      style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+                    >
+                      {m.description}
+                    </div>
+                    {effectSummary && (
+                      <div className="text-[11px] font-semibold" style={{ color: "#f2b705" }}>{effectSummary}</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       ) : (
         <div
