@@ -383,7 +383,7 @@ const SELF_STAT_TARGET_OVERRIDES = new Set(["draco-meteor", "leaf-storm", "overh
 // mismo). Devuelve false si el Pokémon no llega a ejecutar su movimiento
 // este turno.
 function statusPreMoveCheck(poke, turns) {
-  // Retroceso (flinch): solo tiene efecto si el objetivo no ha actuado
+  // Amedrentar (flinch): solo tiene efecto si el objetivo no ha actuado
   // todavía este turno cuando lo recibe (por eso se comprueba aquí, al
   // principio del turno del propio Pokémon, y se limpia siempre al final
   // de resolveTurn/resolveSwitchTurn — si ya había actuado antes de que se
@@ -475,6 +475,37 @@ function applyResidualStatusDamage(poke, turns) {
     return;
   }
   if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
+}
+
+// Drenado/retroceso (meta.drain de PokeAPI): positivo cura al atacante un %
+// del daño infligido (Giga Drain, Absorber, Come Sueños...), negativo le
+// resta un % de ese mismo daño como retroceso (Envite Ígneo, Placaje,
+// Golpe Cabeza...). Solo se llama cuando el golpe conectó de verdad
+// (damage>0 y mult>0): si el movimiento falló por precisión o quedó
+// bloqueado por Protección, no hay daño infligido y por tanto tampoco
+// drenado ni retroceso. El retroceso puede debilitar al propio atacante
+// (correcto, ocurre también en los juegos reales); en ese caso se añade un
+// evento de debilitamiento para que resolveTurn/resolveSwitchTurn lo
+// reflejen en el log igual que cualquier otro debilitamiento.
+function applyDrainOrRecoil(attacker, damage, move, events) {
+  if (!move.drain || damage <= 0) return;
+  if (move.drain > 0) {
+    const heal = Math.floor((damage * move.drain) / 100);
+    if (heal > 0) {
+      const before = attacker.hp;
+      attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
+      if (attacker.hp > before) {
+        events.push({ type: "statusText", text: `¡${attacker.name} restauró PS gracias a ${displayMoveName(move.name)}!`, inline: false });
+      }
+    }
+  } else {
+    const recoil = Math.floor((damage * Math.abs(move.drain)) / 100);
+    if (recoil > 0) {
+      attacker.hp = Math.max(0, attacker.hp - recoil);
+      events.push({ type: "statusText", text: `¡${attacker.name} se resiente por el retroceso! (-${recoil} PS)`, inline: false });
+      if (attacker.hp <= 0) events.push({ type: "faint", pokemon: attacker.name });
+    }
+  }
 }
 
 // Aplica el ailment (parálisis/quemadura/veneno/sueño/congelación/confusión)
@@ -1033,16 +1064,7 @@ function useApiCache() {
         hitsLanded++;
       }
       const events = applyMoveEffects(attacker, defender, move, lastMult, defender.hp <= 0);
-      if (move.drain && totalDamage > 0 && lastMult > 0) {
-        const heal = Math.floor((totalDamage * move.drain) / 100);
-        if (heal > 0) {
-          const before = attacker.hp;
-          attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
-          if (attacker.hp > before) {
-            events.push({ type: "statusText", text: `¡${attacker.name} restauró PS gracias a ${displayMoveName(move.name)}!`, inline: false });
-          }
-        }
-      }
+      if (lastMult > 0) applyDrainOrRecoil(attacker, totalDamage, move, events);
       if (defender.hp > 0 && lastMult > 0 && move.flinchChance > 0 && Math.random() * 100 < move.flinchChance) {
         defender.flinched = true;
       }
@@ -1079,19 +1101,11 @@ function useApiCache() {
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move, weather);
     defender.hp = Math.max(0, defender.hp - damage);
     const events = applyMoveEffects(attacker, defender, move, mult, defender.hp <= 0);
-    // Drenado (Come Sueños, Giga Drain, Absorber...): cura al atacante un
-    // % del daño infligido, sin superar sus PS máximos.
-    if (move.drain && damage > 0 && mult > 0) {
-      const heal = Math.floor((damage * move.drain) / 100);
-      if (heal > 0) {
-        const before = attacker.hp;
-        attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
-        if (attacker.hp > before) {
-          events.push({ type: "statusText", text: `¡${attacker.name} restauró PS gracias a ${displayMoveName(move.name)}!`, inline: false });
-        }
-      }
-    }
-    // Retroceso (flinch): solo se tira si el golpe conectó de verdad
+    // Drenado/retroceso (Come Sueños, Giga Drain, Absorber... / Envite
+    // Ígneo, Placaje, Golpe Cabeza...): cura o resta al atacante un % del
+    // daño infligido según el signo de meta.drain.
+    if (mult > 0) applyDrainOrRecoil(attacker, damage, move, events);
+    // Amedrentar (flinch): solo se tira si el golpe conectó de verdad
     // (mult>0) y el objetivo sigue en pie; el efecto real (bloquear el
     // turno) se resuelve en statusPreMoveCheck cuando le toque actuar.
     if (defender.hp > 0 && mult > 0 && move.flinchChance > 0 && Math.random() * 100 < move.flinchChance) {
@@ -1181,7 +1195,7 @@ function useApiCache() {
     pa.protected = false;
     pb.protected = false;
 
-    // El retroceso (flinch) solo vale para un posible chequeo dentro de
+    // Amedrentar (flinch) solo vale para un posible chequeo dentro de
     // este mismo turno (si el objetivo aún no había actuado); si no se
     // consumió aquí, se limpia igual para no arrastrarlo al turno siguiente.
     pa.flinched = false;
@@ -1476,6 +1490,42 @@ function WeatherIndicator({ weather }) {
   );
 }
 
+// Cuadrícula de tarjetas seleccionables de Pokémon del equipo del usuario,
+// reutilizada tanto para elegir con quién empezar el combate (los 6, ninguno
+// debilitado todavía) como para elegir el reemplazo obligatorio tras un
+// debilitamiento (solo los que sigan con vida). `showHp` decide si se
+// muestra la barra de PS actuales/máximos (no aplica al elegir el inicial,
+// ya que todos están a PS máximos) o solo los PS máximos.
+function TeamPicker({ team, onChoose, showHp, disabled }) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {team.map((p, i) => {
+        if (showHp && p.hp <= 0) return null;
+        return (
+          <button
+            key={i}
+            disabled={disabled}
+            onClick={() => onChoose(i)}
+            className="rounded-lg p-3 text-left disabled:opacity-40 flex items-center gap-3"
+            style={{ background: "#14161f", border: "1px solid #262a3a" }}
+          >
+            {p.sprite && <img src={p.sprite} alt={p.name} className="w-12 h-12 object-contain" />}
+            <div className="flex-1 min-w-0">
+              <div className="text-white font-semibold text-sm truncate">{p.name}</div>
+              <div className="text-[11px] text-[#8a8fa3]">
+                {showHp ? `${Math.max(0, p.hp)} / ${p.maxHp} PS` : `${p.maxHp} PS`}
+              </div>
+              <div className="flex gap-1 mt-1">
+                {p.types.map((t) => <TypeBadge key={t} type={t} />)}
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------
    TAB: TORNEO
 --------------------------------------------------------------- */
@@ -1598,6 +1648,11 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   const [result, setResult] = useState(null); // { winnerId, loserId, remaining }
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
   const [effectiveness, setEffectiveness] = useState({}); // { [moveName]: multiplier }
+  // El usuario elige con qué Pokémon empezar cada combate nuevo (se pide de
+  // nuevo en cada ronda, ya que InteractiveBattle se desmonta y remonta por
+  // completo entre combates). El lado de la IA sigue empezando siempre con
+  // el primero de la fila (idxA/idxB ya inician en 0), sin tocar nada ahí.
+  const [starterChosen, setStarterChosen] = useState(false);
   const logEndRef = useRef(null);
   // El clima es del combate entero, no de cada Pokémon: se guarda en un ref
   // mutable (igual que en simulateMatch) para que persista a través de
@@ -1654,6 +1709,19 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   const aiTrainer = userSide === "a" ? trainerB : trainerA;
   const userTeam = userSide === "a" ? teamA : teamB;
   const aiTeam = userSide === "a" ? teamB : teamA;
+
+  if (!starterChosen) {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h2 className="font-display text-xl text-white mb-1 flex items-center gap-2"><Swords size={18} color="#e3350d" /> Elige tu Pokémon inicial</h2>
+          <p className="text-sm text-[#9aa0b4]">¿Con cuál de tus Pokémon quieres empezar el combate contra {aiTrainer.name}?</p>
+        </div>
+        <TeamPicker team={userTeam} onChoose={chooseStarter} showHp={false} disabled={false} />
+      </div>
+    );
+  }
+
   const userIdx = userSide === "a" ? idxA : idxB;
   const aiIdx = userSide === "a" ? idxB : idxA;
 
@@ -1670,35 +1738,82 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     return -1;
   }
 
-  // A partir de los índices "candidatos" (el activo actual de cada lado
-  // tras resolver el turno), decide el índice final: si el candidato
-  // sigue con vida, se queda; si se debilitó, entra el siguiente vivo de
-  // la fila. Si algún lado se queda sin ninguno vivo, termina el combate;
-  // el número de Pokémon en pie se cuenta directamente (no por posición de
-  // índice), para que sea correcto también cuando hay cambios de por medio.
+  // A partir de los índices "candidatos" (el activo actual de cada lado tras
+  // resolver el turno), decide el índice final. El lado de la IA se
+  // comporta exactamente igual que antes: si el candidato se debilitó,
+  // entra automáticamente el siguiente vivo de la fila. El lado del usuario
+  // YA NO avanza solo: si su candidato se debilitó (por el ataque rival o
+  // por su propio retroceso), se deja el índice tal cual, apuntando al
+  // debilitado, para que la interfaz le pida elegir manualmente con quién
+  // sigue (ver el panel de reemplazo obligatorio en el render). Si algún
+  // lado se queda sin ningún Pokémon vivo, termina el combate; se comprueba
+  // directamente si queda alguien con vida en el equipo, no por posición de
+  // índice, para que sea correcto también cuando hay cambios de por medio.
   function finalizeIndices(candidateIdxA, candidateIdxB) {
-    const finalIdxA = teamA[candidateIdxA].hp > 0 ? candidateIdxA : nextAliveIndex(teamA, candidateIdxA);
-    const finalIdxB = teamB[candidateIdxB].hp > 0 ? candidateIdxB : nextAliveIndex(teamB, candidateIdxB);
+    const aAlive = teamA.some((p) => p.hp > 0);
+    const bAlive = teamB.some((p) => p.hp > 0);
 
-    if (finalIdxA === -1 || finalIdxB === -1) {
-      const aWiped = finalIdxA === -1;
+    if (!aAlive || !bAlive) {
+      const aWiped = !aAlive;
       const remaining = aWiped
         ? teamB.filter((p) => p.hp > 0).length
         : teamA.filter((p) => p.hp > 0).length;
       // Al terminar el combate no hay "siguiente" Pokémon en el bando
       // derrotado: se deja el candidato (el que acaba de debilitarse) para
       // poder seguir mostrando su tarjeta a 0 PS.
-      setIdxA(aWiped ? candidateIdxA : finalIdxA);
-      setIdxB(!aWiped ? candidateIdxB : finalIdxB);
+      setIdxA(candidateIdxA);
+      setIdxB(candidateIdxB);
       setResult({
         winnerId: aWiped ? trainerB.id : trainerA.id,
         loserId: aWiped ? trainerA.id : trainerB.id,
         remaining,
       });
-    } else {
-      setIdxA(finalIdxA);
-      setIdxB(finalIdxB);
+      return;
     }
+
+    const pendingChoiceLines = [];
+
+    if (teamA[candidateIdxA].hp > 0) {
+      setIdxA(candidateIdxA);
+    } else if (userSide === "a") {
+      setIdxA(candidateIdxA);
+      pendingChoiceLines.push({ type: "statusText", text: "¿A quién quieres enviar a continuación?" });
+    } else {
+      setIdxA(nextAliveIndex(teamA, candidateIdxA));
+    }
+
+    if (teamB[candidateIdxB].hp > 0) {
+      setIdxB(candidateIdxB);
+    } else if (userSide === "b") {
+      setIdxB(candidateIdxB);
+      pendingChoiceLines.push({ type: "statusText", text: "¿A quién quieres enviar a continuación?" });
+    } else {
+      setIdxB(nextAliveIndex(teamB, candidateIdxB));
+    }
+
+    if (pendingChoiceLines.length) setLog((l) => [...l, ...pendingChoiceLines]);
+  }
+
+  // Elección inicial del combate: el usuario decide con quién sale (el lado
+  // de la IA sigue empezando siempre con el primero de la fila, sin tocar
+  // idxA/idxB de ese lado).
+  function chooseStarter(idx) {
+    if (userSide === "a") setIdxA(idx); else setIdxB(idx);
+    setLog((l) => [...l, { type: "statusText", text: `¡Adelante, ${userTeam[idx].name}!` }]);
+    setStarterChosen(true);
+  }
+
+  // Reemplazo obligatorio tras un debilitamiento: a diferencia del cambio
+  // voluntario, entrar aquí es "gratis" (no hay ninguna resolución de turno
+  // ni tirada de IA de por medio, igual que en los juegos reales al mandar
+  // un reemplazo tras un KO) y nunca activa la mecánica de Persecución, que
+  // solo se aplica a cambios voluntarios con el activo aún con vida.
+  function handleForcedSwitch(idx) {
+    if (busy || result) return;
+    const incoming = userTeam[idx];
+    if (!incoming || incoming.hp <= 0) return;
+    setLog((l) => [...l, { type: "statusText", text: `¡Adelante, ${incoming.name}!` }]);
+    if (userSide === "a") setIdxA(idx); else setIdxB(idx);
   }
 
   async function handleUserMove(move) {
@@ -1761,7 +1876,11 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
         <div ref={logEndRef} />
       </div>
 
-      {!result && userPoke.lockedMove ? (
+      {!result && userPoke.hp <= 0 ? (
+        <div className="rounded-lg p-4" style={{ background: "#14161f", border: "1px solid #e3350d55" }}>
+          <TeamPicker team={userTeam} onChoose={handleForcedSwitch} showHp={true} disabled={busy} />
+        </div>
+      ) : !result && userPoke.lockedMove ? (
         <div className="rounded-lg p-4 text-center" style={{ background: "#14161f", border: "1px solid #e3350d55" }}>
           <div className="text-sm text-[#e5e7f0] mb-3">
             {userPoke.name} está en furia y no puede elegir otro movimiento: seguirá usando <span className="font-semibold text-white">{displayMoveName(userPoke.lockedMove)}</span> a la fuerza.
