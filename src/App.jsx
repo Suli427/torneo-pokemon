@@ -23,23 +23,58 @@ const TYPE_ES = {
 };
 
 const TRAINERS = [
-  { id: "cintia", name: "Cintia", subtitle: "Campeona de Sinnoh", locked: true, color: "#c9a227",
+  { id: "cintia", name: "Cintia", subtitle: "Campeona de Sinnoh", locked: true, price: 900, color: "#c9a227",
     team: ["garchomp", "spiritomb", "lucario", "milotic", "roserade", "togekiss"] },
   { id: "maximo", name: "Máximo", subtitle: "Campeón de Hoenn", locked: false, color: "#8a7a5b",
     team: ["metagross", "skarmory", "aggron", "cradily", "armaldo", "claydol"] },
-  { id: "dianta", name: "Dianta", subtitle: "Campeona de Kalos", locked: true, color: "#c25b8f",
+  { id: "dianta", name: "Dianta", subtitle: "Campeona de Kalos", locked: true, price: 1100, color: "#c25b8f",
     team: ["gardevoir", "hawlucha", "tyrantrum", "goodra", "aurorus", "gourgeist-average"] },
-  { id: "lionel", name: "Lionel", subtitle: "Campeón de Galar", locked: true, color: "#d3652c",
+  { id: "lionel", name: "Lionel", subtitle: "Campeón de Galar", locked: true, price: 1200, color: "#d3652c",
     team: ["charizard", "dragapult", "aegislash-shield", "rillaboom", "cinderace", "mr-rime"] },
   { id: "paul", name: "Paul", subtitle: "Rival de Sinnoh", locked: false, color: "#5b4a8a",
     team: ["electivire", "torterra", "ninjask", "ursaring", "ariados", "ambipom"] },
   { id: "gary", name: "Gary", subtitle: "Rival de Kanto", locked: false, color: "#3b6dc7",
     team: ["blastoise", "umbreon", "arcanine", "nidoking", "scizor", "electivire"] },
-  { id: "iris", name: "Iris", subtitle: "Campeona de Teselia", locked: true, color: "#4a8a5b",
+  { id: "iris", name: "Iris", subtitle: "Campeona de Teselia", locked: true, price: 1000, color: "#4a8a5b",
     team: ["dragonite", "excadrill", "emolga", "dragonair", "gigalith", "druddigon"] },
   { id: "ash", name: "Ash", subtitle: "Maestro Pokémon", locked: false, color: "#e3350d",
     team: ["pikachu", "dragonite", "sirfetchd", "gengar", "lucario", "goodra"] },
 ];
+
+// Un entrenador está desbloqueado si ya lo estaba por defecto (locked:false
+// en TRAINERS) o si su id está en la lista de comprados persistida. Nunca
+// se muta el array TRAINERS original: el estado de desbloqueo se calcula
+// combinando ambas fuentes donde haga falta.
+function isTrainerUnlocked(trainer, purchasedTrainerIds) {
+  return !trainer.locked || purchasedTrainerIds.includes(trainer.id);
+}
+
+const COINS_STORAGE_KEY = "liga-pokemon:coins";
+const UNLOCKED_TRAINERS_STORAGE_KEY = "liga-pokemon:unlocked-trainers";
+
+// Envuelto en try/catch: si localStorage está bloqueado (incógnito
+// estricto, etc.) la app sigue funcionando en memoria, solo sin persistir.
+function loadStoredCoins() {
+  try {
+    const raw = localStorage.getItem(COINS_STORAGE_KEY);
+    if (raw !== null) {
+      const n = parseInt(raw, 10);
+      if (!Number.isNaN(n)) return n;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return 500;
+}
+
+function loadStoredPurchasedTrainers() {
+  try {
+    const raw = localStorage.getItem(UNLOCKED_TRAINERS_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return [];
+}
 
 const NAME_OVERRIDES = { sirfetchd: "Sirfetch'd", "mr-rime": "Mr. Rime", "gourgeist-average": "Gourgeist", "aegislash-shield": "Aegislash" };
 function displayName(slug) {
@@ -1523,7 +1558,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   );
 }
 
-function TorneoTab({ api, coins, setCoins }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   const [pairMode, setPairMode] = useState("position");
@@ -1541,7 +1576,7 @@ function TorneoTab({ api, coins, setCoins }) {
     setExpandedMatches((e) => ({ ...e, [key]: !e[key] }));
   }
 
-  const unlockedTrainers = TRAINERS.filter((t) => !t.locked);
+  const unlockedTrainers = TRAINERS.filter((t) => isTrainerUnlocked(t, purchasedTrainerIds));
 
   async function startTournament() {
     setPhase("loading");
@@ -1860,13 +1895,66 @@ function TorneoTab({ api, coins, setCoins }) {
    TAB: PERSONAJES
 --------------------------------------------------------------- */
 
-function PersonajesTab({ api, onSoon }) {
+// Modal de confirmación de compra de entrenador, y su mensaje de éxito
+// tras confirmar. Reutiliza la misma estructura visual que ComingSoonModal.
+function PurchaseTrainerModal({ trainer, coins, successName, onConfirm, onClose }) {
+  if (!trainer && !successName) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+          <X size={18} />
+        </button>
+        {successName ? (
+          <>
+            <div className="flex justify-center mb-3"><Sparkles size={30} color="#f2b705" /></div>
+            <h3 className="font-display text-xl text-white mb-1">¡Has desbloqueado a {successName}!</h3>
+            <p className="text-sm text-[#9aa0b4] leading-relaxed">Ya puedes elegirlo como tu entrenador en la tab de Torneo.</p>
+          </>
+        ) : (
+          <>
+            <div className="flex justify-center mb-3"><Coins size={30} color="#f2b705" /></div>
+            <h3 className="font-display text-xl text-white mb-1">Desbloquear a {trainer.name}</h3>
+            <p className="text-sm text-[#9aa0b4] leading-relaxed mb-4">
+              Esto costará <span className="text-[#f2b705] font-bold">{trainer.price}</span> monedas de torneo.
+              Saldo actual: <span className="text-white font-bold">{coins}</span>.
+            </p>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={onConfirm}
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+              >
+                Confirmar compra
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PersonajesTab({ api, onSoon, coins, purchasedTrainerIds, onPurchase }) {
   const [sprites, setSprites] = useState({});
+  const [confirmTrainer, setConfirmTrainer] = useState(null);
+  const [successName, setSuccessName] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      for (const t of TRAINERS.filter((t) => !t.locked)) {
+      for (const t of TRAINERS.filter((t) => isTrainerUnlocked(t, purchasedTrainerIds))) {
         for (const slug of t.team) {
           const p = await api.getPokemon(slug);
           if (!cancelled) setSprites((s) => ({ ...s, [slug]: p }));
@@ -1875,42 +1963,67 @@ function PersonajesTab({ api, onSoon }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [purchasedTrainerIds]);
+
+  function handleConfirmPurchase() {
+    if (!confirmTrainer) return;
+    onPurchase(confirmTrainer.id, confirmTrainer.price);
+    setSuccessName(confirmTrainer.name);
+    setConfirmTrainer(null);
+  }
+
+  function closeModal() {
+    setConfirmTrainer(null);
+    setSuccessName(null);
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Users size={22} color="#e3350d" /> Entrenadores</h2>
-        <p className="text-sm text-[#9aa0b4]">Empiezas con 4 entrenadores desbloqueados. El resto forman parte de la Liga como rivales, pero no puedes jugar con ellos... todavía.</p>
+        <p className="text-sm text-[#9aa0b4]">Empiezas con 4 entrenadores desbloqueados. El resto forman parte de la Liga como rivales; desbloquéalos con monedas de torneo para poder jugar con ellos.</p>
       </div>
 
       <div className="grid sm:grid-cols-2 gap-4">
-        {TRAINERS.map((t) => (
-          <div key={t.id} className="rounded-xl p-4 relative overflow-hidden" style={{ background: "#14161f", border: "1px solid #262a3a", opacity: t.locked ? 0.6 : 1 }}>
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg" style={{ background: t.color + "33", color: t.color }}>{t.name[0]}</div>
-              <div>
-                <div className="text-white font-semibold flex items-center gap-2">{t.name} {t.locked && <Lock size={13} color="#8a8fa3" />}</div>
-                <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+        {TRAINERS.map((t) => {
+          const unlocked = isTrainerUnlocked(t, purchasedTrainerIds);
+          const canAfford = coins >= (t.price ?? 0);
+          return (
+            <div key={t.id} className="rounded-xl p-4 relative overflow-hidden" style={{ background: "#14161f", border: "1px solid #262a3a", opacity: unlocked ? 1 : 0.6 }}>
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg" style={{ background: t.color + "33", color: t.color }}>{t.name[0]}</div>
+                <div>
+                  <div className="text-white font-semibold flex items-center gap-2">{t.name} {!unlocked && <Lock size={13} color="#8a8fa3" />}</div>
+                  <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+                </div>
               </div>
+              <div className="flex flex-wrap gap-2 mb-3">
+                {t.team.map((slug) => {
+                  const p = sprites[slug];
+                  return (
+                    <div key={slug} className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: "1px solid #22263a" }} title={displayName(slug)}>
+                      {!unlocked ? <Lock size={14} color="#4c5066" /> : p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                    </div>
+                  );
+                })}
+              </div>
+              {!unlocked && (
+                <button
+                  onClick={() => setConfirmTrainer(t)}
+                  disabled={!canAfford}
+                  className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:cursor-not-allowed"
+                  style={{
+                    background: canAfford ? "#f2b70522" : "#1c1f2c",
+                    color: canAfford ? "#f2b705" : "#6b7086",
+                    border: canAfford ? "1px solid #f2b70555" : "1px solid #262a3a",
+                  }}
+                >
+                  {canAfford ? `Desbloquear · ${t.price} monedas` : `Te faltan ${t.price - coins} monedas`}
+                </button>
+              )}
             </div>
-            <div className="flex flex-wrap gap-2 mb-3">
-              {t.team.map((slug) => {
-                const p = sprites[slug];
-                return (
-                  <div key={slug} className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: "1px solid #22263a" }} title={displayName(slug)}>
-                    {t.locked ? <Lock size={14} color="#4c5066" /> : p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
-                  </div>
-                );
-              })}
-            </div>
-            {t.locked && (
-              <button onClick={() => onSoon("Comprar entrenador")} className="text-xs px-3 py-1.5 rounded-full font-semibold" style={{ background: "#f2b70522", color: "#f2b705", border: "1px solid #f2b70555" }}>
-                Desbloquear con monedas de torneo
-              </button>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="grid sm:grid-cols-2 gap-4">
@@ -1925,6 +2038,14 @@ function PersonajesTab({ api, onSoon }) {
           <div className="text-xs text-[#8a8fa3] mt-1">Diseña tu personaje y arma tu propio equipo Pokémon.</div>
         </button>
       </div>
+
+      <PurchaseTrainerModal
+        trainer={confirmTrainer}
+        coins={coins}
+        successName={successName}
+        onConfirm={handleConfirmPurchase}
+        onClose={closeModal}
+      />
     </div>
   );
 }
@@ -2013,8 +2134,22 @@ function LogrosTab({ onSoon }) {
 export default function App() {
   const api = useApiCache();
   const [tab, setTab] = useState("torneo");
-  const [coins, setCoins] = useState(500);
+  const [coins, setCoins] = useState(loadStoredCoins);
+  const [purchasedTrainerIds, setPurchasedTrainerIds] = useState(loadStoredPurchasedTrainers);
   const [soon, setSoon] = useState(null);
+
+  useEffect(() => {
+    try { localStorage.setItem(COINS_STORAGE_KEY, String(coins)); } catch (e) { /* localStorage no disponible */ }
+  }, [coins]);
+
+  useEffect(() => {
+    try { localStorage.setItem(UNLOCKED_TRAINERS_STORAGE_KEY, JSON.stringify(purchasedTrainerIds)); } catch (e) { /* localStorage no disponible */ }
+  }, [purchasedTrainerIds]);
+
+  function purchaseTrainer(trainerId, price) {
+    setCoins((c) => c - price);
+    setPurchasedTrainerIds((ids) => (ids.includes(trainerId) ? ids : [...ids, trainerId]));
+  }
 
   const tabs = [
     { id: "torneo", label: "Torneo", icon: Swords },
@@ -2057,8 +2192,16 @@ export default function App() {
       </nav>
 
       <main className="p-5 max-w-5xl mx-auto">
-        {tab === "torneo" && <TorneoTab api={api} coins={coins} setCoins={setCoins} />}
-        {tab === "personajes" && <PersonajesTab api={api} onSoon={setSoon} />}
+        {tab === "torneo" && <TorneoTab api={api} coins={coins} setCoins={setCoins} purchasedTrainerIds={purchasedTrainerIds} />}
+        {tab === "personajes" && (
+          <PersonajesTab
+            api={api}
+            onSoon={setSoon}
+            coins={coins}
+            purchasedTrainerIds={purchasedTrainerIds}
+            onPurchase={purchaseTrainer}
+          />
+        )}
         {tab === "tienda" && <TiendaTab onSoon={setSoon} />}
         {tab === "logros" && <LogrosTab onSoon={setSoon} />}
       </main>
