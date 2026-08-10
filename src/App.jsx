@@ -171,10 +171,28 @@ function confusionSelfDamage(poke) {
   return Math.max(1, base);
 }
 
-// Comprueba si un Pokémon puede actuar este turno (parálisis, sueño,
-// congelación) y resuelve la confusión (33% de golpearse a sí mismo).
-// Devuelve false si el Pokémon no llega a ejecutar su movimiento este turno.
+// PokeAPI no expone un flag estructurado y fiable para "requiere recarga"
+// (meta.category es "damage", igual que cualquier otro movimiento dañino;
+// solo se menciona en el texto libre de effect_entries). Se usa una lista
+// fija, más fiable, con los movimientos de este tipo presentes en el roster
+// (y otros habituales de la serie por si se añaden en el futuro).
+const RECHARGE_MOVES = new Set([
+  "hyper-beam", "giga-impact", "blast-burn", "frenzy-plant", "hydro-cannon",
+  "roar-of-time", "rock-wrecker", "gigavolt-havoc", "prismatic-laser",
+  "meteor-assault", "eternabeam",
+]);
+
+// Comprueba si un Pokémon puede actuar este turno (recarga, parálisis,
+// sueño, congelación) y resuelve la confusión (33% de golpearse a sí
+// mismo). Devuelve false si el Pokémon no llega a ejecutar su movimiento
+// este turno.
 function statusPreMoveCheck(poke, turns) {
+  if (poke.mustRecharge) {
+    poke.mustRecharge = false;
+    turns.push({ type: "statusText", text: `${poke.name} debe descansar y no puede atacar este turno` });
+    return false;
+  }
+
   if (poke.status === "freeze") {
     if (Math.random() < 0.2) {
       poke.status = null;
@@ -534,17 +552,24 @@ function useApiCache() {
   }, [expectedDamage]);
 
   const executeMove = useCallback(async (attacker, defender, move) => {
+    // La recarga se gasta por haber usado el movimiento, acierte o no
+    // (equivalente simplificado a los juegos reales).
+    const isRecharge = RECHARGE_MOVES.has(move.name);
+
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) {
       const events = applyMoveEffects(attacker, defender, move);
+      if (isRecharge) attacker.mustRecharge = true;
       return { hit: true, damage: 0, crit: false, status: true, events };
     }
     const acc = getEffectiveAccuracy(attacker, defender, move);
     if (Math.random() * 100 >= acc) {
+      if (isRecharge) attacker.mustRecharge = true;
       return { hit: false, damage: 0, crit: false, status: false, events: [] };
     }
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move);
     defender.hp = Math.max(0, defender.hp - damage);
     const events = defender.hp > 0 ? applyMoveEffects(attacker, defender, move, mult) : [];
+    if (isRecharge) attacker.mustRecharge = true;
     return { hit: true, damage, crit: isCrit, status: false, events };
   }, [computeDamage]);
 
@@ -640,7 +665,7 @@ function useApiCache() {
     const maxHp = Math.floor(((2 * baseHp + 31) * 50) / 100) + 60;
     return {
       ...base, moves, maxHp, hp: maxHp,
-      status: null, sleepTurns: 0, confusionTurns: 0, usedSetupMove: false,
+      status: null, sleepTurns: 0, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
       statStages: { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 },
     };
   }, [getPokemon, getMoveset]);
