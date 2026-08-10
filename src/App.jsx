@@ -216,6 +216,18 @@ const RECHARGE_MOVES = new Set([
 // effect_entries). Se usa una lista fija, igual que con la recarga.
 const THRASHING_MOVES = new Set(["outrage", "petal-dance", "thrash"]);
 
+// Familia de movimientos de protección (meta.category = "unique", no hay
+// forma estructurada de agruparlos aparte de por nombre). Comparten la
+// misma mecánica: bloquean el movimiento rival ese turno y su
+// probabilidad de éxito se reduce a la mitad en usos consecutivos.
+const PROTECT_MOVES = new Set(["protect", "detect", "baneful-bunker", "spiky-shield", "kings-shield"]);
+
+// Movimientos "drenadores" (meta.drain > 0, ej. Giga Drain/Absorber) que
+// curan al atacante un % del daño infligido. Come Sueños comparte esa
+// mecánica pero además exige que el objetivo esté dormido para siquiera
+// impactar; el resto de drenadores no tienen ese requisito.
+const SLEEP_ONLY_DRAIN_MOVES = new Set(["dream-eater"]);
+
 // El `target` de PokeAPI describe solo a quién va el DAÑO del movimiento;
 // para esta familia viene como "selected-pokemon" (el rival) pero el
 // movimiento en realidad se autobaja una stat al atacar (no hay ningún
@@ -521,6 +533,7 @@ function useApiCache() {
         statChanges: (data.stat_changes || []).map((sc) => ({ stat: sc.stat.name, change: sc.change })),
         statChance: data.meta?.stat_chance ?? 0,
         selfTargeted: data.target?.name === "user" || SELF_STAT_TARGET_OVERRIDES.has(data.name),
+        drain: data.meta?.drain ?? 0,
         description: buildMoveDescription(data),
       });
       moveCache.current[name] = entry;
@@ -528,7 +541,7 @@ function useApiCache() {
     } catch (e) {
       const entry = {
         name, power: 40, accuracy: 100, pp: 35, type: "normal", damageClass: "physical", priority: 0,
-        ailmentName: "none", ailmentChance: 0, statChanges: [], statChance: 0, selfTargeted: false,
+        ailmentName: "none", ailmentChance: 0, statChanges: [], statChance: 0, selfTargeted: false, drain: 0,
         description: "Sin descripción disponible para este movimiento.",
       };
       moveCache.current[name] = entry;
@@ -664,6 +677,12 @@ function useApiCache() {
     // (equivalente simplificado a los juegos reales).
     const isRecharge = RECHARGE_MOVES.has(move.name);
     const isThrashing = THRASHING_MOVES.has(move.name);
+    const isProtectMove = PROTECT_MOVES.has(move.name);
+
+    // La racha de Protección solo cuenta usos consecutivos: en cuanto se
+    // usa cualquier otro movimiento se reinicia (tanto si acierta como si
+    // el propio ataque queda bloqueado por la protección del rival).
+    if (!isProtectMove) attacker.protectChain = 0;
 
     // Movimientos de furia (Enfado/Danza Pétalo/Golpes Furia): obligan a
     // repetir el mismo movimiento 2-3 turnos seguidos (sin pasar por la
@@ -689,6 +708,43 @@ function useApiCache() {
       return null; // primer uso: la línea normal de "usó X" ya es suficiente
     }
 
+    // Protección bloquea el intento ENTERO del rival (ni precisión, ni
+    // crítico, ni daño, ni ailment/stat_changes), salvo que el propio
+    // movimiento sea también de la familia de protección o vaya dirigido
+    // a uno mismo. Se comprueba antes que cualquier otra cosa.
+    if (!isProtectMove && !move.selfTargeted && defender.protected) {
+      if (isRecharge) attacker.mustRecharge = true;
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: `¡${defender.name} se protegió del ataque!`, inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: 0, crit: false, status: true, events };
+    }
+
+    if (isProtectMove) {
+      // Probabilidad de éxito: 100% en el primer uso o tras fallar/usar
+      // otro movimiento, y se divide entre 2 en cada uso consecutivo
+      // exitoso (100 → 50 → 25 → 12.5...), sin suelo mínimo.
+      const chance = 100 / Math.pow(2, attacker.protectChain || 0);
+      const success = Math.random() * 100 < chance;
+      if (success) {
+        attacker.protected = true;
+        attacker.protectChain = (attacker.protectChain || 0) + 1;
+        return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡${attacker.name} se protegió a sí mismo!`, inline: false }] };
+      }
+      attacker.protectChain = 0;
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
+    }
+
+    // Come Sueños y similares: solo impactan si el objetivo está dormido;
+    // si no, fallan por completo (sin comprobar precisión).
+    if (SLEEP_ONLY_DRAIN_MOVES.has(move.name) && defender.status !== "sleep") {
+      if (isRecharge) attacker.mustRecharge = true;
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: `¡Pero falló! ${defender.name} no está dormido`, inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: 0, crit: false, status: true, events };
+    }
+
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) {
       const events = applyMoveEffects(attacker, defender, move);
       if (isRecharge) attacker.mustRecharge = true;
@@ -705,6 +761,18 @@ function useApiCache() {
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move);
     defender.hp = Math.max(0, defender.hp - damage);
     const events = applyMoveEffects(attacker, defender, move, mult, defender.hp <= 0);
+    // Drenado (Come Sueños, Giga Drain, Absorber...): cura al atacante un
+    // % del daño infligido, sin superar sus PS máximos.
+    if (move.drain && damage > 0 && mult > 0) {
+      const heal = Math.floor((damage * move.drain) / 100);
+      if (heal > 0) {
+        const before = attacker.hp;
+        attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
+        if (attacker.hp > before) {
+          events.push({ type: "statusText", text: `¡${attacker.name} restauró PS gracias a ${displayMoveName(move.name)}!`, inline: false });
+        }
+      }
+    }
     if (isRecharge) attacker.mustRecharge = true;
     const thrashEvent = updateThrashLock();
     if (thrashEvent) events.push(thrashEvent);
@@ -785,6 +853,12 @@ function useApiCache() {
     pa.justFellAsleep = false;
     pb.justFellAsleep = false;
 
+    // La Protección solo dura el turno en el que se usó: se limpia aquí
+    // para que, al empezar el turno siguiente, ya no bloquee nada (la
+    // racha de usos consecutivos sí se conserva, se gestiona aparte).
+    pa.protected = false;
+    pb.protected = false;
+
     return turns;
   }, [executeMove]);
 
@@ -841,6 +915,8 @@ function useApiCache() {
       turns.push({ type: "statusText", text: `¡Vuelve, ${outgoing.name}!` });
     }
     outgoing.statStages = { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 };
+    outgoing.protected = false;
+    outgoing.protectChain = 0;
     turns.push({ type: "statusText", text: `¡Adelante, ${incoming.name}!` });
 
     if (!oppFirst) await attackTarget(incoming);
@@ -890,7 +966,7 @@ function useApiCache() {
     return {
       ...base, moves, maxHp, hp: maxHp,
       status: null, sleepTurns: 0, justFellAsleep: false, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
-      lockedMove: null, lockedTurnsRemaining: 0,
+      lockedMove: null, lockedTurnsRemaining: 0, protected: false, protectChain: 0,
       statStages: { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 },
     };
   }, [getPokemon, getMoveset]);
