@@ -43,7 +43,7 @@ export const ANIME_MOVESETS = {
   // --- Lionel (Leon) ---
   "lionel:charizard": ["flare-blitz", "dragon-claw", "air-slash", "fire-blast"], // TODO: revisar
   "lionel:dragapult": ["dragon-darts", "phantom-force", "dragon-claw", "u-turn"], // TODO: revisar
-  "lionel:aegislash": ["kings-shield", "shadow-ball", "iron-head", "sacred-sword"], // TODO: revisar
+  "lionel:aegislash-shield": ["kings-shield", "shadow-ball", "iron-head", "sacred-sword"], // TODO: revisar
   "lionel:rillaboom": ["drum-beating", "wood-hammer", "superpower", "u-turn"], // TODO: revisar
   "lionel:cinderace": ["pyro-ball", "court-change", "sucker-punch", "double-kick"], // TODO: revisar
   "lionel:mr-rime": ["icy-wind", "psychic", "teeter-dance", "nasty-plot"], // TODO: revisar

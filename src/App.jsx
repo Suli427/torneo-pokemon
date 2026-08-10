@@ -30,7 +30,7 @@ const TRAINERS = [
   { id: "dianta", name: "Dianta", subtitle: "Campeona de Kalos", locked: true, color: "#c25b8f",
     team: ["gardevoir", "hawlucha", "tyrantrum", "goodra", "aurorus", "gourgeist-average"] },
   { id: "lionel", name: "Lionel", subtitle: "Campeón de Galar", locked: true, color: "#d3652c",
-    team: ["charizard", "dragapult", "aegislash", "rillaboom", "cinderace", "mr-rime"] },
+    team: ["charizard", "dragapult", "aegislash-shield", "rillaboom", "cinderace", "mr-rime"] },
   { id: "paul", name: "Paul", subtitle: "Rival de Sinnoh", locked: false, color: "#5b4a8a",
     team: ["electivire", "torterra", "ninjask", "ursaring", "ariados", "ambipom"] },
   { id: "gary", name: "Gary", subtitle: "Rival de Kanto", locked: false, color: "#3b6dc7",
@@ -41,7 +41,7 @@ const TRAINERS = [
     team: ["pikachu", "dragonite", "sirfetchd", "gengar", "lucario", "goodra"] },
 ];
 
-const NAME_OVERRIDES = { sirfetchd: "Sirfetch'd", "mr-rime": "Mr. Rime", "gourgeist-average": "Gourgeist" };
+const NAME_OVERRIDES = { sirfetchd: "Sirfetch'd", "mr-rime": "Mr. Rime", "gourgeist-average": "Gourgeist", "aegislash-shield": "Aegislash" };
 function displayName(slug) {
   return NAME_OVERRIDES[slug] || slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
@@ -217,10 +217,20 @@ function statusPreMoveCheck(poke, turns) {
 // y los stat_changes de un movimiento ya acertado. Devuelve las entradas de
 // log generadas; `inline: true` marca un cambio de stat en el propio usuario
 // (se puede fusionar con la línea "X usó Y" en el log de combate).
-function applyMoveEffects(attacker, defender, move) {
+// `mult` es el multiplicador de tipo ya calculado por computeDamage: si es 0
+// (el rival es inmune) y el movimiento no es de estado ni se dirige a uno
+// mismo, no debe aplicar NINGÚN efecto secundario sobre el rival (ni
+// ailment ni stat_changes), igual que en los juegos. Los cambios sobre uno
+// mismo (target "user") no se ven afectados por la inmunidad del rival.
+function applyMoveEffects(attacker, defender, move, mult = 1) {
   const events = [];
   const isStatusMove = move.damageClass === "status";
   const target = move.selfTargeted ? attacker : defender;
+
+  if (!isStatusMove && !move.selfTargeted && mult === 0) {
+    events.push({ type: "statusText", text: `No afectó a ${defender.name} (inmune)`, inline: false });
+    return events;
+  }
 
   if (move.ailmentName && move.ailmentName !== "none") {
     const chance = move.ailmentChance > 0 ? move.ailmentChance : (isStatusMove ? 100 : 0);
@@ -282,12 +292,14 @@ function moveEffectSummary(move) {
   const parts = [];
   if (move.ailmentName && move.ailmentName !== "none" && AILMENT_VERB[move.ailmentName]) {
     const pct = move.ailmentChance > 0 ? move.ailmentChance : 100;
-    parts.push(pct >= 100 ? `${AILMENT_VERB[move.ailmentName]} siempre` : `${AILMENT_VERB[move.ailmentName]} (${pct}%)`);
+    const who = move.selfTargeted ? " (a sí mismo)" : "";
+    parts.push((pct >= 100 ? `${AILMENT_VERB[move.ailmentName]} siempre` : `${AILMENT_VERB[move.ailmentName]} (${pct}%)`) + who);
   }
   if (move.statChanges && move.statChanges.length) {
     const pct = move.damageClass === "status" ? null : (move.statChance > 0 ? move.statChance : null);
+    const who = move.selfTargeted ? "Propio: " : "Rival: ";
     const txt = move.statChanges.map((sc) => `${STAT_ES[sc.stat] || sc.stat} ${statChangeText(sc.change)}`).join(", ");
-    parts.push(pct ? `${txt} (${pct}%)` : txt);
+    parts.push(who + (pct ? `${txt} (${pct}%)` : txt));
   }
   return parts.join(" · ");
 }
@@ -530,9 +542,9 @@ function useApiCache() {
     if (Math.random() * 100 >= acc) {
       return { hit: false, damage: 0, crit: false, status: false, events: [] };
     }
-    const { damage, isCrit } = await computeDamage(attacker, defender, move);
+    const { damage, isCrit, mult } = await computeDamage(attacker, defender, move);
     defender.hp = Math.max(0, defender.hp - damage);
-    const events = defender.hp > 0 ? applyMoveEffects(attacker, defender, move) : [];
+    const events = defender.hp > 0 ? applyMoveEffects(attacker, defender, move, mult) : [];
     return { hit: true, damage, crit: isCrit, status: false, events };
   }, [computeDamage]);
 
