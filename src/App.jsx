@@ -126,6 +126,29 @@ const AILMENT_VERB = {
   confusion: "Puede confundir",
 };
 
+// Abreviaturas cortas al estilo de los juegos originales, para los badges
+// de stat y de estado en la pantalla de combate.
+const STAT_SHORT_ES = {
+  attack: "ATQ",
+  defense: "DEF",
+  "special-attack": "ATQ.E",
+  "special-defense": "DEF.E",
+  speed: "VEL",
+  accuracy: "PRE",
+  evasion: "EVA",
+};
+
+// Reutiliza colores ya presentes en TYPE_COLORS para no introducir una
+// paleta nueva que desentone con el resto de la app.
+const STATUS_BADGE_META = {
+  paralysis: { label: "PAR", color: "#f2b705", title: "Paralizado: puede fallar el turno y su Velocidad se reduce a la mitad" },
+  burn: { label: "QUEM", color: TYPE_COLORS.fire, title: "Quemado: pierde PS cada turno y su ataque físico se reduce a la mitad" },
+  poison: { label: "VEN", color: TYPE_COLORS.poison, title: "Envenenado: pierde PS al final de cada turno" },
+  sleep: { label: "DUERME", color: "#9aa0b4", title: "Dormido: no puede actuar hasta que se despierte" },
+  freeze: { label: "CONG", color: TYPE_COLORS.ice, title: "Congelado: no puede actuar hasta que se descongele" },
+};
+const CONFUSION_BADGE_META = { label: "CONF", color: TYPE_COLORS.psychic, title: "Confundido: puede golpearse a sí mismo en vez de actuar" };
+
 function statStageMultiplier(stage) {
   return stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
 }
@@ -181,6 +204,12 @@ const RECHARGE_MOVES = new Set([
   "roar-of-time", "rock-wrecker", "gigavolt-havoc", "prismatic-laser",
   "meteor-assault", "eternabeam",
 ]);
+
+// El `target` de PokeAPI describe solo a quién va el DAÑO del movimiento;
+// para esta familia (Draco Meteor, Leaf Storm, Overheat...) target viene
+// como "selected-pokemon" (el rival) pero el stat_changes es en realidad
+// sobre quien lo usa. Se fuerza selfTargeted=true para estos casos.
+const SELF_LOWERING_NUKES = new Set(["draco-meteor", "leaf-storm", "overheat", "psycho-boost", "fleur-cannon"]);
 
 // Comprueba si un Pokémon puede actuar este turno (recarga, parálisis,
 // sueño, congelación) y resuelve la confusión (33% de golpearse a sí
@@ -239,14 +268,21 @@ function statusPreMoveCheck(poke, turns) {
 // (el rival es inmune) y el movimiento no es de estado ni se dirige a uno
 // mismo, no debe aplicar NINGÚN efecto secundario sobre el rival (ni
 // ailment ni stat_changes), igual que en los juegos. Los cambios sobre uno
-// mismo (target "user") no se ven afectados por la inmunidad del rival.
-function applyMoveEffects(attacker, defender, move, mult = 1) {
+// mismo (target "user") no se ven afectados por la inmunidad del rival NI
+// por si el golpe deja al rival a 0 PS (`defenderFainted`): un movimiento
+// como Draco Meteor baja el Ataque Especial de quien lo usa aunque ese
+// mismo golpe debilite al rival.
+function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = false) {
   const events = [];
   const isStatusMove = move.damageClass === "status";
   const target = move.selfTargeted ? attacker : defender;
+  const targetsOpponent = !move.selfTargeted;
 
-  if (!isStatusMove && !move.selfTargeted && mult === 0) {
+  if (targetsOpponent && !isStatusMove && mult === 0) {
     events.push({ type: "statusText", text: `No afectó a ${defender.name} (inmune)`, inline: false });
+    return events;
+  }
+  if (targetsOpponent && defenderFainted) {
     return events;
   }
 
@@ -433,7 +469,7 @@ function useApiCache() {
         ailmentChance: data.meta?.ailment_chance ?? 0,
         statChanges: (data.stat_changes || []).map((sc) => ({ stat: sc.stat.name, change: sc.change })),
         statChance: data.meta?.stat_chance ?? 0,
-        selfTargeted: data.target?.name === "user",
+        selfTargeted: data.target?.name === "user" || SELF_LOWERING_NUKES.has(data.name),
         description: buildMoveDescription(data),
       });
       moveCache.current[name] = entry;
@@ -568,7 +604,7 @@ function useApiCache() {
     }
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move);
     defender.hp = Math.max(0, defender.hp - damage);
-    const events = defender.hp > 0 ? applyMoveEffects(attacker, defender, move, mult) : [];
+    const events = applyMoveEffects(attacker, defender, move, mult, defender.hp <= 0);
     if (isRecharge) attacker.mustRecharge = true;
     return { hit: true, damage, crit: isCrit, status: false, events };
   }, [computeDamage]);
@@ -797,6 +833,58 @@ function HpBar({ hp, maxHp }) {
   );
 }
 
+// Badge de estado no volátil (parálisis/quemadura/veneno/sueño/congelación)
+// y de confusión. Desaparece en cuanto el efecto se cura o expira porque
+// se lee directamente de poke.status / poke.confusionTurns en cada render.
+function StatusBadges({ poke }) {
+  const badges = [];
+  const statusMeta = poke.status ? STATUS_BADGE_META[poke.status] : null;
+  if (statusMeta) {
+    badges.push(
+      <span key="status" title={statusMeta.title}
+        className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+        style={{ background: statusMeta.color + "33", color: statusMeta.color, border: `1px solid ${statusMeta.color}66` }}>
+        {statusMeta.label}
+      </span>
+    );
+  }
+  if (poke.confusionTurns > 0) {
+    badges.push(
+      <span key="conf" title={CONFUSION_BADGE_META.title}
+        className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+        style={{ background: CONFUSION_BADGE_META.color + "33", color: CONFUSION_BADGE_META.color, border: `1px solid ${CONFUSION_BADGE_META.color}66` }}>
+        {CONFUSION_BADGE_META.label}
+      </span>
+    );
+  }
+  if (!badges.length) return null;
+  return <div className="flex gap-1 flex-wrap">{badges}</div>;
+}
+
+// Indicador de stages de stat (-6..+6): flechas repetidas + signo, solo
+// para las stats que estén realmente alteradas (nada si todo está en 0).
+function StatStageBadges({ statStages }) {
+  if (!statStages) return null;
+  const entries = Object.entries(statStages).filter(([, stage]) => stage !== 0);
+  if (!entries.length) return null;
+  return (
+    <div className="flex gap-1 flex-wrap mt-1.5">
+      {entries.map(([stat, stage]) => {
+        const up = stage > 0;
+        const color = up ? "#5fae5f" : "#e3350d";
+        const arrows = (up ? "↑" : "↓").repeat(Math.min(3, Math.abs(stage)));
+        return (
+          <span key={stat} title={`${STAT_ES[stat] || stat} ${up ? "+" : ""}${stage}`}
+            className="px-1.5 py-0.5 rounded text-[9px] font-bold"
+            style={{ background: color + "1e", color, border: `1px solid ${color}55` }}>
+            {STAT_SHORT_ES[stat] || stat} {arrows} {up ? "+" : ""}{stage}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function BattlerCard({ poke, label }) {
   return (
     <div className="rounded-xl p-3 flex-1" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
@@ -804,13 +892,17 @@ function BattlerCard({ poke, label }) {
         {poke.sprite && <img src={poke.sprite} alt={poke.name} className="w-14 h-14 object-contain" />}
         <div className="flex-1 min-w-0">
           <div className="text-[10px] uppercase tracking-wide text-[#8a8fa3]">{label}</div>
-          <div className="text-white font-semibold text-sm truncate">{poke.name}</div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="text-white font-semibold text-sm truncate">{poke.name}</div>
+            <StatusBadges poke={poke} />
+          </div>
           <div className="flex gap-1 mt-1">
             {poke.types.map((t) => <TypeBadge key={t} type={t} />)}
           </div>
         </div>
       </div>
       <HpBar hp={poke.hp} maxHp={poke.maxHp} />
+      <StatStageBadges statStages={poke.statStages} />
     </div>
   );
 }
@@ -978,6 +1070,7 @@ function TorneoTab({ api, coins, setCoins }) {
   const [expandedMatches, setExpandedMatches] = useState({});
   const [interactiveMatch, setInteractiveMatch] = useState(null); // { trainerA, trainerB, userSide, idx }
   const [pendingRoundResults, setPendingRoundResults] = useState(null);
+  const [tournamentReward, setTournamentReward] = useState(null); // { amount, before, after }
 
   function toggleMatch(key) {
     setExpandedMatches((e) => ({ ...e, [key]: !e[key] }));
@@ -1028,6 +1121,8 @@ function TorneoTab({ api, coins, setCoins }) {
       const final = sortedStandings(updated);
       const userIdx = final.findIndex((s) => s.id === userTrainerId);
       const reward = Math.max(50, 400 - userIdx * 50);
+      const before = coins;
+      setTournamentReward({ amount: reward, before, after: before + reward });
       setCoins((c) => c + reward);
       setPhase("finished");
     }
@@ -1083,6 +1178,7 @@ function TorneoTab({ api, coins, setCoins }) {
     setRound(0);
     setInteractiveMatch(null);
     setPendingRoundResults(null);
+    setTournamentReward(null);
   }
 
   const trainerById = (id) => TRAINERS.find((t) => t.id === id);
@@ -1224,11 +1320,16 @@ function TorneoTab({ api, coins, setCoins }) {
             })}
           </div>
 
-          {phase === "finished" && (
-            <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "linear-gradient(135deg,#f2b70522,#12141c)", border: "1px solid #f2b70544" }}>
-              <Coins size={22} color="#f2b705" />
-              <div className="text-sm text-[#e5e7f0]">
-                Has ganado <span className="text-[#f2b705] font-bold">monedas de torneo</span> según tu posición final. Saldo actual: <span className="font-bold text-white">{coins}</span>
+          {phase === "finished" && tournamentReward && (
+            <div className="rounded-xl p-4 flex items-center gap-4" style={{ background: "linear-gradient(135deg,#f2b70522,#12141c)", border: "1px solid #f2b70544" }}>
+              <Coins size={28} color="#f2b705" className="shrink-0" />
+              <div>
+                <div className="text-sm text-[#e5e7f0] mb-0.5">
+                  ¡Has ganado <span className="font-display text-2xl text-[#f2b705]">{tournamentReward.amount}</span> monedas de torneo según tu posición final!
+                </div>
+                <div className="text-xs text-[#8a8fa3]">
+                  Saldo: <span className="text-[#c7cbdb]">{tournamentReward.before}</span> → <span className="font-bold text-white">{tournamentReward.after}</span>
+                </div>
               </div>
             </div>
           )}
