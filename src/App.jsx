@@ -272,6 +272,96 @@ const SLEEP_ONLY_DRAIN_MOVES = new Set(["dream-eater"]);
 // Es la única forma fiable de identificarlo, por nombre.
 const TOXIC_MOVES = new Set(["toxic", "poison-fang"]);
 
+// Movimientos que activan el clima de combate (a nivel de combate entero,
+// no por Pokémon). No hay campo estructurado en PokeAPI que agrupe estos
+// cuatro movimientos ni que diga a qué clima concreto corresponde cada uno,
+// así que se identifica por nombre, igual que el resto de mecánicas
+// especiales de este archivo.
+const WEATHER_MOVES = { "sunny-day": "sun", "rain-dance": "rain", sandstorm: "sandstorm", hail: "hail" };
+
+const WEATHER_META = {
+  sun: { icon: "☀️", label: "Día Soleado", color: "#f2b705" },
+  rain: { icon: "🌧️", label: "Lluvia", color: "#4a90d9" },
+  sandstorm: { icon: "🌪️", label: "Tormenta de Arena", color: "#B8A038" },
+  hail: { icon: "❄️", label: "Granizo", color: "#98D8D8" },
+};
+
+const WEATHER_START_TEXT = {
+  sun: "¡El campo de batalla se ha llenado de un fuerte rayo de sol!",
+  rain: "¡Ha comenzado a llover con fuerza sobre el campo de batalla!",
+  sandstorm: "¡Se ha levantado una tormenta de arena!",
+  hail: "¡Ha comenzado a granizar con fuerza!",
+};
+
+const WEATHER_CONTINUE_TEXT = {
+  sun: "El sol sigue brillando intensamente",
+  rain: "La lluvia sigue cayendo",
+  sandstorm: "La tormenta de arena sigue azotando el campo",
+  hail: "El granizo sigue cayendo",
+};
+
+const WEATHER_END_TEXT = {
+  sun: "El sol ha dejado de brillar",
+  rain: "La lluvia ha parado",
+  sandstorm: "La tormenta de arena ha amainado",
+  hail: "El granizo ha dejado de caer",
+};
+
+// Multiplicador de daño por clima: se aplica entre STAB y la efectividad de
+// tipo, igual que en los juegos (solo afecta a movimientos de Fuego/Agua
+// bajo Sol/Lluvia; Tormenta de Arena y Granizo no alteran el daño, solo
+// causan daño residual al final del turno, ver applyWeatherResidualDamage).
+function weatherDamageMultiplier(weather, moveType) {
+  if (!weather || !weather.type) return 1;
+  if (weather.type === "sun") {
+    if (moveType === "fire") return 1.5;
+    if (moveType === "water") return 0.5;
+  } else if (weather.type === "rain") {
+    if (moveType === "water") return 1.5;
+    if (moveType === "fire") return 0.5;
+  }
+  return 1;
+}
+
+// Daño residual de Tormenta de Arena/Granizo al final del turno: 1/16 de
+// los PS máximos, salvo para los tipos inmunes de cada clima.
+function applyWeatherResidualDamage(poke, weather, turns) {
+  if (!weather || !weather.type || poke.hp <= 0) return;
+  const immuneTypes = weather.type === "sandstorm" ? ["rock", "ground", "steel"] : weather.type === "hail" ? ["ice"] : null;
+  if (!immuneTypes) return;
+  if (poke.types.some((t) => immuneTypes.includes(t))) return;
+  const dmg = Math.max(1, Math.floor(poke.maxHp / 16));
+  poke.hp = Math.max(0, poke.hp - dmg);
+  const stormLabel = weather.type === "sandstorm" ? "la tormenta de arena" : "el granizo";
+  turns.push({ type: "statusText", text: `${poke.name} sufre daño por ${stormLabel}` });
+  if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
+}
+
+// Al final de cada turno completo (ambos bandos ya actuaron, o bien se
+// resolvió un cambio de Pokémon), el clima cuenta un turno menos, salvo el
+// turno en el que se acaba de activar (justSet): ese primer turno no
+// descuenta para que "5 turnos" dure realmente 5 turnos completos.
+function tickWeatherDuration(weather, turns) {
+  if (!weather || !weather.type) return;
+  if (weather.justSet) {
+    weather.justSet = false;
+    return;
+  }
+  weather.turnsLeft -= 1;
+  if (weather.turnsLeft <= 0) {
+    turns.push({ type: "statusText", text: WEATHER_END_TEXT[weather.type] });
+    weather.type = null;
+    weather.turnsLeft = 0;
+  } else {
+    turns.push({ type: "statusText", text: WEATHER_CONTINUE_TEXT[weather.type] });
+  }
+}
+
+// PokeAPI no expone ningún campo que marque a Persecución como especial: su
+// mecánica real (golpea primero y a doble potencia contra un objetivo que
+// se está cambiando) se resuelve a mano en resolveSwitchTurn.
+const PURSUIT_MOVES = new Set(["pursuit"]);
+
 // Reparte el número de golpes de un movimiento de golpes múltiples según la
 // probabilidad vigente desde la Gen V (35/35/15/15 para 2/3/4/5 golpes,
 // el caso estándar con min_hits=2/max_hits=5). Si algún movimiento futuro
@@ -690,7 +780,7 @@ function useApiCache() {
   // Fórmula de daño oficial simplificada a nivel 50 para ambos combatientes.
   // Usa stats efectivos (stages -6..+6) y aplica la quemadura (mitad de
   // ataque físico) como en los juegos.
-  const computeDamage = useCallback(async (attacker, defender, move) => {
+  const computeDamage = useCallback(async (attacker, defender, move, weather) => {
     // Night Shade / Seismic Toss: daño fijo igual al nivel (50), sin STAB
     // ni multiplicadores de ataque/defensa, solo respeta la inmunidad de tipo.
     if (move.specialDamage === "fixed-level") {
@@ -723,17 +813,18 @@ function useApiCache() {
     let base = Math.floor((levelFactor * power * atkStat) / defStat / 50);
     base = Math.floor(base + 2);
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
+    const weatherMult = weatherDamageMultiplier(weather, move.type);
     const mult = await typeMultiplier([move.type], defender.types);
     const critMult = isCrit ? 1.5 : 1;
     const rand = 0.85 + Math.random() * 0.15;
-    let damage = Math.floor(base * stab * mult * critMult * rand);
+    let damage = Math.floor(base * stab * weatherMult * mult * critMult * rand);
     damage = mult > 0 ? Math.max(1, damage) : 0;
     return { damage, isCrit, mult };
   }, [typeMultiplier]);
 
   // Estimación determinista de daño esperado (sin crítico/azar) usada por la
   // IA para elegir el mejor movimiento contra el rival actual.
-  const expectedDamage = useCallback(async (attacker, defender, move) => {
+  const expectedDamage = useCallback(async (attacker, defender, move, weather) => {
     // Fulminantes: no siguen la fórmula normal, su "daño esperado" es la
     // probabilidad de acierto multiplicada por los PS actuales del rival
     // (que es lo que realmente arriesgan/ganan al usarlos).
@@ -759,8 +850,9 @@ function useApiCache() {
     const levelFactor = Math.floor((2 * 50) / 5 + 2);
     const base = Math.floor((levelFactor * power * atkStat) / defStat / 50) + 2;
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
+    const weatherMult = weatherDamageMultiplier(weather, move.type);
     const mult = await typeMultiplier([move.type], defender.types);
-    let expected = base * stab * mult * (acc / 100);
+    let expected = base * stab * weatherMult * mult * (acc / 100);
     // Golpes múltiples: la IA debe valorar el total esperado de golpes, no
     // solo uno (si no, infravalora movimientos como Lanzarrocas frente a
     // uno de un único golpe con potencia similar).
@@ -777,33 +869,47 @@ function useApiCache() {
   // por debajo del 40% de PS, si el Pokémon tiene un movimiento de estado
   // que sube sus propias stats y no lo ha usado aún este combate, lo
   // prioriza una única vez antes de volver a centrarse en el daño.
-  const chooseMove = useCallback(async (attacker, defender) => {
+  const chooseMove = useCallback(async (attacker, defender, weather) => {
     // Movimiento de furia en curso: no pasa por la IA, se repite a la
-    // fuerza el mismo movimiento contra el objetivo activo actual.
+    // fuerza el mismo movimiento contra el objetivo activo actual (si aún
+    // le queda PP; si no, se trata como cualquier otro caso sin PP).
     if (attacker.lockedMove) {
       const locked = attacker.moves.find((m) => m.name === attacker.lockedMove);
-      if (locked) return locked;
+      if (locked && (locked.ppLeft == null || locked.ppLeft > 0)) return locked;
       attacker.lockedMove = null; // salvaguarda si el move ya no está en su kit
     }
 
+    // Sin PP en ningún movimiento: no hay Struggle implementado, así que se
+    // avisa a quien llama (resolveTurn/resolveSwitchTurn) devolviendo null
+    // para que ese turno se pierda sin más, sin romper la app.
+    const usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
+    if (usable.length === 0) return null;
+
     const hpRatio = attacker.hp / attacker.maxHp;
     if (hpRatio < 0.4 && !attacker.usedSetupMove) {
-      const setupIdx = attacker.moves.findIndex((m) =>
+      const setupIdx = usable.findIndex((m) =>
         m.damageClass === "status" && m.selfTargeted && m.statChanges?.some((sc) => sc.change > 0)
       );
       if (setupIdx !== -1) {
         attacker.usedSetupMove = true;
-        return attacker.moves[setupIdx];
+        return usable[setupIdx];
       }
     }
 
-    const scores = await Promise.all(attacker.moves.map((m) => expectedDamage(attacker, defender, m)));
+    const scores = await Promise.all(usable.map((m) => expectedDamage(attacker, defender, m, weather)));
     let bestIdx = 0;
     for (let k = 1; k < scores.length; k++) if (scores[k] > scores[bestIdx]) bestIdx = k;
-    return attacker.moves[bestIdx];
+    return usable[bestIdx];
   }, [expectedDamage]);
 
-  const executeMove = useCallback(async (attacker, defender, move) => {
+  const executeMove = useCallback(async (attacker, defender, move, weather) => {
+    // El PP se gasta por el mero hecho de seleccionar y ejecutar el
+    // movimiento (acierte, falle por precisión o quede bloqueado por
+    // Protección); ejecuteMove solo se llama cuando el atacante SÍ pudo
+    // actuar (statusPreMoveCheck ya se resolvió antes), así que aquí no
+    // hace falta distinguir esos casos.
+    if (move.ppLeft != null) move.ppLeft = Math.max(0, move.ppLeft - 1);
+
     // La recarga se gasta por haber usado el movimiento, acierte o no
     // (equivalente simplificado a los juegos reales).
     const isRecharge = RECHARGE_MOVES.has(move.name);
@@ -814,6 +920,18 @@ function useApiCache() {
     // usa cualquier otro movimiento se reinicia (tanto si acierta como si
     // el propio ataque queda bloqueado por la protección del rival).
     if (!isProtectMove) attacker.protectChain = 0;
+
+    // Movimientos de clima (Día Soleado/Danza Lluvia/Tormenta de
+    // Arena/Granizo): afectan a todo el campo de batalla, no al rival, así
+    // que no los bloquea la Protección. Sustituyen cualquier clima anterior
+    // por el nuevo (nunca se acumulan) y duran 5 turnos completos.
+    if (WEATHER_MOVES[move.name] && weather) {
+      const type = WEATHER_MOVES[move.name];
+      weather.type = type;
+      weather.turnsLeft = 5;
+      weather.justSet = true;
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: WEATHER_START_TEXT[type], inline: false }] };
+    }
 
     // Movimientos de furia (Enfado/Danza Pétalo/Golpes Furia): obligan a
     // repetir el mismo movimiento 2-3 turnos seguidos (sin pasar por la
@@ -914,7 +1032,7 @@ function useApiCache() {
       let lastMult = 1;
       for (let i = 0; i < hitCount; i++) {
         if (defender.hp <= 0) break;
-        const { damage: hitDamage, isCrit: hitCrit, mult: hitMult } = await computeDamage(attacker, defender, move);
+        const { damage: hitDamage, isCrit: hitCrit, mult: hitMult } = await computeDamage(attacker, defender, move, weather);
         lastMult = hitMult;
         defender.hp = Math.max(0, defender.hp - hitDamage);
         totalDamage += hitDamage;
@@ -954,7 +1072,7 @@ function useApiCache() {
       const thrashEvent = updateThrashLock();
       return { hit: false, damage: 0, crit: false, status: false, events: thrashEvent ? [thrashEvent] : [] };
     }
-    const { damage, isCrit, mult } = await computeDamage(attacker, defender, move);
+    const { damage, isCrit, mult } = await computeDamage(attacker, defender, move, weather);
     defender.hp = Math.max(0, defender.hp - damage);
     const events = applyMoveEffects(attacker, defender, move, mult, defender.hp <= 0);
     // Drenado (Come Sueños, Giga Drain, Absorber...): cura al atacante un
@@ -985,10 +1103,10 @@ function useApiCache() {
   // prioridad/velocidad (con parálisis afectando la velocidad efectiva),
   // ejecuta cada ataque y aplica el daño residual de quemadura/veneno al
   // final. Muta pa.hp / pb.hp directamente.
-  const resolveTurn = useCallback(async (pa, pb, moveA, moveB, trainerAId, trainerBId) => {
+  const resolveTurn = useCallback(async (pa, pb, moveA, moveB, trainerAId, trainerBId, weather) => {
     const turns = [];
-    const prioA = moveA.priority || 0;
-    const prioB = moveB.priority || 0;
+    const prioA = moveA ? (moveA.priority || 0) : -100;
+    const prioB = moveB ? (moveB.priority || 0) : -100;
     let aFirst;
     if (prioA !== prioB) aFirst = prioA > prioB;
     else {
@@ -1007,7 +1125,14 @@ function useApiCache() {
         continue;
       }
 
-      const result = await executeMove(attacker, defender, move);
+      // Sin PP en ningún movimiento (chooseMove ya lo filtró y devolvió
+      // null): el turno se pierde sin más, sin implementar Forcejeo.
+      if (!move) {
+        turns.push({ type: "statusText", text: `${attacker.name} no tiene PP para ningún movimiento y pierde el turno` });
+        continue;
+      }
+
+      const result = await executeMove(attacker, defender, move, weather);
       let inlineEffect = null;
       const extraEvents = [];
       for (const ev of result.events || []) {
@@ -1035,6 +1160,9 @@ function useApiCache() {
 
     applyResidualStatusDamage(pa, turns);
     applyResidualStatusDamage(pb, turns);
+    applyWeatherResidualDamage(pa, weather, turns);
+    applyWeatherResidualDamage(pb, weather, turns);
+    tickWeatherDuration(weather, turns);
 
     // La exención de "me acabo de dormir" solo vale para un posible chequeo
     // dentro de este mismo turno (si el Pokémon actúa en segundo lugar);
@@ -1059,22 +1187,27 @@ function useApiCache() {
   }, [executeMove]);
 
   // Resuelve un turno en el que el usuario cambia de Pokémon en vez de
-  // atacar. El cambio se trata como una acción de prioridad 0 sujeta al
-  // mismo criterio de orden que resolveTurn (prioridad y velocidad): si el
-  // rival es más rápido, ataca primero contra el Pokémon saliente antes de
-  // completarse el cambio; si no, el cambio se completa antes y el rival
-  // ataca ya contra el Pokémon recién entrado. El PS del saliente se
-  // conserva para cuando vuelva a entrar; solo se reinician sus stages.
-  const resolveSwitchTurn = useCallback(async (outgoing, incoming, opponent, opponentMove, opponentTrainerId) => {
+  // atacar. El cambio voluntario SIEMPRE resuelve antes que cualquier
+  // movimiento normal, sin comparar prioridad ni Velocidad: la única
+  // excepción es Persecución, que si la usa el rival este mismo turno
+  // golpea PRIMERO (al doble de potencia) contra el Pokémon que se está
+  // retirando, y el cambio solo se completa después si sobrevivió. El PS
+  // del saliente se conserva para cuando vuelva a entrar; solo se
+  // reinician sus stages (el PP de sus movimientos tampoco se restaura).
+  const resolveSwitchTurn = useCallback(async (outgoing, incoming, opponent, opponentMove, opponentTrainerId, weather) => {
     const turns = [];
 
     const attackTarget = async (target) => {
       if (opponent.hp <= 0 || target.hp <= 0) return;
+      if (!opponentMove) {
+        turns.push({ type: "statusText", text: `${opponent.name} no tiene PP para ningún movimiento y pierde el turno` });
+        return;
+      }
       if (!statusPreMoveCheck(opponent, turns)) {
         if (opponent.hp <= 0) turns.push({ type: "faint", pokemon: opponent.name });
         return;
       }
-      const result = await executeMove(opponent, target, opponentMove);
+      const result = await executeMove(opponent, target, opponentMove, weather);
       let inlineEffect = null;
       const extraEvents = [];
       for (const ev of result.events || []) {
@@ -1098,15 +1231,18 @@ function useApiCache() {
       if (target.hp <= 0) turns.push({ type: "faint", pokemon: target.name });
     };
 
-    const oppPrio = opponentMove.priority || 0;
-    let oppFirst;
-    if (oppPrio !== 0) oppFirst = oppPrio > 0;
-    else {
-      const spOpp = getEffectiveSpeed(opponent), spOut = getEffectiveSpeed(outgoing);
-      oppFirst = spOpp !== spOut ? spOpp > spOut : Math.random() < 0.5;
-    }
+    // Persecución contra el Pokémon que se está cambiando: golpea antes de
+    // que se complete el cambio, al doble de su potencia normal. Se muta
+    // temporalmente move.power (conservando el mismo objeto, para que el
+    // PP se descuente sobre el movimiento real) y se restaura justo después.
+    const isPursuitOnSwitcher = !!(opponentMove && PURSUIT_MOVES.has(opponentMove.name));
 
-    if (oppFirst) await attackTarget(outgoing);
+    if (isPursuitOnSwitcher) {
+      const originalPower = opponentMove.power;
+      opponentMove.power = (originalPower || 0) * 2;
+      await attackTarget(outgoing);
+      opponentMove.power = originalPower;
+    }
 
     if (outgoing.hp > 0) {
       turns.push({ type: "statusText", text: `¡Vuelve, ${outgoing.name}!` });
@@ -1121,10 +1257,16 @@ function useApiCache() {
     outgoing.toxicCounter = 0;
     turns.push({ type: "statusText", text: `¡Adelante, ${incoming.name}!` });
 
-    if (!oppFirst) await attackTarget(incoming);
+    // Salvo la excepción de Persecución de arriba, el rival actúa siempre
+    // DESPUÉS de completarse el cambio, contra el Pokémon recién entrado,
+    // sin comparar Velocidad ni prioridad.
+    if (!isPursuitOnSwitcher) await attackTarget(incoming);
 
     applyResidualStatusDamage(incoming, turns);
     applyResidualStatusDamage(opponent, turns);
+    applyWeatherResidualDamage(incoming, weather, turns);
+    applyWeatherResidualDamage(opponent, weather, turns);
+    tickWeatherDuration(weather, turns);
 
     incoming.justFellAsleep = false;
     opponent.justFellAsleep = false;
@@ -1136,13 +1278,13 @@ function useApiCache() {
 
   // Combate 1 contra 1 por turnos hasta que uno de los dos se quede a 0 PS
   // (IA para ambos lados).
-  const simulateDuel = useCallback(async (pa, pb, trainerAId, trainerBId) => {
+  const simulateDuel = useCallback(async (pa, pb, trainerAId, trainerBId, weather) => {
     const turns = [];
     let guard = 0;
     while (pa.hp > 0 && pb.hp > 0 && guard < 100) {
       guard++;
-      const [moveA, moveB] = await Promise.all([chooseMove(pa, pb), chooseMove(pb, pa)]);
-      turns.push(...(await resolveTurn(pa, pb, moveA, moveB, trainerAId, trainerBId)));
+      const [moveA, moveB] = await Promise.all([chooseMove(pa, pb, weather), chooseMove(pb, pa, weather)]);
+      turns.push(...(await resolveTurn(pa, pb, moveA, moveB, trainerAId, trainerBId, weather)));
     }
     const winnerSide = pa.hp > 0 ? "a" : "b";
     return { pokemonAName: pa.name, pokemonBName: pb.name, trainerAId, trainerBId, winnerSide, turns };
@@ -1150,7 +1292,12 @@ function useApiCache() {
 
   const preparePokemonForBattle = useCallback(async (trainerId, slug) => {
     const base = await getPokemon(slug);
-    const moves = await getMoveset(trainerId, slug);
+    const baseMoves = await getMoveset(trainerId, slug);
+    // Copia por instancia de cada movimiento (con su propio PP) para que
+    // gastar PP en este Pokémon no afecte al mismo movimiento cacheado que
+    // usan otros Pokémon. El PP no se restaura si el Pokémon es cambiado
+    // por otro y vuelve a entrar más tarde en el mismo combate.
+    const moves = baseMoves.map((m) => ({ ...m, ppLeft: m.pp ?? 0 }));
     const baseHp = base.stats.hp ?? 70;
     // PS a nivel 50 (IV=31, EV=0): floor((2*base+31)*50/100) + 50 + 10
     const maxHp = Math.floor(((2 * baseHp + 31) * 50) / 100) + 60;
@@ -1170,11 +1317,14 @@ function useApiCache() {
   const simulateMatch = useCallback(async (trainerA, trainerB) => {
     const teamA = await prepareTeam(trainerA);
     const teamB = await prepareTeam(trainerB);
+    // El clima es del combate entero (no de cada duelo 1v1 por separado):
+    // persiste a través de los cambios de Pokémon por debilitamiento.
+    const weather = { type: null, turnsLeft: 0, justSet: false };
     let i = 0, j = 0;
     const log = [];
     while (i < teamA.length && j < teamB.length) {
       const pa = teamA[i], pb = teamB[j];
-      const duel = await simulateDuel(pa, pb, trainerA.id, trainerB.id);
+      const duel = await simulateDuel(pa, pb, trainerA.id, trainerB.id, weather);
       log.push(duel);
       if (duel.winnerSide === "a") j++; else i++;
     }
@@ -1302,6 +1452,26 @@ function TeamStatusRow({ team, activeIndex }) {
   );
 }
 
+// Indicador del clima de combate activo (icono + turnos restantes). No
+// interfiere con el selector de movimientos ni con el log: se muestra justo
+// encima de ellos, junto a la cabecera del combate. Discreto/ausente si no
+// hay clima activo, para no ocupar espacio innecesario.
+function WeatherIndicator({ weather }) {
+  if (!weather || !weather.type) {
+    return <div className="text-[11px] text-[#5c6178]">Clima despejado</div>;
+  }
+  const meta = WEATHER_META[weather.type];
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold"
+      style={{ background: meta.color + "22", border: `1px solid ${meta.color}66`, color: meta.color }}
+    >
+      <span>{meta.icon}</span>
+      <span>{meta.label} · {weather.turnsLeft} {weather.turnsLeft === 1 ? "turno" : "turnos"}</span>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------
    TAB: TORNEO
 --------------------------------------------------------------- */
@@ -1425,6 +1595,10 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
   const [effectiveness, setEffectiveness] = useState({}); // { [moveName]: multiplier }
   const logEndRef = useRef(null);
+  // El clima es del combate entero, no de cada Pokémon: se guarda en un ref
+  // mutable (igual que en simulateMatch) para que persista a través de
+  // cambios de Pokémon y renders sin formar parte del estado de React.
+  const weatherRef = useRef({ type: null, turnsLeft: 0, justSet: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -1526,10 +1700,11 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   async function handleUserMove(move) {
     if (busy || result) return;
     setBusy(true);
-    const aiMove = await api.chooseMove(aiPoke, userPoke);
+    const weather = weatherRef.current;
+    const aiMove = await api.chooseMove(aiPoke, userPoke, weather);
     const moveA = userSide === "a" ? move : aiMove;
     const moveB = userSide === "a" ? aiMove : move;
-    const turns = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id);
+    const turns = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id, weather);
     setLog((l) => [...l, ...turns]);
     finalizeIndices(idxA, idxB);
     setBusy(false);
@@ -1545,8 +1720,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     const incoming = userTeam[targetIdx];
     const opponent = aiTeam[aiIdx];
     const opponentTrainerId = userSide === "a" ? trainerB.id : trainerA.id;
-    const aiMove = await api.chooseMove(opponent, outgoing);
-    const turns = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId);
+    const weather = weatherRef.current;
+    const aiMove = await api.chooseMove(opponent, outgoing, weather);
+    const turns = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId, weather);
     setLog((l) => [...l, ...turns]);
 
     // El elegido pasa a ser el candidato a activo del usuario; si el rival
@@ -1563,6 +1739,10 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
       <div className="flex items-center justify-between gap-3">
         <TeamStatusRow team={userTeam} activeIndex={userIdx} />
         <TeamStatusRow team={aiTeam} activeIndex={aiIdx} />
+      </div>
+
+      <div className="flex justify-center">
+        <WeatherIndicator weather={weatherRef.current} />
       </div>
 
       <div className="flex items-center gap-3">
@@ -1647,6 +1827,20 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
                 );
               })}
             </div>
+          ) : userPoke.moves.every((m) => m.ppLeft != null && m.ppLeft <= 0) ? (
+            <div className="rounded-lg p-4 text-center" style={{ background: "#14161f", border: "1px solid #e3350d55" }}>
+              <div className="text-sm text-[#e5e7f0] mb-3">
+                {userPoke.name} se ha quedado sin PP en todos sus movimientos y no puede atacar este turno.
+              </div>
+              <button
+                disabled={busy}
+                onClick={() => handleUserMove(null)}
+                className="px-5 py-2.5 rounded-lg font-semibold text-white disabled:opacity-50"
+                style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+              >
+                Perder el turno
+              </button>
+            </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {userPoke.moves.map((m, i) => {
@@ -1655,10 +1849,11 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
                 const powerLabel = isStatus ? "—" : (m.power ?? "Variable");
                 const effectSummary = moveEffectSummary(m);
                 const eff = isStatus ? null : effectivenessMeta(effectiveness[m.name]);
+                const noPp = m.ppLeft != null && m.ppLeft <= 0;
                 return (
                   <button
                     key={i}
-                    disabled={busy}
+                    disabled={busy || noPp}
                     onClick={() => handleUserMove(m)}
                     className="rounded-lg p-3 text-left disabled:opacity-50"
                     style={{ background: "#14161f", border: "1px solid #262a3a" }}
@@ -1678,7 +1873,10 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
                       </div>
                     </div>
                     <div className="text-[11px] text-[#8a8fa3] mb-1.5">
-                      {categoryLabel} · Potencia {powerLabel} · Precisión {m.accuracy ?? "—"} · PP {m.pp ?? "—"}
+                      {categoryLabel} · Potencia {powerLabel} · Precisión {m.accuracy ?? "—"} ·{" "}
+                      <span style={{ color: noPp ? "#e3350d" : undefined, fontWeight: noPp ? 700 : undefined }}>
+                        PP {m.ppLeft ?? "—"}/{m.pp ?? "—"}
+                      </span>
                     </div>
                     <div
                       className="text-[11px] text-[#6b7086] leading-snug mb-1"

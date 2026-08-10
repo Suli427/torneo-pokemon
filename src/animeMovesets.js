@@ -61,7 +61,7 @@ export const ANIME_MOVESETS = {
   "gary:umbreon": ["feint-attack", "shadow-ball", "screech", "toxic"], // TODO: revisar
   "gary:arcanine": ["flamethrower", "extreme-speed", "take-down", "fire-blast"], // TODO: revisar
   "gary:nidoking": ["horn-drill", "earthquake", "thrash", "poison-jab"], // TODO: revisar
-  "gary:scizor": ["x-scissor", "steel-wing", "iron-head", "agility"], // TODO: revisar
+  "gary:scizor": ["x-scissor", "steel-wing", "iron-head", "pursuit"], // TODO: revisar
   "gary:electivire": ["thunder", "low-kick", "fire-punch", "protect"], // TODO: revisar
 
   // --- Iris ---
