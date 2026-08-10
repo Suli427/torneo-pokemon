@@ -1053,6 +1053,17 @@ function useApiCache() {
     }
 
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) {
+      // Los movimientos de estado tiran precisión exactamente igual que los
+      // de daño: si accuracy es null (Danza Espada, Agilidad, Tóxico en las
+      // generaciones recientes...) nunca fallan, pero si tienen un valor
+      // numérico (Hipnosis 60, Onda Trueno 90, Somnífero 75...) sí deben
+      // poder fallar, sin aplicar ningún efecto ese turno.
+      const statusAcc = getEffectiveAccuracy(attacker, defender, move);
+      if (move.accuracy != null && Math.random() * 100 >= statusAcc) {
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        return { hit: false, damage: 0, crit: false, status: false, events: thrashEvent ? [thrashEvent] : [] };
+      }
       const events = applyMoveEffects(attacker, defender, move);
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
