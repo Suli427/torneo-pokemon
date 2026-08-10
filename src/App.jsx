@@ -108,13 +108,6 @@ const GACHA_RARITIES = [
   { label: "Legendario", chance: "2%", color: "#e3b23c" },
 ];
 
-const CHAR_GACHA_RARITIES = [
-  { label: "Rival", chance: "60%", color: "#9aa0ad" },
-  { label: "Líder de Gimnasio", chance: "28%", color: "#5fae5f" },
-  { label: "Alto Mando", chance: "9%", color: "#4a90d9" },
-  { label: "Campeón/a", chance: "3%", color: "#e3b23c" },
-];
-
 const ACHIEVEMENTS = [
   "Primera victoria", "Racha de 3", "Campeón de Liga", "Equipo perfecto",
   "Coleccionista novato", "Sin ni un rasguño", "Gacha afortunado", "100 combates",
@@ -2385,18 +2378,11 @@ function PersonajesTab({ api, onSoon, coins, purchasedTrainerIds, onPurchase }) 
         })}
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-4">
-        <button onClick={() => onSoon("Comprar personajes")} className="rounded-xl p-5 text-left" style={{ background: "#14161f", border: "1px dashed #3a3f57" }}>
-          <Coins size={20} color="#f2b705" className="mb-2" />
-          <div className="text-white font-semibold">Comprar personajes</div>
-          <div className="text-xs text-[#8a8fa3] mt-1">Desbloquea nuevos entrenadores con monedas de torneo.</div>
-        </button>
-        <button onClick={() => onSoon("Crea tu propio entrenador")} className="rounded-xl p-5 text-left" style={{ background: "#14161f", border: "1px dashed #3a3f57" }}>
-          <Sparkles size={20} color="#e3350d" className="mb-2" />
-          <div className="text-white font-semibold">Crea tu propio entrenador</div>
-          <div className="text-xs text-[#8a8fa3] mt-1">Diseña tu personaje y arma tu propio equipo Pokémon.</div>
-        </button>
-      </div>
+      <button onClick={() => onSoon("Crea tu propio entrenador")} className="w-full rounded-xl p-5 text-left" style={{ background: "#14161f", border: "1px dashed #3a3f57" }}>
+        <Sparkles size={20} color="#e3350d" className="mb-2" />
+        <div className="text-white font-semibold">Crea tu propio entrenador</div>
+        <div className="text-xs text-[#8a8fa3] mt-1">Diseña tu personaje y arma tu propio equipo Pokémon.</div>
+      </button>
 
       <PurchaseTrainerModal
         trainer={confirmTrainer}
@@ -2410,15 +2396,15 @@ function PersonajesTab({ api, onSoon, coins, purchasedTrainerIds, onPurchase }) 
 }
 
 /* ---------------------------------------------------------------
-   TAB: TIENDA
+   TAB: GATCHA
 --------------------------------------------------------------- */
 
-function TiendaTab({ onSoon }) {
+function GatchaTab({ onSoon }) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Store size={22} color="#e3350d" /> Tienda</h2>
-        <p className="text-sm text-[#9aa0b4]">Gasta tus monedas de torneo en gachas de Pokémon y entrenadores.</p>
+        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Store size={22} color="#e3350d" /> Gatcha</h2>
+        <p className="text-sm text-[#9aa0b4]">Gasta tus monedas de torneo en gachas de Pokémon.</p>
       </div>
 
       <div className="rounded-xl p-5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
@@ -2440,23 +2426,6 @@ function TiendaTab({ onSoon }) {
             </button>
           ))}
           <button onClick={() => onSoon("Más gachas por tipo")} className="px-3 py-2 rounded-lg text-xs font-semibold text-[#8a8fa3]" style={{ background: "#1c1f2c", border: "1px solid #2c2f42" }}>+13 tipos más</button>
-        </div>
-      </div>
-
-      <div className="rounded-xl p-5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
-        <h3 className="font-display text-lg text-white mb-1">Venta y gacha de entrenadores</h3>
-        <p className="text-xs text-[#8a8fa3] mb-4">Compra entrenadores concretos o pruébalos en el gacha de personajes. Cada 6 repetidos obtienes 1 entrenador nuevo garantizado.</p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-          {CHAR_GACHA_RARITIES.map((r) => (
-            <div key={r.label} className="rounded-lg p-2.5 text-center" style={{ background: r.color + "1a", border: `1px solid ${r.color}44` }}>
-              <div className="text-[11px] font-semibold" style={{ color: r.color }}>{r.label}</div>
-              <div className="text-lg font-display text-white">{r.chance}</div>
-            </div>
-          ))}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => onSoon("Gacha de entrenadores")} className="px-4 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: "linear-gradient(135deg,#f2b705,#c99a04)" }}>Tirar gacha</button>
-          <button onClick={() => onSoon("Comprar entrenador directo")} className="px-4 py-2 rounded-lg text-sm font-semibold text-[#e5e7f0]" style={{ background: "#1c1f2c", border: "1px solid #2c2f42" }}>Comprar directamente</button>
         </div>
       </div>
     </div>
@@ -2513,7 +2482,7 @@ export default function App() {
   const tabs = [
     { id: "torneo", label: "Torneo", icon: Swords },
     { id: "personajes", label: "Personajes", icon: Users },
-    { id: "tienda", label: "Tienda", icon: Store },
+    { id: "tienda", label: "Gatcha", icon: Store },
     { id: "logros", label: "Logros", icon: Award },
   ];
 
@@ -2561,7 +2530,7 @@ export default function App() {
             onPurchase={purchaseTrainer}
           />
         )}
-        {tab === "tienda" && <TiendaTab onSoon={setSoon} />}
+        {tab === "tienda" && <GatchaTab onSoon={setSoon} />}
         {tab === "logros" && <LogrosTab onSoon={setSoon} />}
       </main>
 
