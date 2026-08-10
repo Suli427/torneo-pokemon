@@ -150,6 +150,7 @@ const AILMENT_APPLY_TEXT = {
   poison: "ha sido envenenado",
   sleep: "se ha quedado dormido",
   freeze: "se ha congelado",
+  toxic: "ha sido gravemente envenenado",
 };
 
 const AILMENT_VERB = {
@@ -159,6 +160,7 @@ const AILMENT_VERB = {
   sleep: "Puede dormir",
   freeze: "Puede congelar",
   confusion: "Puede confundir",
+  toxic: "Puede envenenar gravemente",
 };
 
 // Abreviaturas cortas al estilo de los juegos originales, para los badges
@@ -179,6 +181,7 @@ const STATUS_BADGE_META = {
   paralysis: { label: "PAR", color: "#f2b705", title: "Paralizado: puede fallar el turno y su Velocidad se reduce a la mitad" },
   burn: { label: "QUEM", color: TYPE_COLORS.fire, title: "Quemado: pierde PS cada turno y su ataque físico se reduce a la mitad" },
   poison: { label: "VEN", color: TYPE_COLORS.poison, title: "Envenenado: pierde PS al final de cada turno" },
+  toxic: { label: "TOX", color: "#a75fd9", title: "Gravemente envenenado: pierde PS cada turno, cada vez más" },
   sleep: { label: "DUERME", color: "#9aa0b4", title: "Dormido: no puede actuar hasta que se despierte" },
   freeze: { label: "CONG", color: TYPE_COLORS.ice, title: "Congelado: no puede actuar hasta que se descongele" },
 };
@@ -263,6 +266,27 @@ const PROTECT_MOVES = new Set(["protect", "detect", "baneful-bunker", "spiky-shi
 // impactar; el resto de drenadores no tienen ese requisito.
 const SLEEP_ONLY_DRAIN_MOVES = new Set(["dream-eater"]);
 
+// PokeAPI no distingue "mal envenenado" (Tóxico) de veneno normal: el campo
+// meta.ailment.name de /move/toxic devuelve "poison" igual que cualquier
+// movimiento venenoso normal (no existe "toxic" en el enum move-ailment).
+// Es la única forma fiable de identificarlo, por nombre.
+const TOXIC_MOVES = new Set(["toxic", "poison-fang"]);
+
+// Reparte el número de golpes de un movimiento de golpes múltiples según la
+// probabilidad vigente desde la Gen V (35/35/15/15 para 2/3/4/5 golpes,
+// el caso estándar con min_hits=2/max_hits=5). Si algún movimiento futuro
+// tuviera un rango distinto, cae a un sorteo uniforme dentro de ese rango.
+function rollMultiHitCount(minHits, maxHits) {
+  if (minHits === 2 && maxHits === 5) {
+    const r = Math.random() * 100;
+    if (r < 35) return 2;
+    if (r < 70) return 3;
+    if (r < 85) return 4;
+    return 5;
+  }
+  return minHits + Math.floor(Math.random() * (maxHits - minHits + 1));
+}
+
 // El `target` de PokeAPI describe solo a quién va el DAÑO del movimiento;
 // para esta familia viene como "selected-pokemon" (el rival) pero el
 // movimiento en realidad se autobaja una stat al atacar (no hay ningún
@@ -276,6 +300,17 @@ const SELF_STAT_TARGET_OVERRIDES = new Set(["draco-meteor", "leaf-storm", "overh
 // mismo). Devuelve false si el Pokémon no llega a ejecutar su movimiento
 // este turno.
 function statusPreMoveCheck(poke, turns) {
+  // Retroceso (flinch): solo tiene efecto si el objetivo no ha actuado
+  // todavía este turno cuando lo recibe (por eso se comprueba aquí, al
+  // principio del turno del propio Pokémon, y se limpia siempre al final
+  // de resolveTurn/resolveSwitchTurn — si ya había actuado antes de que se
+  // lo aplicaran, el flag queda sin consumir y se descarta sin más).
+  if (poke.flinched) {
+    poke.flinched = false;
+    turns.push({ type: "statusText", text: `¡${poke.name} se encogió de miedo y no puede moverse!` });
+    return false;
+  }
+
   if (poke.mustRecharge) {
     poke.mustRecharge = false;
     turns.push({ type: "statusText", text: `${poke.name} debe descansar y no puede atacar este turno` });
@@ -332,6 +367,33 @@ function statusPreMoveCheck(poke, turns) {
   return true;
 }
 
+// Daño de fin de turno por quemadura/veneno/veneno grave (Tóxico). El de
+// Tóxico crece: 1/16 el primer turno que se aplica, 2/16 el siguiente,
+// 3/16 el de después... usando toxicCounter (se reinicia a 0 al salir del
+// combate por un cambio, así que si vuelve a entrar el conteo arranca de
+// nuevo en 1/16, no continúa el anterior).
+function applyResidualStatusDamage(poke, turns) {
+  if (poke.hp <= 0) return;
+  if (poke.status === "burn") {
+    const dmg = Math.max(1, Math.floor(poke.maxHp / 16));
+    poke.hp = Math.max(0, poke.hp - dmg);
+    turns.push({ type: "statusText", text: `${poke.name} sufre el daño de la quemadura` });
+  } else if (poke.status === "poison") {
+    const dmg = Math.max(1, Math.floor(poke.maxHp / 8));
+    poke.hp = Math.max(0, poke.hp - dmg);
+    turns.push({ type: "statusText", text: `${poke.name} sufre el daño del veneno` });
+  } else if (poke.status === "toxic") {
+    const tick = Math.max(1, poke.toxicCounter || 0);
+    const dmg = Math.max(1, Math.floor((poke.maxHp * tick) / 16));
+    poke.hp = Math.max(0, poke.hp - dmg);
+    poke.toxicCounter = tick + 1;
+    turns.push({ type: "statusText", text: `${poke.name} sufre el daño del veneno grave` });
+  } else {
+    return;
+  }
+  if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
+}
+
 // Aplica el ailment (parálisis/quemadura/veneno/sueño/congelación/confusión)
 // y los stat_changes de un movimiento ya acertado. Devuelve las entradas de
 // log generadas; `inline: true` marca un cambio de stat en el propio usuario
@@ -371,6 +433,9 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
         if (move.ailmentName === "sleep") {
           target.sleepTurns = 1 + Math.floor(Math.random() * 3);
           target.justFellAsleep = true;
+        }
+        if (move.ailmentName === "toxic") {
+          target.toxicCounter = 1;
         }
         events.push({ type: "statusText", text: `${target.name} ${AILMENT_APPLY_TEXT[move.ailmentName]}`, inline: false });
       }
@@ -424,7 +489,11 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
 // potencia fija para los de mecánica compleja, y un marcador para los dos
 // casos que sí se resuelven en tiempo de combate (velocidad relativa / daño
 // fijo igual al nivel).
-const FIXED_POWER_OVERRIDES = { "horn-drill": 150, fissure: 150, "sheer-cold": 150, guillotine: 150, bide: 100, "low-kick": 60, "grass-knot": 60 };
+// Los cuatro fulminantes (horn-drill/guillotine/fissure/sheer-cold) tenían
+// aquí una potencia fija de 150 en una implementación anterior; ya NO se
+// tratan como movimientos de daño normal (ver OHKO_MOVES/isOHKO más abajo),
+// así que se quitan de esta lista para que su `power` se quede en null.
+const FIXED_POWER_OVERRIDES = { bide: 100, "low-kick": 60, "grass-knot": 60 };
 const SPEED_RATIO_MOVES = new Set(["electro-ball", "gyro-ball"]);
 const FIXED_LEVEL_MOVES = new Set(["night-shade", "seismic-toss"]);
 
@@ -554,6 +623,9 @@ function useApiCache() {
       const res = await fetch(`https://pokeapi.co/api/v2/move/${name}`);
       const data = await res.json();
       const rawAilment = data.meta?.ailment?.name || "none";
+      // La API no distingue Tóxico de veneno normal (ambos dan "poison" en
+      // meta.ailment.name); se identifica por nombre via TOXIC_MOVES.
+      const ailmentName = TOXIC_MOVES.has(data.name) && rawAilment === "poison" ? "toxic" : rawAilment;
       const entry = resolveVariablePower({
         name: data.name,
         power: data.power,
@@ -562,13 +634,18 @@ function useApiCache() {
         type: data.type.name,
         damageClass: data.damage_class?.name || "physical",
         priority: data.priority || 0,
-        // "toxic" (mal envenenado) se trata como veneno normal, sin daño creciente.
-        ailmentName: rawAilment === "toxic" ? "poison" : rawAilment,
+        ailmentName,
         ailmentChance: data.meta?.ailment_chance ?? 0,
         statChanges: (data.stat_changes || []).map((sc) => ({ stat: sc.stat.name, change: sc.change })),
         statChance: data.meta?.stat_chance ?? 0,
         selfTargeted: data.target?.name === "user" || SELF_STAT_TARGET_OVERRIDES.has(data.name),
         drain: data.meta?.drain ?? 0,
+        // meta.category "ohko" es un campo estructurado fiable (a diferencia
+        // de la recarga o la furia, que no tienen ninguno propio).
+        isOHKO: data.meta?.category?.name === "ohko",
+        flinchChance: data.meta?.flinch_chance ?? 0,
+        minHits: data.meta?.min_hits ?? null,
+        maxHits: data.meta?.max_hits ?? null,
         description: buildMoveDescription(data),
       });
       moveCache.current[name] = entry;
@@ -577,6 +654,7 @@ function useApiCache() {
       const entry = {
         name, power: 40, accuracy: 100, pp: 35, type: "normal", damageClass: "physical", priority: 0,
         ailmentName: "none", ailmentChance: 0, statChanges: [], statChance: 0, selfTargeted: false, drain: 0,
+        isOHKO: false, flinchChance: 0, minHits: null, maxHits: null,
         description: "Sin descripción disponible para este movimiento.",
       };
       moveCache.current[name] = entry;
@@ -601,7 +679,7 @@ function useApiCache() {
     while (moves.length < 4) {
       moves.push(await getMove(moves.length === 3 ? "tackle" : "struggle"));
     }
-    const hasDamage = moves.some((m) => m.damageClass !== "status" && (m.power || m.specialDamage));
+    const hasDamage = moves.some((m) => m.damageClass !== "status" && (m.power || m.specialDamage || m.isOHKO));
     if (!hasDamage) {
       moves[moves.length - 1] = await getMove("tackle");
     }
@@ -656,6 +734,14 @@ function useApiCache() {
   // Estimación determinista de daño esperado (sin crítico/azar) usada por la
   // IA para elegir el mejor movimiento contra el rival actual.
   const expectedDamage = useCallback(async (attacker, defender, move) => {
+    // Fulminantes: no siguen la fórmula normal, su "daño esperado" es la
+    // probabilidad de acierto multiplicada por los PS actuales del rival
+    // (que es lo que realmente arriesgan/ganan al usarlos).
+    if (move.isOHKO) {
+      if (move.name === "sheer-cold" && defender.types.includes("ice")) return 0;
+      const acc = move.accuracy == null ? 100 : move.accuracy;
+      return defender.hp * (acc / 100);
+    }
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) return 0;
     const acc = getEffectiveAccuracy(attacker, defender, move);
     if (move.specialDamage === "fixed-level") {
@@ -674,7 +760,17 @@ function useApiCache() {
     const base = Math.floor((levelFactor * power * atkStat) / defStat / 50) + 2;
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
     const mult = await typeMultiplier([move.type], defender.types);
-    return base * stab * mult * (acc / 100);
+    let expected = base * stab * mult * (acc / 100);
+    // Golpes múltiples: la IA debe valorar el total esperado de golpes, no
+    // solo uno (si no, infravalora movimientos como Lanzarrocas frente a
+    // uno de un único golpe con potencia similar).
+    if (move.minHits != null && move.maxHits != null) {
+      const avgHits = move.minHits === 2 && move.maxHits === 5
+        ? 3.1 // 2×0.35 + 3×0.35 + 4×0.15 + 5×0.15
+        : (move.minHits + move.maxHits) / 2;
+      expected *= avgHits;
+    }
+    return expected;
   }, [typeMultiplier]);
 
   // Elige el movimiento con mayor daño esperado. Excepción no bloqueante:
@@ -780,6 +876,71 @@ function useApiCache() {
       return { hit: true, damage: 0, crit: false, status: true, events };
     }
 
+    // Fulminantes de un solo golpe (Horn Drill/Guillotine/Fissure/Sheer
+    // Cold): ignoran por completo la fórmula normal (STAB, tipo, stages,
+    // crítico). Solo tiran precisión contra su accuracy base; si aciertan,
+    // el objetivo pasa a 0 PS directamente. Sheer Cold además nunca afecta
+    // a un objetivo de tipo Hielo, ni con la tirada de precisión de por
+    // medio (la protección del rival ya se comprobó más arriba).
+    if (move.isOHKO) {
+      if (move.name === "sheer-cold" && defender.types.includes("ice")) {
+        return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡No afectó a ${defender.name}!`, inline: false }] };
+      }
+      const ohkoAcc = move.accuracy == null ? 100 : move.accuracy;
+      if (Math.random() * 100 >= ohkoAcc) {
+        return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
+      }
+      defender.hp = 0;
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡Un golpe fulminante! ¡${defender.name} ha sido debilitado al instante!`, inline: false }] };
+    }
+
+    // Golpes múltiples (Lanzarrocas y similares): la precisión se comprueba
+    // UNA sola vez para el primer golpe; si acierta, el resto de golpes ya
+    // decididos impactan sin nuevas tiradas. Cada golpe recalcula su propio
+    // daño (con su propio crítico independiente), y la secuencia se corta
+    // si el objetivo se debilita a mitad. Cualquier ailment/stat_changes
+    // secundario solo se comprueba tras el ÚLTIMO golpe.
+    if (move.minHits != null && move.maxHits != null) {
+      const multiAcc = getEffectiveAccuracy(attacker, defender, move);
+      if (Math.random() * 100 >= multiAcc) {
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        return { hit: false, damage: 0, crit: false, status: false, events: thrashEvent ? [thrashEvent] : [] };
+      }
+      const hitCount = rollMultiHitCount(move.minHits, move.maxHits);
+      let totalDamage = 0;
+      let anyCrit = false;
+      let hitsLanded = 0;
+      let lastMult = 1;
+      for (let i = 0; i < hitCount; i++) {
+        if (defender.hp <= 0) break;
+        const { damage: hitDamage, isCrit: hitCrit, mult: hitMult } = await computeDamage(attacker, defender, move);
+        lastMult = hitMult;
+        defender.hp = Math.max(0, defender.hp - hitDamage);
+        totalDamage += hitDamage;
+        if (hitCrit) anyCrit = true;
+        hitsLanded++;
+      }
+      const events = applyMoveEffects(attacker, defender, move, lastMult, defender.hp <= 0);
+      if (move.drain && totalDamage > 0 && lastMult > 0) {
+        const heal = Math.floor((totalDamage * move.drain) / 100);
+        if (heal > 0) {
+          const before = attacker.hp;
+          attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
+          if (attacker.hp > before) {
+            events.push({ type: "statusText", text: `¡${attacker.name} restauró PS gracias a ${displayMoveName(move.name)}!`, inline: false });
+          }
+        }
+      }
+      if (defender.hp > 0 && lastMult > 0 && move.flinchChance > 0 && Math.random() * 100 < move.flinchChance) {
+        defender.flinched = true;
+      }
+      if (isRecharge) attacker.mustRecharge = true;
+      const thrashEvent = updateThrashLock();
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: totalDamage, crit: anyCrit, status: false, events, hitCount: hitsLanded };
+    }
+
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) {
       const events = applyMoveEffects(attacker, defender, move);
       if (isRecharge) attacker.mustRecharge = true;
@@ -807,6 +968,12 @@ function useApiCache() {
           events.push({ type: "statusText", text: `¡${attacker.name} restauró PS gracias a ${displayMoveName(move.name)}!`, inline: false });
         }
       }
+    }
+    // Retroceso (flinch): solo se tira si el golpe conectó de verdad
+    // (mult>0) y el objetivo sigue en pie; el efecto real (bloquear el
+    // turno) se resuelve en statusPreMoveCheck cuando le toque actuar.
+    if (defender.hp > 0 && mult > 0 && move.flinchChance > 0 && Math.random() * 100 < move.flinchChance) {
+      defender.flinched = true;
     }
     if (isRecharge) attacker.mustRecharge = true;
     const thrashEvent = updateThrashLock();
@@ -858,6 +1025,7 @@ function useApiCache() {
         damage: result.damage,
         target: defender.name,
         effectText: inlineEffect,
+        hitCount: result.hitCount,
       });
       turns.push(...extraEvents);
       if (defender.hp <= 0) {
@@ -865,21 +1033,8 @@ function useApiCache() {
       }
     }
 
-    for (const poke of [pa, pb]) {
-      if (poke.hp <= 0) continue;
-      if (poke.status === "burn") {
-        const dmg = Math.max(1, Math.floor(poke.maxHp / 16));
-        poke.hp = Math.max(0, poke.hp - dmg);
-        turns.push({ type: "statusText", text: `${poke.name} sufre el daño de la quemadura` });
-      } else if (poke.status === "poison") {
-        const dmg = Math.max(1, Math.floor(poke.maxHp / 8));
-        poke.hp = Math.max(0, poke.hp - dmg);
-        turns.push({ type: "statusText", text: `${poke.name} sufre el daño del veneno` });
-      } else {
-        continue;
-      }
-      if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
-    }
+    applyResidualStatusDamage(pa, turns);
+    applyResidualStatusDamage(pb, turns);
 
     // La exención de "me acabo de dormir" solo vale para un posible chequeo
     // dentro de este mismo turno (si el Pokémon actúa en segundo lugar);
@@ -893,6 +1048,12 @@ function useApiCache() {
     // racha de usos consecutivos sí se conserva, se gestiona aparte).
     pa.protected = false;
     pb.protected = false;
+
+    // El retroceso (flinch) solo vale para un posible chequeo dentro de
+    // este mismo turno (si el objetivo aún no había actuado); si no se
+    // consumió aquí, se limpia igual para no arrastrarlo al turno siguiente.
+    pa.flinched = false;
+    pb.flinched = false;
 
     return turns;
   }, [executeMove]);
@@ -931,6 +1092,7 @@ function useApiCache() {
         damage: result.damage,
         target: target.name,
         effectText: inlineEffect,
+        hitCount: result.hitCount,
       });
       turns.push(...extraEvents);
       if (target.hp <= 0) turns.push({ type: "faint", pokemon: target.name });
@@ -952,28 +1114,22 @@ function useApiCache() {
     outgoing.statStages = { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 };
     outgoing.protected = false;
     outgoing.protectChain = 0;
+    // El estado no volátil (incluido Tóxico) persiste al cambiar, pero el
+    // contador de daño creciente de Tóxico sí se reinicia: si vuelve a
+    // entrar más tarde, el siguiente tic vuelve a ser 1/16, no continúa
+    // donde se quedó.
+    outgoing.toxicCounter = 0;
     turns.push({ type: "statusText", text: `¡Adelante, ${incoming.name}!` });
 
     if (!oppFirst) await attackTarget(incoming);
 
-    for (const poke of [incoming, opponent]) {
-      if (poke.hp <= 0) continue;
-      if (poke.status === "burn") {
-        const dmg = Math.max(1, Math.floor(poke.maxHp / 16));
-        poke.hp = Math.max(0, poke.hp - dmg);
-        turns.push({ type: "statusText", text: `${poke.name} sufre el daño de la quemadura` });
-      } else if (poke.status === "poison") {
-        const dmg = Math.max(1, Math.floor(poke.maxHp / 8));
-        poke.hp = Math.max(0, poke.hp - dmg);
-        turns.push({ type: "statusText", text: `${poke.name} sufre el daño del veneno` });
-      } else {
-        continue;
-      }
-      if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
-    }
+    applyResidualStatusDamage(incoming, turns);
+    applyResidualStatusDamage(opponent, turns);
 
     incoming.justFellAsleep = false;
     opponent.justFellAsleep = false;
+    incoming.flinched = false;
+    opponent.flinched = false;
 
     return turns;
   }, [executeMove]);
@@ -1002,6 +1158,7 @@ function useApiCache() {
       ...base, moves, maxHp, hp: maxHp,
       status: null, sleepTurns: 0, justFellAsleep: false, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
       lockedMove: null, lockedTurnsRemaining: 0, protected: false, protectChain: 0,
+      flinched: false, toxicCounter: 0,
       statStages: { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 },
     };
   }, [getPokemon, getMoveset]);
@@ -1159,6 +1316,10 @@ function battleTurnLine(turn) {
       : `${turn.pokemon} usó ${turn.move}`;
   }
   const effectSuffix = turn.effectText ? ` (${turn.effectText})` : "";
+  if (turn.hitCount) {
+    const vezVeces = turn.hitCount === 1 ? "vez" : "veces";
+    return `${turn.pokemon} usó ${turn.move} → ¡Golpeó ${turn.hitCount} ${vezVeces}! → ${turn.damage} de daño total a ${turn.target}${turn.crit ? " (¡Golpe crítico!)" : ""}${effectSuffix}`;
+  }
   return `${turn.pokemon} usa ${turn.move} → ${turn.damage} de daño a ${turn.target}${turn.crit ? " (¡Golpe crítico!)" : ""}${effectSuffix}`;
 }
 
