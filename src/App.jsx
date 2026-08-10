@@ -212,10 +212,12 @@ const RECHARGE_MOVES = new Set([
 const THRASHING_MOVES = new Set(["outrage", "petal-dance", "thrash"]);
 
 // El `target` de PokeAPI describe solo a quién va el DAÑO del movimiento;
-// para esta familia (Draco Meteor, Leaf Storm, Overheat...) target viene
-// como "selected-pokemon" (el rival) pero el stat_changes es en realidad
-// sobre quien lo usa. Se fuerza selfTargeted=true para estos casos.
-const SELF_LOWERING_NUKES = new Set(["draco-meteor", "leaf-storm", "overheat", "psycho-boost", "fleur-cannon"]);
+// para esta familia viene como "selected-pokemon" (el rival) pero el
+// movimiento en realidad se autobaja una stat al atacar (no hay ningún
+// movimiento real que "suba una stat del rival" al golpearlo, así que ese
+// caso positivo se resuelve de forma genérica más abajo por el signo del
+// cambio; esta lista cubre solo la excepción de bajada de stat propia).
+const SELF_STAT_TARGET_OVERRIDES = new Set(["draco-meteor", "leaf-storm", "overheat", "psycho-boost", "fleur-cannon"]);
 
 // Comprueba si un Pokémon puede actuar este turno (recarga, parálisis,
 // sueño, congelación) y resuelve la confusión (33% de golpearse a sí
@@ -312,15 +314,34 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
     const chance = isStatusMove ? 100 : (move.statChance > 0 ? move.statChance : 0);
     if (chance > 0 && Math.random() * 100 < chance) {
       for (const sc of move.statChanges) {
-        if (!(sc.stat in target.statStages)) continue;
-        const before = target.statStages[sc.stat];
+        // En un movimiento de daño, una SUBIDA de stat en los datos de la
+        // API siempre es sobre quien ataca (no existe ningún movimiento
+        // real que "suba una stat del rival" como efecto secundario de
+        // golpearlo, ej. Meteor Mash, Ancient Power, Steel Wing...); una
+        // bajada respeta el target ya resuelto para el movimiento (el
+        // rival, salvo la excepción de SELF_STAT_TARGET_OVERRIDES).
+        const scTarget = (!isStatusMove && sc.change > 0) ? attacker : target;
+        if (!(sc.stat in scTarget.statStages)) continue;
+        const before = scTarget.statStages[sc.stat];
         const after = Math.max(-6, Math.min(6, before + sc.change));
-        target.statStages[sc.stat] = after;
-        if (after === before) continue;
-        if (target === attacker) {
+        scTarget.statStages[sc.stat] = after;
+        if (after === before) {
+          // El stage ya estaba en el límite (-6/+6) en la misma dirección
+          // del cambio: no tiene ningún efecto, se avisa igual que en los
+          // juegos reales.
+          if (sc.change > 0 && before === 6) {
+            const article = STAT_ARTICLE_ES[sc.stat] === "el" ? "El" : "La";
+            events.push({ type: "statusText", text: `¡${article} ${STAT_ES[sc.stat]} de ${scTarget.name} ya no puede subir más!`, inline: false });
+          } else if (sc.change < 0 && before === -6) {
+            const article = STAT_ARTICLE_ES[sc.stat] === "el" ? "El" : "La";
+            events.push({ type: "statusText", text: `¡${article} ${STAT_ES[sc.stat]} de ${scTarget.name} ya no puede bajar más!`, inline: false });
+          }
+          continue;
+        }
+        if (scTarget === attacker) {
           events.push({ type: "statusText", text: `su ${STAT_ES[sc.stat]} ${statChangeText(sc.change)}`, inline: true });
         } else {
-          events.push({ type: "statusText", text: `${target.name}: ${STAT_ARTICLE_ES[sc.stat]} ${STAT_ES[sc.stat]} ${statChangeText(sc.change)}`, inline: false });
+          events.push({ type: "statusText", text: `${scTarget.name}: ${STAT_ARTICLE_ES[sc.stat]} ${STAT_ES[sc.stat]} ${statChangeText(sc.change)}`, inline: false });
         }
       }
     }
@@ -357,7 +378,11 @@ function moveEffectSummary(move) {
   }
   if (move.statChanges && move.statChanges.length) {
     const pct = move.damageClass === "status" ? null : (move.statChance > 0 ? move.statChance : null);
-    const who = move.selfTargeted ? "Propio: " : "Rival: ";
+    // Misma regla que en applyMoveEffects: en un movimiento de daño, una
+    // subida de stat siempre es sobre quien ataca aunque move.selfTargeted
+    // sea false (ej. Meteor Mash, Ancient Power, Steel Wing...).
+    const allSelf = move.statChanges.every((sc) => move.selfTargeted || (move.damageClass !== "status" && sc.change > 0));
+    const who = allSelf ? "Propio: " : "Rival: ";
     const txt = move.statChanges.map((sc) => `${STAT_ES[sc.stat] || sc.stat} ${statChangeText(sc.change)}`).join(", ");
     parts.push(who + (pct ? `${txt} (${pct}%)` : txt));
   }
@@ -475,7 +500,7 @@ function useApiCache() {
         ailmentChance: data.meta?.ailment_chance ?? 0,
         statChanges: (data.stat_changes || []).map((sc) => ({ stat: sc.stat.name, change: sc.change })),
         statChance: data.meta?.stat_chance ?? 0,
-        selfTargeted: data.target?.name === "user" || SELF_LOWERING_NUKES.has(data.name),
+        selfTargeted: data.target?.name === "user" || SELF_STAT_TARGET_OVERRIDES.has(data.name),
         description: buildMoveDescription(data),
       });
       moveCache.current[name] = entry;
