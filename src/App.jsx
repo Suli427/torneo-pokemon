@@ -205,6 +205,12 @@ const RECHARGE_MOVES = new Set([
   "meteor-assault", "eternabeam",
 ]);
 
+// PokeAPI tampoco expone un flag estructurado para "movimiento de furia"
+// (meta.min_turns/max_turns vienen a null incluso en Enfado/Danza
+// Pétalo/Golpes Furia; el "2-3 turnos" solo aparece como texto libre en
+// effect_entries). Se usa una lista fija, igual que con la recarga.
+const THRASHING_MOVES = new Set(["outrage", "petal-dance", "thrash"]);
+
 // El `target` de PokeAPI describe solo a quién va el DAÑO del movimiento;
 // para esta familia (Draco Meteor, Leaf Storm, Overheat...) target viene
 // como "selected-pokemon" (el rival) pero el stat_changes es en realidad
@@ -570,6 +576,14 @@ function useApiCache() {
   // que sube sus propias stats y no lo ha usado aún este combate, lo
   // prioriza una única vez antes de volver a centrarse en el daño.
   const chooseMove = useCallback(async (attacker, defender) => {
+    // Movimiento de furia en curso: no pasa por la IA, se repite a la
+    // fuerza el mismo movimiento contra el objetivo activo actual.
+    if (attacker.lockedMove) {
+      const locked = attacker.moves.find((m) => m.name === attacker.lockedMove);
+      if (locked) return locked;
+      attacker.lockedMove = null; // salvaguarda si el move ya no está en su kit
+    }
+
     const hpRatio = attacker.hp / attacker.maxHp;
     if (hpRatio < 0.4 && !attacker.usedSetupMove) {
       const setupIdx = attacker.moves.findIndex((m) =>
@@ -591,21 +605,51 @@ function useApiCache() {
     // La recarga se gasta por haber usado el movimiento, acierte o no
     // (equivalente simplificado a los juegos reales).
     const isRecharge = RECHARGE_MOVES.has(move.name);
+    const isThrashing = THRASHING_MOVES.has(move.name);
+
+    // Movimientos de furia (Enfado/Danza Pétalo/Golpes Furia): obligan a
+    // repetir el mismo movimiento 2-3 turnos seguidos (sin pasar por la
+    // IA, ver chooseMove) y dejan al usuario confuso al terminar. Cuenta
+    // igual acierte o falle el golpe.
+    function updateThrashLock() {
+      if (!isThrashing) return null;
+      const continuing = attacker.lockedMove === move.name;
+      if (continuing) {
+        attacker.lockedTurnsRemaining -= 1;
+      } else {
+        attacker.lockedMove = move.name;
+        attacker.lockedTurnsRemaining = 2 + Math.floor(Math.random() * 2) - 1; // 1 o 2 turnos más tras este
+      }
+      if (attacker.lockedTurnsRemaining <= 0) {
+        attacker.lockedMove = null;
+        if (!attacker.confusionTurns) attacker.confusionTurns = 1 + Math.floor(Math.random() * 4);
+        return { type: "statusText", text: `¡${attacker.name} quedó confuso a causa del enfado!`, inline: false };
+      }
+      if (continuing) {
+        return { type: "statusText", text: `${attacker.name} sigue enfadado y no puede parar de atacar`, inline: false };
+      }
+      return null; // primer uso: la línea normal de "usó X" ya es suficiente
+    }
 
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) {
       const events = applyMoveEffects(attacker, defender, move);
       if (isRecharge) attacker.mustRecharge = true;
+      const thrashEvent = updateThrashLock();
+      if (thrashEvent) events.push(thrashEvent);
       return { hit: true, damage: 0, crit: false, status: true, events };
     }
     const acc = getEffectiveAccuracy(attacker, defender, move);
     if (Math.random() * 100 >= acc) {
       if (isRecharge) attacker.mustRecharge = true;
-      return { hit: false, damage: 0, crit: false, status: false, events: [] };
+      const thrashEvent = updateThrashLock();
+      return { hit: false, damage: 0, crit: false, status: false, events: thrashEvent ? [thrashEvent] : [] };
     }
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move);
     defender.hp = Math.max(0, defender.hp - damage);
     const events = applyMoveEffects(attacker, defender, move, mult, defender.hp <= 0);
     if (isRecharge) attacker.mustRecharge = true;
+    const thrashEvent = updateThrashLock();
+    if (thrashEvent) events.push(thrashEvent);
     return { hit: true, damage, crit: isCrit, status: false, events };
   }, [computeDamage]);
 
@@ -702,6 +746,7 @@ function useApiCache() {
     return {
       ...base, moves, maxHp, hp: maxHp,
       status: null, sleepTurns: 0, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
+      lockedMove: null, lockedTurnsRemaining: 0,
       statStages: { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 },
     };
   }, [getPokemon, getMoveset]);
@@ -996,7 +1041,21 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
         <div ref={logEndRef} />
       </div>
 
-      {!result ? (
+      {!result && userPoke.lockedMove ? (
+        <div className="rounded-lg p-4 text-center" style={{ background: "#14161f", border: "1px solid #e3350d55" }}>
+          <div className="text-sm text-[#e5e7f0] mb-3">
+            {userPoke.name} está en furia y no puede elegir otro movimiento: seguirá usando <span className="font-semibold text-white">{displayMoveName(userPoke.lockedMove)}</span> a la fuerza.
+          </div>
+          <button
+            disabled={busy}
+            onClick={() => handleUserMove(userPoke.moves.find((m) => m.name === userPoke.lockedMove))}
+            className="px-5 py-2.5 rounded-lg font-semibold text-white disabled:opacity-50"
+            style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+          >
+            Continuar atacando
+          </button>
+        </div>
+      ) : !result ? (
         <div>
           <div className="text-xs text-[#8a8fa3] mb-2">Movimientos de {userPoke.name}</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
