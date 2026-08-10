@@ -244,13 +244,25 @@ function statusPreMoveCheck(poke, turns) {
       return false;
     }
   } else if (poke.status === "sleep") {
-    poke.sleepTurns -= 1;
-    if (poke.sleepTurns <= 0) {
-      poke.status = null;
-      turns.push({ type: "statusText", text: `${poke.name} se ha despertado` });
-    } else {
-      turns.push({ type: "statusText", text: `${poke.name} está dormido` });
+    // El turno en el que el Pokémon se queda dormido (golpeado por el
+    // rival) no cuenta como un turno de sueño "perdido": si a este Pokémon
+    // le toca actuar dentro del mismo resolveTurn en que se durmió, pierde
+    // el turno sin gastar contador (se consume abajo, en resolveTurn, si
+    // no se usa aquí). A partir de su siguiente turno real, se comprueba
+    // el contador ANTES de decrementar para que un valor de 1-3 turnos
+    // produzca exactamente esa cantidad de turnos dormido, ni uno menos.
+    if (poke.justFellAsleep) {
+      turns.push({ type: "statusText", text: `${poke.name} está profundamente dormido y no puede atacar` });
       return false;
+    }
+    if (poke.sleepTurns > 0) {
+      poke.sleepTurns -= 1;
+      turns.push({ type: "statusText", text: `${poke.name} está profundamente dormido y no puede atacar` });
+      return false;
+    } else {
+      poke.status = null;
+      poke.sleepTurns = 0;
+      turns.push({ type: "statusText", text: `¡${poke.name} se ha despertado!` });
     }
   } else if (poke.status === "paralysis") {
     if (Math.random() < 0.25) {
@@ -309,7 +321,10 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
         }
       } else if (AILMENT_APPLY_TEXT[move.ailmentName] && !target.status) {
         target.status = move.ailmentName;
-        if (move.ailmentName === "sleep") target.sleepTurns = 1 + Math.floor(Math.random() * 3);
+        if (move.ailmentName === "sleep") {
+          target.sleepTurns = 1 + Math.floor(Math.random() * 3);
+          target.justFellAsleep = true;
+        }
         events.push({ type: "statusText", text: `${target.name} ${AILMENT_APPLY_TEXT[move.ailmentName]}`, inline: false });
       }
     }
@@ -763,6 +778,13 @@ function useApiCache() {
       if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
     }
 
+    // La exención de "me acabo de dormir" solo vale para un posible chequeo
+    // dentro de este mismo turno (si el Pokémon actúa en segundo lugar);
+    // si no se consumió aquí, se limpia igualmente para que su próximo
+    // turno real sí cuente como el primer turno dormido.
+    pa.justFellAsleep = false;
+    pb.justFellAsleep = false;
+
     return turns;
   }, [executeMove]);
 
@@ -788,7 +810,7 @@ function useApiCache() {
     const maxHp = Math.floor(((2 * baseHp + 31) * 50) / 100) + 60;
     return {
       ...base, moves, maxHp, hp: maxHp,
-      status: null, sleepTurns: 0, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
+      status: null, sleepTurns: 0, justFellAsleep: false, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
       lockedMove: null, lockedTurnsRemaining: 0,
       statStages: { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 },
     };
