@@ -166,9 +166,14 @@ function getEffectiveAccuracy(attacker, defender, move) {
   return baseAcc * accuracyStageMultiplier(stage);
 }
 
-function getEffectiveStat(poke, key) {
+// `stageClamp` opcional: transforma el stage antes de aplicar el
+// multiplicador. Se usa en golpes críticos para ignorar bajadas propias de
+// Ataque/Ataque Especial (Math.max(0, stage)) o subidas de Defensa/Defensa
+// Especial del rival (Math.min(0, stage)), sin tocar el resto de casos.
+function getEffectiveStat(poke, key, stageClamp) {
   const base = poke.stats[key] ?? 70;
-  const stage = poke.statStages?.[key] ?? 0;
+  let stage = poke.statStages?.[key] ?? 0;
+  if (stageClamp) stage = stageClamp(stage);
   return base * statStageMultiplier(stage);
 }
 
@@ -556,15 +561,28 @@ function useApiCache() {
       const ratio = getEffectiveSpeed(attacker) / Math.max(1, getEffectiveSpeed(defender));
       power = ratio >= 4 ? 150 : ratio >= 3 ? 120 : ratio >= 2 ? 80 : ratio >= 1 ? 60 : 40;
     }
-    let atkStat = move.damageClass === "special" ? getEffectiveStat(attacker, "special-attack") : getEffectiveStat(attacker, "attack");
+
+    // El crítico se decide antes de leer los stages: ignora bajadas propias
+    // de Ataque/Ataque Especial (nunca peor que stage 0) y subidas de
+    // Defensa/Defensa Especial del rival (nunca mejor que stage 0), pero
+    // conserva subidas propias y bajadas del rival tal cual. Sin crítico,
+    // los stages se usan reales sin ningún clamp especial.
+    const isCrit = Math.random() < 1 / 24;
+    const atkStageClamp = isCrit ? (s) => Math.max(0, s) : undefined;
+    const defStageClamp = isCrit ? (s) => Math.min(0, s) : undefined;
+
+    let atkStat = move.damageClass === "special"
+      ? getEffectiveStat(attacker, "special-attack", atkStageClamp)
+      : getEffectiveStat(attacker, "attack", atkStageClamp);
     if (move.damageClass === "physical" && attacker.status === "burn") atkStat *= 0.5;
-    const defStat = move.damageClass === "special" ? getEffectiveStat(defender, "special-defense") : getEffectiveStat(defender, "defense");
+    const defStat = move.damageClass === "special"
+      ? getEffectiveStat(defender, "special-defense", defStageClamp)
+      : getEffectiveStat(defender, "defense", defStageClamp);
     const levelFactor = Math.floor((2 * 50) / 5 + 2);
     let base = Math.floor((levelFactor * power * atkStat) / defStat / 50);
     base = Math.floor(base + 2);
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
     const mult = await typeMultiplier([move.type], defender.types);
-    const isCrit = Math.random() < 1 / 24;
     const critMult = isCrit ? 1.5 : 1;
     const rand = 0.85 + Math.random() * 0.15;
     let damage = Math.floor(base * stab * mult * critMult * rand);
