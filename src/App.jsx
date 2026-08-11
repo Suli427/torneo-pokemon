@@ -541,11 +541,20 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
     events.push({ type: "statusText", text: `No afectó a ${defender.name} (inmune)`, inline: false });
     return events;
   }
-  if (targetsOpponent && defenderFainted) {
-    return events;
-  }
 
-  if (move.ailmentName && move.ailmentName !== "none") {
+  // Si el golpe debilitó al rival, no tiene sentido aplicarle ailments (no
+  // se puede paralizar/quemar/confundir algo ya fuera de combate) — pero
+  // eso NO debe tocar los efectos que van sobre el PROPIO atacante: la
+  // bajada de stat de Combate Cercano, Proeza, Meteoro Dragón... (o la
+  // curación por drenaje de Come Sueños/Giga Drain) ocurre por el mero
+  // hecho de haber atacado, sea o no letal para el rival. Por eso este
+  // "saltar si se debilitó" solo se aplica al bloque de ailment (que va
+  // sobre `target`, el rival salvo en movimientos realmente selfTargeted);
+  // los stat_changes se filtran uno a uno más abajo, según a quién vaya
+  // cada uno en concreto.
+  const skipAilment = targetsOpponent && defenderFainted;
+
+  if (!skipAilment && move.ailmentName && move.ailmentName !== "none") {
     const chance = move.ailmentChance > 0 ? move.ailmentChance : (isStatusMove ? 100 : 0);
     if (chance > 0 && Math.random() * 100 < chance) {
       if (move.ailmentName === "confusion") {
@@ -588,6 +597,11 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
         // Cercano, Proeza, Meteoro Dragón...), que bajan una stat propia
         // como coste pese a dañar al rival.
         const scTarget = (!isStatusMove && (sc.change > 0 || DAMAGE_MOVE_SELF_STAT_CHANGES.has(move.name))) ? attacker : target;
+        // Igual que con el ailment: si este cambio concreto va sobre el
+        // rival y ya quedó debilitado por el golpe, se omite; si va sobre
+        // el propio atacante, se aplica siempre (el rival esté o no
+        // debilitado no cambia nada sobre lo que le pasa a quien atacó).
+        if (scTarget !== attacker && defenderFainted) continue;
         if (!(sc.stat in scTarget.statStages)) continue;
         const before = scTarget.statStages[sc.stat];
         const after = Math.max(-6, Math.min(6, before + sc.change));
@@ -1199,10 +1213,17 @@ function useApiCache() {
         effectText: inlineEffect,
         hitCount: result.hitCount,
       });
-      turns.push(...extraEvents);
+      // El debilitamiento del rival se anota justo después del golpe, antes
+      // que cualquier evento adicional (bajada de stat propia, drenaje,
+      // retroceso...): en este punto, si el rival se debilitó, los únicos
+      // extraEvents que quedan son los que afectan al propio atacante (los
+      // que iban dirigidos al rival ya se omiten en ese caso), así que el
+      // orden natural es "impacta → el rival cae → el atacante asume las
+      // consecuencias de haber atacado".
       if (defender.hp <= 0) {
         turns.push({ type: "faint", pokemon: defender.name });
       }
+      turns.push(...extraEvents);
     }
 
     applyResidualStatusDamage(pa, turns);
@@ -1274,8 +1295,11 @@ function useApiCache() {
         effectText: inlineEffect,
         hitCount: result.hitCount,
       });
-      turns.push(...extraEvents);
+      // Mismo orden que en resolveTurn: el debilitamiento del objetivo se
+      // anota antes que los efectos adicionales que le queden al que
+      // atacó (bajada de stat propia, retroceso...).
       if (target.hp <= 0) turns.push({ type: "faint", pokemon: target.name });
+      turns.push(...extraEvents);
     };
 
     // Persecución contra el Pokémon que se está cambiando: golpea antes de
