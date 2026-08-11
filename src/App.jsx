@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2 } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check } from "lucide-react";
 import { ANIME_MOVESETS, DEFAULT_MOVES_BY_TYPE } from "./animeMovesets";
+import { GACHA_POOL } from "./gachaPool";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -76,6 +77,35 @@ function loadStoredPurchasedTrainers() {
   return [];
 }
 
+const COLLECTION_STORAGE_KEY = "liga-pokemon:collection";
+const CUSTOM_TRAINER_STORAGE_KEY = "liga-pokemon:custom-trainer";
+
+// Colección de Pokémon conseguidos en el gacha: [{ slug, moves: [4 nombres],
+// obtainedAt, shiny }]. Mismo patrón try/catch que coins/purchasedTrainers.
+function loadStoredCollection() {
+  try {
+    const raw = localStorage.getItem(COLLECTION_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return [];
+}
+
+// Entrenador propio del usuario: { name, team: [6 slugs] } o null si aún no
+// se ha creado. Solo puede existir uno.
+function loadStoredCustomTrainer() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_TRAINER_STORAGE_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj.name === "string" && Array.isArray(obj.team) && obj.team.length === 6) return obj;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return null;
+}
+
 const NAME_OVERRIDES = { sirfetchd: "Sirfetch'd", "mr-rime": "Mr. Rime", "gourgeist-average": "Gourgeist", "aegislash-shield": "Aegislash" };
 function displayName(slug) {
   return NAME_OVERRIDES[slug] || slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
@@ -100,13 +130,67 @@ const VERSION_GROUP_ORDER = [
   "scarlet-violet",
 ];
 
-const GACHA_RARITIES = [
-  { label: "Común", chance: "50%", color: "#9aa0ad" },
-  { label: "Poco común", chance: "27%", color: "#5fae5f" },
-  { label: "Raro", chance: "14%", color: "#4a90d9" },
-  { label: "Épico", chance: "7%", color: "#a75fd9" },
-  { label: "Legendario", chance: "2%", color: "#e3b23c" },
-];
+// Las 6 rarezas del gacha de Pokémon (src/gachaPool.js), en orden de menos a
+// más rara. `chance` son las probabilidades de sorteo (deben sumar 100 y
+// son las mismas tanto en el gacha general como en cualquier gacha de tipo).
+const RARITY_ORDER = ["common", "uncommon", "rare", "epic", "pseudo-legendary", "legendary"];
+const RARITY_META = {
+  common: { label: "Común", chance: 45, color: "#9aa0ad" },
+  uncommon: { label: "Poco común", chance: 25, color: "#5fae5f" },
+  rare: { label: "Raro", chance: 15, color: "#4a90d9" },
+  epic: { label: "Épico", chance: 8, color: "#a75fd9" },
+  "pseudo-legendary": { label: "Pseudolegendario", chance: 5, color: "#e3701e" },
+  legendary: { label: "Legendario", chance: 2, color: "#e3b23c" },
+};
+
+// Reembolso en monedas cuando la tirada saca un Pokémon repetido, según la
+// rareza obtenida y el tipo de gacha (el de tipo cuesta más por tirada, así
+// que reembolsa más).
+const GENERAL_GACHA_COST = 500;
+const TYPE_GACHA_COST = 700;
+const GENERAL_GACHA_REFUND = { common: 100, uncommon: 150, rare: 300, epic: 500, "pseudo-legendary": 700, legendary: 1000 };
+const TYPE_GACHA_REFUND = { common: 140, uncommon: 210, rare: 420, epic: 700, "pseudo-legendary": 980, legendary: 1400 };
+
+// Probabilidad de que un Pokémon NUEVO (no repetido) salga en su variante
+// shiny, tirada aparte e independiente del sorteo de rareza/especie.
+const SHINY_CHANCE = 0.01;
+
+const ALL_TYPES = ["normal", "fire", "water", "electric", "grass", "ice", "fighting", "poison", "ground", "flying", "psychic", "bug", "rock", "ghost", "dragon", "dark", "steel", "fairy"];
+
+// Sortea una rareza entre `rarities` (subconjunto de RARITY_ORDER),
+// respetando el peso relativo de RARITY_META.chance entre ellas.
+function rollRarityAmong(rarities) {
+  const total = rarities.reduce((sum, r) => sum + RARITY_META[r].chance, 0);
+  let roll = Math.random() * total;
+  for (const r of rarities) {
+    roll -= RARITY_META[r].chance;
+    if (roll < 0) return r;
+  }
+  return rarities[rarities.length - 1];
+}
+
+// Resuelve una tirada completa de gacha sobre `pool` (el general completo, o
+// uno ya filtrado por tipo): sortea una rareza entre las 6 con sus
+// probabilidades reales, y si esa rareza no tiene ningún candidato en este
+// pool concreto, la descarta y vuelve a sortear entre las que quedan (con
+// las probabilidades de esas restantes), hasta encontrar una con al menos
+// un Pokémon disponible. Devuelve también qué rarezas tuvo que descartar,
+// para poder avisar de ello en la interfaz.
+function rollGachaPokemon(pool) {
+  let remaining = [...RARITY_ORDER];
+  const emptyRarities = [];
+  while (remaining.length > 0) {
+    const rarity = rollRarityAmong(remaining);
+    const candidates = pool.filter((p) => p.rarity === rarity);
+    if (candidates.length > 0) {
+      const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+      return { chosen, rarity, emptyRarities };
+    }
+    emptyRarities.push(rarity);
+    remaining = remaining.filter((r) => r !== rarity);
+  }
+  return null;
+}
 
 const ACHIEVEMENTS = [
   "Primera victoria", "Racha de 3", "Campeón de Liga", "Equipo perfecto",
@@ -714,6 +798,7 @@ function useApiCache() {
   const typeCache = useRef({});
   const moveCache = useRef({});
   const movesetCache = useRef({});
+  const learnableMovesCache = useRef({});
 
   const getPokemon = useCallback(async (slug) => {
     if (pokeCache.current[slug]) return pokeCache.current[slug];
@@ -728,6 +813,7 @@ function useApiCache() {
         types: data.types.map((t) => t.type.name),
         stats,
         sprite: data.sprites?.other?.["official-artwork"]?.front_default || data.sprites?.front_default || null,
+        shinySprite: data.sprites?.other?.["official-artwork"]?.front_shiny || data.sprites?.front_shiny || null,
       };
       pokeCache.current[slug] = entry;
       return entry;
@@ -735,7 +821,7 @@ function useApiCache() {
       const fallback = {
         slug, name: displayName(slug), types: ["normal"],
         stats: { hp: 70, attack: 70, defense: 70, "special-attack": 70, "special-defense": 70, speed: 70 },
-        sprite: null,
+        sprite: null, shinySprite: null,
       };
       pokeCache.current[slug] = fallback;
       return fallback;
@@ -843,6 +929,69 @@ function useApiCache() {
     movesetCache.current[cacheKey] = moves;
     return moves;
   }, [getPokemon, getMove]);
+
+  // Precarga movesetCache para trainerId:slug con un moveset YA decidido de
+  // antemano (los 4 movimientos ya asignados en la colección de gacha al
+  // capturar ese Pokémon), sin pasar por ANIME_MOVESETS/DEFAULT_MOVES_BY_TYPE.
+  // Se usa para que el entrenador propio combata con el moveset que ya tiene
+  // cada Pokémon en la colección, sin tocar getMoveset ni el resto del motor
+  // de combate: getMoveset ya devuelve directamente de caché si la entrada
+  // existe, así que basta con rellenarla antes de que empiece el combate.
+  const primeMoveset = useCallback(async (trainerId, slug, moveNames) => {
+    const cacheKey = `${trainerId}:${slug}`;
+    const moves = await Promise.all(moveNames.map((n) => getMove(n)));
+    movesetCache.current[cacheKey] = moves;
+  }, [getMove]);
+
+  // Nombres de movimientos que una especie puede aprender realmente según
+  // /pokemon/{slug} (level-up, huevo, tutor o MT/MO), para el moveset
+  // aleatorio del gacha (a diferencia de getMoveset, que usa el moveset fijo
+  // del anime o el genérico por tipo). Se cachea aparte, por especie.
+  const getLearnableMoveNames = useCallback(async (slug) => {
+    if (learnableMovesCache.current[slug]) return learnableMovesCache.current[slug];
+    const validMethods = new Set(["level-up", "egg", "tutor", "machine"]);
+    try {
+      const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
+      const data = await res.json();
+      const names = [...new Set(
+        (data.moves || [])
+          .filter((m) => m.version_group_details.some((d) => validMethods.has(d.move_learn_method.name)))
+          .map((m) => m.move.name)
+      )];
+      learnableMovesCache.current[slug] = names;
+      return names;
+    } catch (e) {
+      learnableMovesCache.current[slug] = [];
+      return [];
+    }
+  }, []);
+
+  // Moveset aleatorio pero aprendible de verdad para un Pokémon nuevo del
+  // gacha: 4 movimientos al azar de entre los que la especie puede aprender,
+  // priorizando que al menos 2 sean de daño real (para que el Pokémon no
+  // quede inservible en combate); si el pool aprendible es muy reducido,
+  // completa con Tackle/Struggle igual que getMoveset.
+  const assignRandomMoveset = useCallback(async (slug) => {
+    const names = await getLearnableMoveNames(slug);
+    const shuffled = [...names].sort(() => Math.random() - 0.5);
+    const resolved = await Promise.all(shuffled.slice(0, 40).map((n) => getMove(n)));
+    const isDamaging = (m) => m.damageClass !== "status" && (m.power || m.specialDamage || m.isOHKO);
+    const damaging = resolved.filter(isDamaging);
+    const others = resolved.filter((m) => !isDamaging(m));
+
+    const chosen = [];
+    // Al menos 2 de daño real, si el pool aprendible los tiene.
+    chosen.push(...damaging.slice(0, 2));
+    const rest = [...damaging.slice(2), ...others].sort(() => Math.random() - 0.5);
+    for (const m of rest) {
+      if (chosen.length >= 4) break;
+      if (!chosen.some((c) => c.name === m.name)) chosen.push(m);
+    }
+    while (chosen.length < 4) {
+      chosen.push(await getMove(chosen.length === 3 ? "tackle" : "struggle"));
+    }
+    return chosen.slice(0, 4).map((m) => m.name);
+  }, [getLearnableMoveNames, getMove]);
 
   // Fórmula de daño oficial simplificada a nivel 50 para ambos combatientes.
   // Usa stats efectivos (stages -6..+6) y aplica la quemadura (mitad de
@@ -1423,7 +1572,7 @@ function useApiCache() {
     return pokes;
   }, [getPokemon, getType, getMoveset]);
 
-  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, typeMultiplier };
+  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, typeMultiplier, assignRandomMoveset, primeMoveset };
 }
 
 /* ---------------------------------------------------------------
@@ -2093,9 +2242,17 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   );
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
+  // El torneo está diseñado para exactamente 8 participantes fijos (usuario
+  // + 7 CPU); el entrenador propio nunca se añade como un 9º, sino que
+  // sustituye a Ash (el mismo que el usuario tendría preseleccionado por
+  // defecto si no tuviera uno propio) SOLO cuando decide jugar con él. Ver
+  // `effectiveTrainers` más abajo: el id "ash" se mantiene igual en todo
+  // momento para no tocar la lógica de emparejamientos ni la clasificación,
+  // solo cambia qué nombre/equipo resuelve ese id concreto.
+  const [playAsCustom, setPlayAsCustom] = useState(false);
   const [pairMode, setPairMode] = useState("position");
   const [standings, setStandings] = useState([]);
   const [round, setRound] = useState(0);
@@ -2111,14 +2268,34 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
     setExpandedMatches((e) => ({ ...e, [key]: !e[key] }));
   }
 
+  // Lista real de 8 (para el selector de entrenador): siempre la original,
+  // nunca reskinada, para poder seguir eligiendo tanto al Ash real como,
+  // aparte, "Mi entrenador" si existe uno propio.
   const unlockedTrainers = TRAINERS.filter((t) => isTrainerUnlocked(t, purchasedTrainerIds));
+  // Lista efectiva usada para TODA la simulación/emparejamiento/clasificación:
+  // idéntica a TRAINERS salvo que, si el usuario ha elegido jugar con su
+  // entrenador propio, el slot de Ash pasa a resolver su nombre y equipo en
+  // su lugar (mismo id, misma posición, mismo criterio de emparejamiento).
+  const effectiveTrainers = (playAsCustom && customTrainer)
+    ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team, subtitle: "Tu entrenador" } : t)
+    : TRAINERS;
 
   async function startTournament() {
     setPhase("loading");
     setError(null);
     try {
       await api.preloadAll();
-      let order = TRAINERS.map((t) => t.id);
+      // El entrenador propio no usa ANIME_MOVESETS/DEFAULT_MOVES_BY_TYPE: se
+      // precarga movesetCache con los movimientos que cada Pokémon ya tiene
+      // asignados en la colección de gacha, bajo el mismo id "ash" que va a
+      // usar la simulación, para que combata con SU moveset real.
+      if (playAsCustom && customTrainer) {
+        await Promise.all(customTrainer.team.map((slug) => {
+          const entry = collection.find((c) => c.slug === slug);
+          return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
+        }));
+      }
+      let order = effectiveTrainers.map((t) => t.id);
       if (pairMode === "random") {
         order = [...order];
         for (let i = order.length - 1; i > 0; i--) {
@@ -2174,8 +2351,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
 
     await Promise.all(pairs.map(async ([pA, pB], idx) => {
       if (idx === userPairIdx) return;
-      const trainerA = TRAINERS.find((t) => t.id === pA.id);
-      const trainerB = TRAINERS.find((t) => t.id === pB.id);
+      const trainerA = effectiveTrainers.find((t) => t.id === pA.id);
+      const trainerB = effectiveTrainers.find((t) => t.id === pB.id);
       const res = await api.simulateMatch(trainerA, trainerB);
       results[idx] = { a: trainerA, b: trainerB, ...res };
     }));
@@ -2186,8 +2363,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
     }
 
     const [pA, pB] = pairs[userPairIdx];
-    const trainerA = TRAINERS.find((t) => t.id === pA.id);
-    const trainerB = TRAINERS.find((t) => t.id === pB.id);
+    const trainerA = effectiveTrainers.find((t) => t.id === pA.id);
+    const trainerB = effectiveTrainers.find((t) => t.id === pB.id);
     setPendingRoundResults(results);
     setInteractiveMatch({
       trainerA, trainerB,
@@ -2216,7 +2393,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
     setTournamentReward(null);
   }
 
-  const trainerById = (id) => TRAINERS.find((t) => t.id === id);
+  const trainerById = (id) => effectiveTrainers.find((t) => t.id === id);
 
   return (
     <div className="space-y-6">
@@ -2232,11 +2409,11 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
             {unlockedTrainers.map((t) => (
               <button
                 key={t.id}
-                onClick={() => setUserTrainerId(t.id)}
+                onClick={() => { setUserTrainerId(t.id); setPlayAsCustom(false); }}
                 className="rounded-xl p-4 text-left transition-all"
                 style={{
-                  background: userTrainerId === t.id ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
-                  border: userTrainerId === t.id ? `1.5px solid ${t.color}` : "1px solid #262a3a",
+                  background: (userTrainerId === t.id && !playAsCustom) ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
+                  border: (userTrainerId === t.id && !playAsCustom) ? `1.5px solid ${t.color}` : "1px solid #262a3a",
                 }}
               >
                 <div className="w-9 h-9 rounded-full flex items-center justify-center font-display text-sm mb-2"
@@ -2247,6 +2424,23 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds }) {
                 <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
               </button>
             ))}
+            {customTrainer && (
+              <button
+                onClick={() => { setUserTrainerId("ash"); setPlayAsCustom(true); }}
+                className="rounded-xl p-4 text-left transition-all"
+                style={{
+                  background: playAsCustom ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
+                  border: playAsCustom ? "1.5px solid #2ecc71" : "1px solid #262a3a",
+                }}
+              >
+                <div className="w-9 h-9 rounded-full flex items-center justify-center font-display text-sm mb-2"
+                     style={{ background: "#2ecc7133", color: "#2ecc71" }}>
+                  {customTrainer.name[0]}
+                </div>
+                <div className="text-white font-semibold text-sm">{customTrainer.name}</div>
+                <div className="text-[11px] text-[#8a8fa3]">Tu entrenador</div>
+              </button>
+            )}
           </div>
 
           <div>
@@ -2481,10 +2675,118 @@ function PurchaseTrainerModal({ trainer, coins, successName, onConfirm, onClose 
   );
 }
 
-function PersonajesTab({ api, onSoon, coins, purchasedTrainerIds, onPurchase }) {
+const CUSTOM_TRAINER_MIN_POKEMON = 6;
+
+// Modal de creación del entrenador propio: nombre + selector de exactamente
+// 6 Pokémon de la colección de gacha. Si el usuario tiene justo 6, se
+// preseleccionan automáticamente; si tiene más, elige cuáles quiere.
+function CreateTrainerModal({ open, collection, api, onCreate, onClose }) {
+  const [name, setName] = useState("");
+  const [selected, setSelected] = useState([]);
+  const [sprites, setSprites] = useState({});
+
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setSelected(collection.length === CUSTOM_TRAINER_MIN_POKEMON ? collection.map((c) => c.slug) : []);
+  }, [open, collection]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      for (const c of collection) {
+        const p = await api.getPokemon(c.slug);
+        if (!cancelled) setSprites((s) => ({ ...s, [c.slug]: p }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, collection, api]);
+
+  if (!open) return null;
+
+  function toggle(slug) {
+    setSelected((sel) => {
+      if (sel.includes(slug)) return sel.filter((s) => s !== slug);
+      if (sel.length >= CUSTOM_TRAINER_MIN_POKEMON) return sel;
+      return [...sel, slug];
+    });
+  }
+
+  const trimmedName = name.trim();
+  const canConfirm = trimmedName.length > 0 && trimmedName.length <= 20 && selected.length === CUSTOM_TRAINER_MIN_POKEMON;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-lg w-full rounded-2xl p-6 max-h-[85vh] overflow-y-auto"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+          <X size={18} />
+        </button>
+        <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2"><Sparkles size={20} color="#e3350d" /> Crea tu propio entrenador</h3>
+        <p className="text-sm text-[#9aa0b4] mb-4">Elige tu nombre y exactamente 6 Pokémon de tu colección. Una vez creado, no podrás editarlo.</p>
+
+        <label className="block text-xs font-semibold text-[#8a8fa3] mb-1.5">Nombre del entrenador</label>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value.slice(0, 20))}
+          placeholder="Ej. Rojo"
+          maxLength={20}
+          className="w-full mb-4 px-3 py-2 rounded-lg text-sm text-white outline-none"
+          style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+        />
+
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-xs font-semibold text-[#8a8fa3]">Elige 6 Pokémon</label>
+          <span className="text-xs font-semibold" style={{ color: selected.length === CUSTOM_TRAINER_MIN_POKEMON ? "#5fae5f" : "#8a8fa3" }}>
+            {selected.length} / {CUSTOM_TRAINER_MIN_POKEMON}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
+          {collection.map((c) => {
+            const p = sprites[c.slug];
+            const isSelected = selected.includes(c.slug);
+            const disabled = !isSelected && selected.length >= CUSTOM_TRAINER_MIN_POKEMON;
+            return (
+              <button
+                key={c.slug}
+                onClick={() => toggle(c.slug)}
+                disabled={disabled}
+                className="rounded-lg p-2 text-left flex items-center gap-2 disabled:opacity-40"
+                style={{ background: isSelected ? "#e3350d1e" : "#14161f", border: isSelected ? "1.5px solid #e3350d" : "1px solid #262a3a" }}
+              >
+                {p?.sprite ? <img src={p.sprite} alt={p.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                <div className="min-w-0">
+                  <div className="text-white text-xs font-semibold truncate">{p?.name || displayName(c.slug)}</div>
+                  <div className="flex gap-0.5 flex-wrap">{(p?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
+                </div>
+                {isSelected && <Check size={14} color="#5fae5f" className="ml-auto shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          onClick={() => canConfirm && onCreate(trimmedName, selected)}
+          disabled={!canConfirm}
+          className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          Crear entrenador
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer }) {
   const [sprites, setSprites] = useState({});
   const [confirmTrainer, setConfirmTrainer] = useState(null);
   const [successName, setSuccessName] = useState(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2495,10 +2797,21 @@ function PersonajesTab({ api, onSoon, coins, purchasedTrainerIds, onPurchase }) 
           if (!cancelled) setSprites((s) => ({ ...s, [slug]: p }));
         }
       }
+      if (customTrainer) {
+        for (const slug of customTrainer.team) {
+          const p = await api.getPokemon(slug);
+          if (!cancelled) setSprites((s) => ({ ...s, [slug]: p }));
+        }
+      }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [purchasedTrainerIds]);
+  }, [purchasedTrainerIds, customTrainer]);
+
+  function handleCreateTrainer(name, slugs) {
+    onCreateCustomTrainer(name, slugs);
+    setShowCreateModal(false);
+  }
 
   function handleConfirmPurchase() {
     if (!confirmTrainer) return;
@@ -2561,11 +2874,53 @@ function PersonajesTab({ api, onSoon, coins, purchasedTrainerIds, onPurchase }) 
         })}
       </div>
 
-      <button onClick={() => onSoon("Crea tu propio entrenador")} className="w-full rounded-xl p-5 text-left" style={{ background: "#14161f", border: "1px dashed #3a3f57" }}>
-        <Sparkles size={20} color="#e3350d" className="mb-2" />
-        <div className="text-white font-semibold">Crea tu propio entrenador</div>
-        <div className="text-xs text-[#8a8fa3] mt-1">Diseña tu personaje y arma tu propio equipo Pokémon.</div>
-      </button>
+      {customTrainer ? (
+        <div className="w-full rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg" style={{ background: "#2ecc7133", color: "#2ecc71" }}>{customTrainer.name[0]}</div>
+            <div>
+              <div className="text-white font-semibold flex items-center gap-2">
+                {customTrainer.name}
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
+              </div>
+              <div className="text-[11px] text-[#8a8fa3]">Creado a partir de tu colección de gacha</div>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {customTrainer.team.map((slug) => {
+              const p = sprites[slug];
+              return (
+                <div key={slug} className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: "1px solid #22263a" }} title={displayName(slug)}>
+                  {p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => collection.length >= CUSTOM_TRAINER_MIN_POKEMON && setShowCreateModal(true)}
+          disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
+          className="w-full rounded-xl p-5 text-left disabled:opacity-60 disabled:cursor-not-allowed"
+          style={{ background: "#14161f", border: "1px dashed #3a3f57" }}
+        >
+          <Sparkles size={20} color="#e3350d" className="mb-2" />
+          <div className="text-white font-semibold">Crea tu propio entrenador</div>
+          <div className="text-xs text-[#8a8fa3] mt-1">
+            {collection.length >= CUSTOM_TRAINER_MIN_POKEMON
+              ? "Diseña tu personaje y arma tu propio equipo Pokémon."
+              : `Necesitas ${CUSTOM_TRAINER_MIN_POKEMON} Pokémon del gacha · te faltan ${CUSTOM_TRAINER_MIN_POKEMON - collection.length}`}
+          </div>
+        </button>
+      )}
+
+      <CreateTrainerModal
+        open={showCreateModal}
+        collection={collection}
+        api={api}
+        onCreate={handleCreateTrainer}
+        onClose={() => setShowCreateModal(false)}
+      />
 
       <PurchaseTrainerModal
         trainer={confirmTrainer}
@@ -2582,7 +2937,139 @@ function PersonajesTab({ api, onSoon, coins, purchasedTrainerIds, onPurchase }) 
    TAB: GATCHA
 --------------------------------------------------------------- */
 
-function GatchaTab({ onSoon }) {
+// Tarjeta de resultado de una tirada de gacha: nuevo Pokémon (con posible
+// celebración shiny) o repetido (con el reembolso obtenido). Si alguna
+// rareza se descartó por no tener candidatos en este pool, lo avisa también.
+function GachaResultModal({ result, onClose }) {
+  if (!result) return null;
+  const meta = RARITY_META[result.rarity];
+  const isNewShiny = !result.repeat && result.shiny;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
+        style={{
+          background: isNewShiny ? "linear-gradient(160deg,#3a3312,#12141d)" : "linear-gradient(160deg,#1b1e2b,#12141d)",
+          border: isNewShiny ? "1px solid #f2b705" : "1px solid #2c2f42",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+          <X size={18} />
+        </button>
+
+        {result.emptyRarities.length > 0 && (
+          <div className="mb-3 text-[11px] text-[#f2b705] bg-[#f2b70518] border border-[#f2b70544] rounded-lg p-2">
+            {result.emptyRarities.map((r) => RARITY_META[r].label).join(", ")}: sin Pokémon disponibles en este gacha, se ha vuelto a sortear.
+          </div>
+        )}
+
+        {result.sprite && (
+          <img
+            src={result.sprite}
+            alt={result.name}
+            className="w-28 h-28 object-contain mx-auto mb-2"
+            style={isNewShiny ? { filter: "drop-shadow(0 0 10px #f2b705aa)" } : undefined}
+          />
+        )}
+
+        {isNewShiny ? (
+          <h3 className="font-display text-xl mb-1" style={{ color: "#f2b705" }}>¡✨ Has conseguido un {result.name} SHINY! ✨</h3>
+        ) : result.repeat ? (
+          <h3 className="font-display text-xl text-white mb-1">Ya tenías a {result.name}</h3>
+        ) : (
+          <h3 className="font-display text-xl text-white mb-1">¡Has conseguido a {result.name}!</h3>
+        )}
+
+        <div className="flex justify-center mb-3">
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide" style={{ background: meta.color + "26", color: meta.color, border: `1px solid ${meta.color}66` }}>
+            {meta.label}
+          </span>
+        </div>
+
+        {result.repeat ? (
+          <p className="text-sm text-[#9aa0b4] leading-relaxed">
+            Como repetido, se te reembolsan <span className="text-[#f2b705] font-bold">{result.refund}</span> monedas de torneo.
+          </p>
+        ) : (
+          <p className="text-sm text-[#9aa0b4] leading-relaxed">Se ha añadido a tu colección en la tab Pokémon, con 4 movimientos aprendibles.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Panel de una rareza dentro del desglose de un gacha concreto: probabilidad
+// fija y cuántos Pokémon de esa rareza quedan por descubrir en ESTE pool
+// (general o de un tipo), recalculado cada vez que cambia la colección.
+function RarityProgressCard({ rarity, pool, collection }) {
+  const meta = RARITY_META[rarity];
+  const candidates = pool.filter((p) => p.rarity === rarity);
+  const owned = candidates.filter((p) => collection.some((c) => c.slug === p.slug)).length;
+  const complete = candidates.length > 0 && owned >= candidates.length;
+  return (
+    <div className="rounded-lg p-2.5 text-center" style={{ background: meta.color + "1a", border: `1px solid ${meta.color}44` }}>
+      <div className="text-[11px] font-semibold" style={{ color: meta.color }}>{meta.label}</div>
+      <div className="text-lg font-display text-white">{meta.chance}%</div>
+      <div className="text-[10px] text-[#8a8fa3] mt-0.5">
+        {candidates.length === 0 ? "Sin candidatos" : complete ? "¡Completado!" : `${owned} de ${candidates.length} por descubrir`}
+      </div>
+    </div>
+  );
+}
+
+function GatchaTab({ api, coins, setCoins, collection, setCollection }) {
+  const [selectedType, setSelectedType] = useState(null); // null = gacha general
+  const [showAllTypes, setShowAllTypes] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  const pool = selectedType ? GACHA_POOL.filter((p) => p.types.includes(selectedType)) : GACHA_POOL;
+  const cost = selectedType ? TYPE_GACHA_COST : GENERAL_GACHA_COST;
+  const refundTable = selectedType ? TYPE_GACHA_REFUND : GENERAL_GACHA_REFUND;
+
+  async function handleDraw() {
+    if (drawing || coins < cost) return;
+    setError(null);
+    setDrawing(true);
+    try {
+      const roll = rollGachaPokemon(pool);
+      if (!roll) {
+        setError("Este gacha no tiene ningún Pokémon disponible.");
+        setDrawing(false);
+        return;
+      }
+      const { chosen, rarity, emptyRarities } = roll;
+      setCoins((c) => c - cost);
+
+      const alreadyOwned = collection.some((c) => c.slug === chosen.slug);
+      const pokeData = await api.getPokemon(chosen.slug);
+
+      if (alreadyOwned) {
+        const refund = refundTable[rarity];
+        setCoins((c) => c + refund);
+        setResult({ slug: chosen.slug, name: pokeData.name, sprite: pokeData.sprite, rarity, repeat: true, refund, shiny: false, emptyRarities });
+      } else {
+        const moves = await api.assignRandomMoveset(chosen.slug);
+        const shiny = Math.random() < SHINY_CHANCE;
+        setCollection((c) => [...c, { slug: chosen.slug, moves, obtainedAt: Date.now(), shiny }]);
+        setResult({
+          slug: chosen.slug, name: pokeData.name,
+          sprite: shiny ? (pokeData.shinySprite || pokeData.sprite) : pokeData.sprite,
+          rarity, repeat: false, shiny, emptyRarities,
+        });
+      }
+    } catch (e) {
+      setError("No se pudo completar la tirada. Comprueba tu conexión e inténtalo de nuevo.");
+      setCoins((c) => c + cost); // deshace el coste si la tirada no llegó a resolverse
+    }
+    setDrawing(false);
+  }
+
+  const canAfford = coins >= cost;
+  const visibleTypes = showAllTypes ? ALL_TYPES : ALL_TYPES.slice(0, 5);
+
   return (
     <div className="space-y-6">
       <div>
@@ -2592,25 +3079,156 @@ function GatchaTab({ onSoon }) {
 
       <div className="rounded-xl p-5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
         <h3 className="font-display text-lg text-white mb-1">Gacha Pokémon</h3>
-        <p className="text-xs text-[#8a8fa3] mb-4">Un único gacha general con todos los Pokémon, o gachas específicos por tipo elemental. Cada 4 repetidos obtienes automáticamente 1 Pokémon nuevo garantizado.</p>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
-          {GACHA_RARITIES.map((r) => (
-            <div key={r.label} className="rounded-lg p-2.5 text-center" style={{ background: r.color + "1a", border: `1px solid ${r.color}44` }}>
-              <div className="text-[11px] font-semibold" style={{ color: r.color }}>{r.label}</div>
-              <div className="text-lg font-display text-white">{r.chance}</div>
-            </div>
-          ))}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => onSoon("Gacha general")} className="px-4 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}>Gacha general</button>
-          {["fire", "water", "grass", "electric", "dragon"].map((t) => (
-            <button key={t} onClick={() => onSoon(`Gacha de tipo ${TYPE_ES[t]}`)} className="px-3 py-2 rounded-lg text-xs font-semibold" style={{ background: TYPE_COLORS[t] + "22", color: TYPE_COLORS[t], border: `1px solid ${TYPE_COLORS[t]}55` }}>
+        <p className="text-xs text-[#8a8fa3] mb-4">Un único gacha general con todos los Pokémon del pool, o gachas específicos por tipo elemental (más caros, pero con más probabilidad de tocar lo que buscas). Si sale un Pokémon repetido, se reembolsan monedas según su rareza.</p>
+
+        <div className="flex flex-wrap gap-2 mb-4">
+          <button
+            onClick={() => setSelectedType(null)}
+            className="px-4 py-2 rounded-lg text-sm font-semibold"
+            style={{
+              background: !selectedType ? "linear-gradient(135deg,#e3350d,#b8250a)" : "#1c1f2c",
+              color: !selectedType ? "#fff" : "#c7cbdb",
+              border: !selectedType ? "none" : "1px solid #2c2f42",
+            }}
+          >
+            General
+          </button>
+          {visibleTypes.map((t) => (
+            <button
+              key={t}
+              onClick={() => setSelectedType(t)}
+              className="px-3 py-2 rounded-lg text-xs font-semibold"
+              style={{
+                background: selectedType === t ? TYPE_COLORS[t] + "44" : TYPE_COLORS[t] + "22",
+                color: TYPE_COLORS[t],
+                border: selectedType === t ? `1.5px solid ${TYPE_COLORS[t]}` : `1px solid ${TYPE_COLORS[t]}55`,
+              }}
+            >
               {TYPE_ES[t]}
             </button>
           ))}
-          <button onClick={() => onSoon("Más gachas por tipo")} className="px-3 py-2 rounded-lg text-xs font-semibold text-[#8a8fa3]" style={{ background: "#1c1f2c", border: "1px solid #2c2f42" }}>+13 tipos más</button>
+          {!showAllTypes && (
+            <button onClick={() => setShowAllTypes(true)} className="px-3 py-2 rounded-lg text-xs font-semibold text-[#8a8fa3]" style={{ background: "#1c1f2c", border: "1px solid #2c2f42" }}>
+              +{ALL_TYPES.length - visibleTypes.length} tipos más
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+          {RARITY_ORDER.map((r) => (
+            <RarityProgressCard key={r} rarity={r} pool={pool} collection={collection} />
+          ))}
+        </div>
+
+        {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3 mb-3">{error}</div>}
+
+        <button
+          onClick={handleDraw}
+          disabled={drawing || !canAfford}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          {drawing ? <Loader2 className="animate-spin" size={16} /> : <Coins size={16} />}
+          {drawing
+            ? "Tirando..."
+            : canAfford
+              ? `Tirar ${selectedType ? `gacha de ${TYPE_ES[selectedType]}` : "gacha general"} · ${cost} monedas`
+              : `Te faltan ${cost - coins} monedas`}
+        </button>
+      </div>
+
+      <GachaResultModal result={result} onClose={() => setResult(null)} />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------
+   TAB: POKÉMON
+--------------------------------------------------------------- */
+
+function PokemonCard({ entry, api }) {
+  const [poke, setPoke] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const p = await api.getPokemon(entry.slug);
+      if (!cancelled) setPoke(p);
+    })();
+    return () => { cancelled = true; };
+  }, [api, entry.slug]);
+
+  const rarityInfo = GACHA_POOL.find((g) => g.slug === entry.slug);
+  const rarityMeta = rarityInfo ? RARITY_META[rarityInfo.rarity] : null;
+  const sprite = entry.shiny ? (poke?.shinySprite || poke?.sprite) : poke?.sprite;
+
+  return (
+    <div
+      className="rounded-xl p-4 relative overflow-hidden"
+      style={{
+        background: "#14161f",
+        border: entry.shiny ? "1.5px solid #f2b705" : "1px solid #262a3a",
+        boxShadow: entry.shiny ? "0 0 14px #f2b70533" : undefined,
+      }}
+    >
+      {entry.shiny && (
+        <div className="absolute top-2 right-2 flex items-center gap-1 text-[10px] font-bold" style={{ color: "#f2b705" }}>
+          <Star size={12} fill="#f2b705" /> SHINY
+        </div>
+      )}
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-14 h-14 rounded-lg flex items-center justify-center shrink-0" style={{ background: "#0e1018", border: "1px solid #22263a" }}>
+          {sprite ? <img src={sprite} alt={poke?.name} className="w-12 h-12 object-contain" /> : <Loader2 className="animate-spin" size={16} color="#4c5066" />}
+        </div>
+        <div className="min-w-0">
+          <div className="text-white font-semibold text-sm truncate">{poke?.name || displayName(entry.slug)}</div>
+          <div className="flex gap-1 mt-1 flex-wrap">
+            {(poke?.types || rarityInfo?.types || []).map((t) => <TypeBadge key={t} type={t} />)}
+          </div>
         </div>
       </div>
+      {rarityMeta && (
+        <div className="mb-2">
+          <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide" style={{ background: rarityMeta.color + "26", color: rarityMeta.color, border: `1px solid ${rarityMeta.color}66` }}>
+            {rarityMeta.label}
+          </span>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1">
+        {entry.moves.map((m) => (
+          <span key={m} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "#1c1f2c", color: "#9aa0b4", border: "1px solid #262a3a" }}>
+            {displayMoveName(m)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PokemonTab({ api, collection, onGoToGatcha }) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Boxes size={22} color="#e3350d" /> Pokémon</h2>
+        <p className="text-sm text-[#9aa0b4]">Tu colección de Pokémon conseguidos en el gacha ({collection.length}).</p>
+      </div>
+
+      {collection.length === 0 ? (
+        <div className="rounded-xl p-8 text-center" style={{ background: "#14161f", border: "1px dashed #3a3f57" }}>
+          <Boxes size={32} color="#5c6178" className="mx-auto mb-3" />
+          <div className="text-[#c7cbdb] font-medium mb-1">Todavía no tienes ningún Pokémon.</div>
+          <p className="text-sm text-[#8a8fa3] mb-4">Prueba el gacha para empezar tu colección.</p>
+          <button onClick={onGoToGatcha} className="px-4 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}>
+            Ir al Gatcha
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[70vh] overflow-y-auto pr-1">
+          {collection.map((entry, i) => (
+            <PokemonCard key={`${entry.slug}-${entry.obtainedAt}-${i}`} entry={entry} api={api} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2647,6 +3265,8 @@ export default function App() {
   const [tab, setTab] = useState("torneo");
   const [coins, setCoins] = useState(loadStoredCoins);
   const [purchasedTrainerIds, setPurchasedTrainerIds] = useState(loadStoredPurchasedTrainers);
+  const [collection, setCollection] = useState(loadStoredCollection);
+  const [customTrainer, setCustomTrainer] = useState(loadStoredCustomTrainer);
   const [soon, setSoon] = useState(null);
 
   useEffect(() => {
@@ -2657,14 +3277,33 @@ export default function App() {
     try { localStorage.setItem(UNLOCKED_TRAINERS_STORAGE_KEY, JSON.stringify(purchasedTrainerIds)); } catch (e) { /* localStorage no disponible */ }
   }, [purchasedTrainerIds]);
 
+  useEffect(() => {
+    try { localStorage.setItem(COLLECTION_STORAGE_KEY, JSON.stringify(collection)); } catch (e) { /* localStorage no disponible */ }
+  }, [collection]);
+
+  useEffect(() => {
+    try {
+      if (customTrainer) localStorage.setItem(CUSTOM_TRAINER_STORAGE_KEY, JSON.stringify(customTrainer));
+    } catch (e) { /* localStorage no disponible */ }
+  }, [customTrainer]);
+
   function purchaseTrainer(trainerId, price) {
     setCoins((c) => c - price);
     setPurchasedTrainerIds((ids) => (ids.includes(trainerId) ? ids : [...ids, trainerId]));
   }
 
+  // Solo puede haber un entrenador propio en total: si ya existe, esta
+  // función no debería poder llamarse de nuevo (la tarjeta de creación deja
+  // de ofrecer el formulario en cuanto customTrainer no es null).
+  function createCustomTrainer(name, teamSlugs) {
+    if (customTrainer) return;
+    setCustomTrainer({ name, team: teamSlugs });
+  }
+
   const tabs = [
     { id: "torneo", label: "Torneo", icon: Swords },
     { id: "personajes", label: "Personajes", icon: Users },
+    { id: "pokemon", label: "Pokémon", icon: Boxes },
     { id: "tienda", label: "Gatcha", icon: Store },
     { id: "logros", label: "Logros", icon: Award },
   ];
@@ -2703,17 +3342,33 @@ export default function App() {
       </nav>
 
       <main className="p-5 max-w-5xl mx-auto">
-        {tab === "torneo" && <TorneoTab api={api} coins={coins} setCoins={setCoins} purchasedTrainerIds={purchasedTrainerIds} />}
+        {tab === "torneo" && (
+          <TorneoTab
+            api={api}
+            coins={coins}
+            setCoins={setCoins}
+            purchasedTrainerIds={purchasedTrainerIds}
+            customTrainer={customTrainer}
+            collection={collection}
+          />
+        )}
         {tab === "personajes" && (
           <PersonajesTab
             api={api}
-            onSoon={setSoon}
             coins={coins}
             purchasedTrainerIds={purchasedTrainerIds}
             onPurchase={purchaseTrainer}
+            collection={collection}
+            customTrainer={customTrainer}
+            onCreateCustomTrainer={createCustomTrainer}
           />
         )}
-        {tab === "tienda" && <GatchaTab onSoon={setSoon} />}
+        {tab === "pokemon" && (
+          <PokemonTab api={api} collection={collection} onGoToGatcha={() => setTab("tienda")} />
+        )}
+        {tab === "tienda" && (
+          <GatchaTab api={api} coins={coins} setCoins={setCoins} collection={collection} setCollection={setCollection} />
+        )}
         {tab === "logros" && <LogrosTab onSoon={setSoon} />}
       </main>
 
