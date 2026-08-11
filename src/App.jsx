@@ -371,12 +371,23 @@ function rollMultiHitCount(minHits, maxHits) {
 }
 
 // El `target` de PokeAPI describe solo a quién va el DAÑO del movimiento;
-// para esta familia viene como "selected-pokemon" (el rival) pero el
-// movimiento en realidad se autobaja una stat al atacar (no hay ningún
-// movimiento real que "suba una stat del rival" al golpearlo, así que ese
-// caso positivo se resuelve de forma genérica más abajo por el signo del
+// para esta familia viene como "selected-pokemon" (el rival) igual que
+// cualquier movimiento de daño normal, pero el movimiento en realidad se
+// autobaja una stat propia al atacar como coste (no hay ningún movimiento
+// real que "suba una stat del rival" al golpearlo, así que ese caso
+// positivo ya se resuelve de forma genérica más abajo por el signo del
 // cambio; esta lista cubre solo la excepción de bajada de stat propia).
-const SELF_STAT_TARGET_OVERRIDES = new Set(["draco-meteor", "leaf-storm", "overheat", "psycho-boost", "fleur-cannon"]);
+// IMPORTANTE: esto NO debe confundirse con `move.selfTargeted` (que sigue
+// reflejando fielmente target.name==="user" tal cual lo da la API): estos
+// movimientos SÍ dañan al rival y SÍ deben poder ser bloqueados por
+// Protección igual que cualquier otro golpe, solo su stat_changes va al
+// propio atacante. Por eso viven en una lista aparte, usada únicamente al
+// resolver a quién afecta cada stat_changes, nunca para decidir si el
+// movimiento ataca al rival o si Protección lo bloquea.
+const DAMAGE_MOVE_SELF_STAT_CHANGES = new Set([
+  "draco-meteor", "leaf-storm", "overheat", "psycho-boost", "fleur-cannon",
+  "close-combat", "superpower", "hammer-arm",
+]);
 
 // Comprueba si un Pokémon puede actuar este turno (recarga, parálisis,
 // sueño, congelación) y resuelve la confusión (33% de golpearse a sí
@@ -559,14 +570,24 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
   if (move.statChanges && move.statChanges.length) {
     const chance = isStatusMove ? 100 : (move.statChance > 0 ? move.statChance : 0);
     if (chance > 0 && Math.random() * 100 < chance) {
+      // Solo el PRIMER cambio de stat sobre uno mismo se marca `inline`
+      // (resolveTurn fusiona como mucho un evento inline en la línea "usó
+      // X"); si un movimiento como Combate Cercano baja dos stats propias
+      // a la vez, el segundo evento se muestra como línea aparte pero con
+      // el nombre explícito, para no dejar un "su Defensa bajó" ambiguo
+      // colgando justo después de haber nombrado al rival en la línea del
+      // golpe.
+      let selfInlineUsed = false;
       for (const sc of move.statChanges) {
         // En un movimiento de daño, una SUBIDA de stat en los datos de la
         // API siempre es sobre quien ataca (no existe ningún movimiento
         // real que "suba una stat del rival" como efecto secundario de
         // golpearlo, ej. Meteor Mash, Ancient Power, Steel Wing...); una
         // bajada respeta el target ya resuelto para el movimiento (el
-        // rival, salvo la excepción de SELF_STAT_TARGET_OVERRIDES).
-        const scTarget = (!isStatusMove && sc.change > 0) ? attacker : target;
+        // rival), salvo los de DAMAGE_MOVE_SELF_STAT_CHANGES (Combate
+        // Cercano, Proeza, Meteoro Dragón...), que bajan una stat propia
+        // como coste pese a dañar al rival.
+        const scTarget = (!isStatusMove && (sc.change > 0 || DAMAGE_MOVE_SELF_STAT_CHANGES.has(move.name))) ? attacker : target;
         if (!(sc.stat in scTarget.statStages)) continue;
         const before = scTarget.statStages[sc.stat];
         const after = Math.max(-6, Math.min(6, before + sc.change));
@@ -584,8 +605,12 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
           }
           continue;
         }
-        if (scTarget === attacker) {
+        if (scTarget === attacker && !selfInlineUsed) {
+          selfInlineUsed = true;
           events.push({ type: "statusText", text: `su ${STAT_ES[sc.stat]} ${statChangeText(sc.change)}`, inline: true });
+        } else if (scTarget === attacker) {
+          const article = STAT_ARTICLE_ES[sc.stat] === "el" ? "El" : "La";
+          events.push({ type: "statusText", text: `¡${article} ${STAT_ES[sc.stat]} de ${scTarget.name} también ${statChangeText(sc.change)}!`, inline: false });
         } else {
           events.push({ type: "statusText", text: `${scTarget.name}: ${STAT_ARTICLE_ES[sc.stat]} ${STAT_ES[sc.stat]} ${statChangeText(sc.change)}`, inline: false });
         }
@@ -630,8 +655,12 @@ function moveEffectSummary(move) {
     const pct = move.damageClass === "status" ? null : (move.statChance > 0 ? move.statChance : null);
     // Misma regla que en applyMoveEffects: en un movimiento de daño, una
     // subida de stat siempre es sobre quien ataca aunque move.selfTargeted
-    // sea false (ej. Meteor Mash, Ancient Power, Steel Wing...).
-    const allSelf = move.statChanges.every((sc) => move.selfTargeted || (move.damageClass !== "status" && sc.change > 0));
+    // sea false (ej. Meteor Mash, Ancient Power, Steel Wing...), y los de
+    // DAMAGE_MOVE_SELF_STAT_CHANGES (Combate Cercano, Proeza...) bajan una
+    // stat propia como coste pese a no ser selfTargeted tampoco.
+    const allSelf = move.statChanges.every((sc) =>
+      move.selfTargeted || (move.damageClass !== "status" && sc.change > 0) || DAMAGE_MOVE_SELF_STAT_CHANGES.has(move.name)
+    );
     const who = allSelf ? "Propio: " : "Rival: ";
     const txt = move.statChanges.map((sc) => `${STAT_ES[sc.stat] || sc.stat} ${statChangeText(sc.change)}`).join(", ");
     parts.push(who + (pct ? `${txt} (${pct}%)` : txt));
@@ -752,7 +781,7 @@ function useApiCache() {
         ailmentChance: data.meta?.ailment_chance ?? 0,
         statChanges: (data.stat_changes || []).map((sc) => ({ stat: sc.stat.name, change: sc.change })),
         statChance: data.meta?.stat_chance ?? 0,
-        selfTargeted: data.target?.name === "user" || SELF_STAT_TARGET_OVERRIDES.has(data.name),
+        selfTargeted: data.target?.name === "user",
         drain: data.meta?.drain ?? 0,
         // meta.category "ohko" es un campo estructurado fiable (a diferencia
         // de la recarga o la furia, que no tienen ninguno propio).
