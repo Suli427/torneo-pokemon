@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check } from "lucide-react";
-import { ANIME_MOVESETS, DEFAULT_MOVES_BY_TYPE } from "./animeMovesets";
+import { TRAINER_MOVESETS, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 
 /* ---------------------------------------------------------------
@@ -39,7 +39,38 @@ const TRAINERS = [
   { id: "iris", name: "Iris", subtitle: "Campeona de Teselia", locked: true, price: 1000, color: "#4a8a5b",
     team: ["dragonite", "excadrill", "emolga", "dragonair", "gigalith", "druddigon"] },
   { id: "ash", name: "Ash", subtitle: "Maestro Pokémon", locked: false, color: "#e3350d",
-    team: ["pikachu", "dragonite", "sirfetchd", "gengar", "lucario", "goodra"] },
+    // Pikachu sustituido por Raichu: sin evolucionar, Pikachu se queda muy
+    // corto de daño para el nivel del resto del roster (ver moveset propio
+    // y coherente en trainerMovesets.js, no heredado del de Pikachu).
+    team: ["raichu", "dragonite", "sirfetchd", "gengar", "lucario", "goodra"] },
+
+  // --- Entrenadores nuevos (bloqueados, comprables con monedas de torneo) ---
+  { id: "lance", name: "Lance", subtitle: "Campeón de Kanto/Johto", locked: true, price: 1050, color: "#8a2e2e",
+    team: ["gyarados", "dragonite", "dragonite", "charizard", "aerodactyl", "kingdra"] },
+  { id: "wallace", name: "Wallace", subtitle: "Campeón de Hoenn", locked: true, price: 1150, color: "#1f8a9e",
+    team: ["milotic", "ludicolo", "whiscash", "gyarados", "wailord", "starmie"] },
+  { id: "alder", name: "Alder", subtitle: "Campeón de Teselia", locked: true, price: 950, color: "#6b8e23",
+    team: ["volcarona", "bouffalant", "vanilluxe", "druddigon", "escavalier", "accelgor"] },
+  { id: "alain", name: "Alain", subtitle: "Rival de Kalos", locked: true, price: 900, color: "#b8452f",
+    team: ["charizard", "bisharp", "unfezant", "weavile", "metagross", "tyranitar"] }, // TODO: revisar equipo (6º Pokémon: Tyranitar, elegido por mí)
+  { id: "sabino", name: "Sabino", subtitle: "Rival de Kalos", locked: true, price: 750, color: "#4a90d9",
+    team: ["sceptile", "slaking", "aegislash-shield", "salamence", "clawitzer", "beedrill"] },
+  { id: "benito", name: "Benito", subtitle: "Rival de Sinnoh", locked: true, price: 800, color: "#e08a2e",
+    team: ["empoleon", "roserade", "heracross", "rapidash", "staraptor", "floatzel"] },
+  { id: "trip", name: "Trip", subtitle: "Rival de Teselia", locked: true, price: 700, color: "#6c7a89",
+    team: ["serperior", "conkeldurr", "jellicent-male", "vanilluxe", "darmanitan-standard", "boldore"] },
+  { id: "cameron", name: "Cameron", subtitle: "Copa Junior de Teselia", locked: true, price: 750, color: "#8e44ad",
+    team: ["lucario", "hydreigon", "samurott", "swanna", "flygon", "magnezone"] }, // TODO: revisar equipo (5º y 6º Pokémon)
+  { id: "red", name: "Red", subtitle: "Maestro Pokémon legendario", locked: true, price: 1400, color: "#7a1f1f",
+    team: ["raichu", "charizard", "snorlax", "espeon", "venusaur", "blastoise"] },
+  { id: "cyrus", name: "Cyrus", subtitle: "Líder del Team Galactic", locked: true, price: 1050, color: "#34495e",
+    team: ["weavile", "crobat", "gyarados", "honchkrow", "houndoom", "magnezone"] }, // TODO: revisar equipo (6º Pokémon)
+  { id: "n", name: "N", subtitle: "Rey del Equipo Plasma", locked: true, price: 1000, color: "#27ae60",
+    team: ["zoroark", "carracosta", "klinklang", "vanilluxe", "archeops", "darmanitan-standard"] }, // TODO: revisar equipo (6º Pokémon)
+  { id: "giovanni", name: "Giovanni", subtitle: "Líder del Team Rocket", locked: true, price: 1100, color: "#45484c",
+    team: ["nidoking", "nidoqueen", "rhyperior", "persian", "kangaskhan", "crobat"] }, // TODO: revisar equipo (6º Pokémon)
+  { id: "colress", name: "Colress", subtitle: "Científico del Equipo Plasma", locked: true, price: 950, color: "#16a085",
+    team: ["klinklang", "escavalier", "beheeyem", "magnezone", "metang", "porygon-z"] }, // TODO: revisar equipo (6º Pokémon)
 ];
 
 // Un entrenador está desbloqueado si ya lo estaba por defecto (locked:false
@@ -938,7 +969,7 @@ function useApiCache() {
     const cacheKey = `${trainerId}:${slug}`;
     if (movesetCache.current[cacheKey]) return movesetCache.current[cacheKey];
 
-    let chosenNames = ANIME_MOVESETS[cacheKey];
+    let chosenNames = TRAINER_MOVESETS[cacheKey];
     if (!chosenNames) {
       const poke = await getPokemon(slug);
       const primaryType = poke.types[0];
@@ -958,7 +989,7 @@ function useApiCache() {
 
   // Precarga movesetCache para trainerId:slug con un moveset YA decidido de
   // antemano (los 4 movimientos ya asignados en la colección de gacha al
-  // capturar ese Pokémon), sin pasar por ANIME_MOVESETS/DEFAULT_MOVES_BY_TYPE.
+  // capturar ese Pokémon), sin pasar por TRAINER_MOVESETS/DEFAULT_MOVES_BY_TYPE.
   // Se usa para que el entrenador propio combata con el moveset que ya tiene
   // cada Pokémon en la colección, sin tocar getMoveset ni el resto del motor
   // de combate: getMoveset ya devuelve directamente de caché si la entrada
@@ -2321,7 +2352,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     setError(null);
     try {
       await api.preloadAll();
-      // El entrenador propio no usa ANIME_MOVESETS/DEFAULT_MOVES_BY_TYPE: se
+      // El entrenador propio no usa TRAINER_MOVESETS/DEFAULT_MOVES_BY_TYPE: se
       // precarga movesetCache con los movimientos que cada Pokémon ya tiene
       // asignados en la colección de gacha (se busca por slug+shiny, ya que
       // puede haber una entrada normal y otra shiny de la misma especie),
@@ -2334,7 +2365,23 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
         }));
       }
-      let order = effectiveTrainers.map((t) => t.id);
+      // El torneo sigue siendo de exactamente 8 participantes (el criterio
+      // ya existente de emparejamiento y clasificación asume ese número),
+      // pero con más de 8 entrenadores disponibles en total ya no tiene
+      // sentido que participen siempre los mismos 8: el elegido por el
+      // usuario participa siempre, y los otros 7 se sortean sin repetición
+      // entre el resto de entrenadores disponibles (bloqueados incluidos:
+      // estar bloqueado solo impide que el USUARIO juegue como ellos, no
+      // que existan como rivales de la Liga, igual que ya pasaba con los 4
+      // bloqueados originales). `pairMode` sigue controlando únicamente el
+      // orden de siembra de esos 8 ya elegidos, no a quién le toca jugar.
+      const allIds = effectiveTrainers.map((t) => t.id);
+      const rivals = allIds.filter((id) => id !== userTrainerId);
+      for (let i = rivals.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rivals[i], rivals[j]] = [rivals[j], rivals[i]];
+      }
+      let order = [userTrainerId, ...rivals.slice(0, 7)];
       if (pairMode === "random") {
         order = [...order];
         for (let i = order.length - 1; i > 0; i--) {
