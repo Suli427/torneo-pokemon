@@ -93,14 +93,40 @@ function loadStoredCollection() {
   return [];
 }
 
-// Entrenador propio del usuario: { name, team: [6 slugs] } o null si aún no
-// se ha creado. Solo puede existir uno.
-function loadStoredCustomTrainer() {
+// Identidad única de una entrada de colección: slug + shiny, ya que ahora
+// una misma especie puede tener hasta dos entradas independientes (normal y
+// shiny), cada una con su propio moveset. Se usa tanto para comprobar
+// repetidos en el gacha como para referenciar Pokémon concretos del equipo
+// del entrenador propio.
+function collectionEntryKey(entry) {
+  return `${entry.slug}::${entry.shiny ? "shiny" : "normal"}`;
+}
+function findCollectionEntry(collection, slug, shiny) {
+  return collection.find((c) => c.slug === slug && !!c.shiny === !!shiny);
+}
+
+// Entrenador propio del usuario: { name, team: [6 { slug, shiny }] } o null
+// si aún no se ha creado. Solo puede existir uno. `team` ya no es un array
+// de slugs sueltos (formato antiguo, antes de distinguir shiny en la
+// colección): se normaliza aquí por compatibilidad con partidas guardadas
+// previas. Recibe la colección ya cargada para poder desambiguar esas
+// entradas antiguas: si la colección solo tiene una variante (normal o
+// shiny) de esa especie, se infiere de ahí; si hay ambigüedad (tiene
+// ambas) o ya no la tiene, se asume la normal por defecto.
+function loadStoredCustomTrainer(collection) {
   try {
     const raw = localStorage.getItem(CUSTOM_TRAINER_STORAGE_KEY);
     if (raw) {
       const obj = JSON.parse(raw);
-      if (obj && typeof obj.name === "string" && Array.isArray(obj.team) && obj.team.length === 6) return obj;
+      if (obj && typeof obj.name === "string" && Array.isArray(obj.team) && obj.team.length === 6) {
+        const team = obj.team.map((t) => {
+          if (typeof t !== "string") return { slug: t.slug, shiny: !!t.shiny };
+          const matches = collection.filter((c) => c.slug === t);
+          const shiny = matches.length === 1 ? !!matches[0].shiny : false;
+          return { slug: t, shiny };
+        });
+        return { name: obj.name, team };
+      }
     }
   } catch (e) { /* localStorage no disponible */ }
   return null;
@@ -966,6 +992,16 @@ function useApiCache() {
     }
   }, []);
 
+  // Lista completa de movimientos aprendibles de verdad por una especie, ya
+  // resueltos con todos sus datos (tipo, categoría, potencia, precisión,
+  // PP...), para el editor manual de movimientos de la colección. Reutiliza
+  // getLearnableMoveNames + el moveCache ya existente vía getMove.
+  const getLearnableMovesDetailed = useCallback(async (slug) => {
+    const names = await getLearnableMoveNames(slug);
+    const resolved = await Promise.all(names.map((n) => getMove(n)));
+    return resolved.sort((a, b) => a.name.localeCompare(b.name));
+  }, [getLearnableMoveNames, getMove]);
+
   // Moveset aleatorio pero aprendible de verdad para un Pokémon nuevo del
   // gacha: 4 movimientos al azar de entre los que la especie puede aprender,
   // priorizando que al menos 2 sean de daño real (para que el Pokémon no
@@ -1572,7 +1608,7 @@ function useApiCache() {
     return pokes;
   }, [getPokemon, getType, getMoveset]);
 
-  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, typeMultiplier, assignRandomMoveset, primeMoveset };
+  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, typeMultiplier, assignRandomMoveset, primeMoveset, getLearnableMovesDetailed };
 }
 
 /* ---------------------------------------------------------------
@@ -2277,7 +2313,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // entrenador propio, el slot de Ash pasa a resolver su nombre y equipo en
   // su lugar (mismo id, misma posición, mismo criterio de emparejamiento).
   const effectiveTrainers = (playAsCustom && customTrainer)
-    ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team, subtitle: "Tu entrenador" } : t)
+    ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador" } : t)
     : TRAINERS;
 
   async function startTournament() {
@@ -2287,11 +2323,14 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       await api.preloadAll();
       // El entrenador propio no usa ANIME_MOVESETS/DEFAULT_MOVES_BY_TYPE: se
       // precarga movesetCache con los movimientos que cada Pokémon ya tiene
-      // asignados en la colección de gacha, bajo el mismo id "ash" que va a
-      // usar la simulación, para que combata con SU moveset real.
+      // asignados en la colección de gacha (se busca por slug+shiny, ya que
+      // puede haber una entrada normal y otra shiny de la misma especie),
+      // bajo el mismo id "ash" que va a usar la simulación, para que combata
+      // con SU moveset real y ya actualizado si se editó el equipo o los
+      // movimientos de algún Pokémon desde la última vez.
       if (playAsCustom && customTrainer) {
-        await Promise.all(customTrainer.team.map((slug) => {
-          const entry = collection.find((c) => c.slug === slug);
+        await Promise.all(customTrainer.team.map(({ slug, shiny }) => {
+          const entry = findCollectionEntry(collection, slug, shiny);
           return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
         }));
       }
@@ -2677,19 +2716,25 @@ function PurchaseTrainerModal({ trainer, coins, successName, onConfirm, onClose 
 
 const CUSTOM_TRAINER_MIN_POKEMON = 6;
 
-// Modal de creación del entrenador propio: nombre + selector de exactamente
-// 6 Pokémon de la colección de gacha. Si el usuario tiene justo 6, se
-// preseleccionan automáticamente; si tiene más, elige cuáles quiere.
-function CreateTrainerModal({ open, collection, api, onCreate, onClose }) {
+// Modal compartido para crear el entrenador propio (mode="create": pide
+// nombre + equipo) y para editar su equipo después de creado (mode="edit":
+// solo el equipo, mismo selector). La identidad de cada Pokémon elegible es
+// slug+shiny (collectionEntryKey), ya que normal y shiny de una misma
+// especie pueden coexistir como entradas distintas de la colección.
+function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, onConfirm, onClose }) {
   const [name, setName] = useState("");
-  const [selected, setSelected] = useState([]);
+  const [selectedKeys, setSelectedKeys] = useState([]);
   const [sprites, setSprites] = useState({});
 
   useEffect(() => {
     if (!open) return;
     setName("");
-    setSelected(collection.length === CUSTOM_TRAINER_MIN_POKEMON ? collection.map((c) => c.slug) : []);
-  }, [open, collection]);
+    if (mode === "edit") {
+      setSelectedKeys(initialSelectedKeys || []);
+    } else {
+      setSelectedKeys(collection.length === CUSTOM_TRAINER_MIN_POKEMON ? collection.map(collectionEntryKey) : []);
+    }
+  }, [open, mode, collection, initialSelectedKeys]);
 
   useEffect(() => {
     if (!open) return;
@@ -2705,16 +2750,28 @@ function CreateTrainerModal({ open, collection, api, onCreate, onClose }) {
 
   if (!open) return null;
 
-  function toggle(slug) {
-    setSelected((sel) => {
-      if (sel.includes(slug)) return sel.filter((s) => s !== slug);
+  function toggle(key) {
+    setSelectedKeys((sel) => {
+      if (sel.includes(key)) return sel.filter((k) => k !== key);
       if (sel.length >= CUSTOM_TRAINER_MIN_POKEMON) return sel;
-      return [...sel, slug];
+      return [...sel, key];
     });
   }
 
   const trimmedName = name.trim();
-  const canConfirm = trimmedName.length > 0 && trimmedName.length <= 20 && selected.length === CUSTOM_TRAINER_MIN_POKEMON;
+  const canConfirm = mode === "edit"
+    ? selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON
+    : trimmedName.length > 0 && trimmedName.length <= 20 && selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON;
+
+  function handleConfirm() {
+    if (!canConfirm) return;
+    const team = selectedKeys.map((key) => {
+      const entry = collection.find((c) => collectionEntryKey(c) === key);
+      return { slug: entry.slug, shiny: !!entry.shiny };
+    });
+    if (mode === "edit") onConfirm(team);
+    else onConfirm(trimmedName, team);
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
@@ -2726,41 +2783,56 @@ function CreateTrainerModal({ open, collection, api, onCreate, onClose }) {
         <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
           <X size={18} />
         </button>
-        <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2"><Sparkles size={20} color="#e3350d" /> Crea tu propio entrenador</h3>
-        <p className="text-sm text-[#9aa0b4] mb-4">Elige tu nombre y exactamente 6 Pokémon de tu colección. Una vez creado, no podrás editarlo.</p>
+        <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2">
+          <Sparkles size={20} color="#e3350d" /> {mode === "edit" ? "Edita el equipo de tu entrenador" : "Crea tu propio entrenador"}
+        </h3>
+        <p className="text-sm text-[#9aa0b4] mb-4">
+          {mode === "edit"
+            ? "Elige un nuevo equipo de exactamente 6 Pokémon de tu colección. El nombre de tu entrenador no cambia."
+            : "Elige tu nombre y exactamente 6 Pokémon de tu colección. El equipo se podrá editar más adelante."}
+        </p>
 
-        <label className="block text-xs font-semibold text-[#8a8fa3] mb-1.5">Nombre del entrenador</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value.slice(0, 20))}
-          placeholder="Ej. Rojo"
-          maxLength={20}
-          className="w-full mb-4 px-3 py-2 rounded-lg text-sm text-white outline-none"
-          style={{ background: "#0e1018", border: "1px solid #262a3a" }}
-        />
+        {mode === "create" && (
+          <>
+            <label className="block text-xs font-semibold text-[#8a8fa3] mb-1.5">Nombre del entrenador</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value.slice(0, 20))}
+              placeholder="Ej. Rojo"
+              maxLength={20}
+              className="w-full mb-4 px-3 py-2 rounded-lg text-sm text-white outline-none"
+              style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+            />
+          </>
+        )}
 
         <div className="flex items-center justify-between mb-2">
           <label className="block text-xs font-semibold text-[#8a8fa3]">Elige 6 Pokémon</label>
-          <span className="text-xs font-semibold" style={{ color: selected.length === CUSTOM_TRAINER_MIN_POKEMON ? "#5fae5f" : "#8a8fa3" }}>
-            {selected.length} / {CUSTOM_TRAINER_MIN_POKEMON}
+          <span className="text-xs font-semibold" style={{ color: selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON ? "#5fae5f" : "#8a8fa3" }}>
+            {selectedKeys.length} / {CUSTOM_TRAINER_MIN_POKEMON}
           </span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
           {collection.map((c) => {
+            const key = collectionEntryKey(c);
             const p = sprites[c.slug];
-            const isSelected = selected.includes(c.slug);
-            const disabled = !isSelected && selected.length >= CUSTOM_TRAINER_MIN_POKEMON;
+            const sprite = c.shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
+            const isSelected = selectedKeys.includes(key);
+            const disabled = !isSelected && selectedKeys.length >= CUSTOM_TRAINER_MIN_POKEMON;
             return (
               <button
-                key={c.slug}
-                onClick={() => toggle(c.slug)}
+                key={key}
+                onClick={() => toggle(key)}
                 disabled={disabled}
-                className="rounded-lg p-2 text-left flex items-center gap-2 disabled:opacity-40"
-                style={{ background: isSelected ? "#e3350d1e" : "#14161f", border: isSelected ? "1.5px solid #e3350d" : "1px solid #262a3a" }}
+                className="rounded-lg p-2 text-left flex items-center gap-2 disabled:opacity-40 relative"
+                style={{ background: isSelected ? "#e3350d1e" : "#14161f", border: isSelected ? "1.5px solid #e3350d" : c.shiny ? "1px solid #f2b70566" : "1px solid #262a3a" }}
               >
-                {p?.sprite ? <img src={p.sprite} alt={p.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
                 <div className="min-w-0">
-                  <div className="text-white text-xs font-semibold truncate">{p?.name || displayName(c.slug)}</div>
+                  <div className="text-white text-xs font-semibold truncate flex items-center gap-1">
+                    {p?.name || displayName(c.slug)}
+                    {c.shiny && <Star size={10} fill="#f2b705" color="#f2b705" />}
+                  </div>
                   <div className="flex gap-0.5 flex-wrap">{(p?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
                 </div>
                 {isSelected && <Check size={14} color="#5fae5f" className="ml-auto shrink-0" />}
@@ -2770,23 +2842,24 @@ function CreateTrainerModal({ open, collection, api, onCreate, onClose }) {
         </div>
 
         <button
-          onClick={() => canConfirm && onCreate(trimmedName, selected)}
+          onClick={handleConfirm}
           disabled={!canConfirm}
           className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
         >
-          Crear entrenador
+          {mode === "edit" ? "Guardar equipo" : "Crear entrenador"}
         </button>
       </div>
     </div>
   );
 }
 
-function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer }) {
+function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam }) {
   const [sprites, setSprites] = useState({});
   const [confirmTrainer, setConfirmTrainer] = useState(null);
   const [successName, setSuccessName] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2798,7 +2871,7 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
         }
       }
       if (customTrainer) {
-        for (const slug of customTrainer.team) {
+        for (const { slug } of customTrainer.team) {
           const p = await api.getPokemon(slug);
           if (!cancelled) setSprites((s) => ({ ...s, [slug]: p }));
         }
@@ -2808,9 +2881,14 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchasedTrainerIds, customTrainer]);
 
-  function handleCreateTrainer(name, slugs) {
-    onCreateCustomTrainer(name, slugs);
+  function handleCreateTrainer(name, team) {
+    onCreateCustomTrainer(name, team);
     setShowCreateModal(false);
+  }
+
+  function handleUpdateTeam(team) {
+    onUpdateCustomTrainerTeam(team);
+    setShowEditModal(false);
   }
 
   function handleConfirmPurchase() {
@@ -2876,22 +2954,34 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
 
       {customTrainer ? (
         <div className="w-full rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg" style={{ background: "#2ecc7133", color: "#2ecc71" }}>{customTrainer.name[0]}</div>
-            <div>
-              <div className="text-white font-semibold flex items-center gap-2">
-                {customTrainer.name}
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg" style={{ background: "#2ecc7133", color: "#2ecc71" }}>{customTrainer.name[0]}</div>
+              <div>
+                <div className="text-white font-semibold flex items-center gap-2">
+                  {customTrainer.name}
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
+                </div>
+                <div className="text-[11px] text-[#8a8fa3]">Creado a partir de tu colección de gacha</div>
               </div>
-              <div className="text-[11px] text-[#8a8fa3]">Creado a partir de tu colección de gacha</div>
             </div>
+            <button
+              onClick={() => setShowEditModal(true)}
+              disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
+              className="text-xs px-3 py-1.5 rounded-full font-semibold shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+            >
+              Editar equipo
+            </button>
           </div>
           <div className="flex flex-wrap gap-2">
-            {customTrainer.team.map((slug) => {
+            {customTrainer.team.map(({ slug, shiny }, i) => {
               const p = sprites[slug];
+              const sprite = shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
               return (
-                <div key={slug} className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: "1px solid #22263a" }} title={displayName(slug)}>
-                  {p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                <div key={`${slug}-${i}`} className="relative w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: shiny ? "1px solid #f2b70588" : "1px solid #22263a" }} title={displayName(slug) + (shiny ? " (shiny)" : "")}>
+                  {sprite ? <img src={sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                  {shiny && <Star size={10} fill="#f2b705" color="#f2b705" className="absolute top-0.5 right-0.5" />}
                 </div>
               );
             })}
@@ -2914,13 +3004,26 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
         </button>
       )}
 
-      <CreateTrainerModal
+      <TeamSelectorModal
         open={showCreateModal}
+        mode="create"
         collection={collection}
         api={api}
-        onCreate={handleCreateTrainer}
+        onConfirm={handleCreateTrainer}
         onClose={() => setShowCreateModal(false)}
       />
+
+      {customTrainer && (
+        <TeamSelectorModal
+          open={showEditModal}
+          mode="edit"
+          collection={collection}
+          api={api}
+          initialSelectedKeys={customTrainer.team.map(collectionEntryKey)}
+          onConfirm={handleUpdateTeam}
+          onClose={() => setShowEditModal(false)}
+        />
+      )}
 
       <PurchaseTrainerModal
         trainer={confirmTrainer}
@@ -2944,13 +3047,15 @@ function GachaResultModal({ result, onClose }) {
   if (!result) return null;
   const meta = RARITY_META[result.rarity];
   const isNewShiny = !result.repeat && result.shiny;
+  const isShinyRepeat = result.repeat && result.shiny;
+  const celebrate = isNewShiny || isShinyRepeat;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
       <div
         className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
         style={{
-          background: isNewShiny ? "linear-gradient(160deg,#3a3312,#12141d)" : "linear-gradient(160deg,#1b1e2b,#12141d)",
-          border: isNewShiny ? "1px solid #f2b705" : "1px solid #2c2f42",
+          background: celebrate ? "linear-gradient(160deg,#3a3312,#12141d)" : "linear-gradient(160deg,#1b1e2b,#12141d)",
+          border: celebrate ? "1px solid #f2b705" : "1px solid #2c2f42",
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -2969,12 +3074,14 @@ function GachaResultModal({ result, onClose }) {
             src={result.sprite}
             alt={result.name}
             className="w-28 h-28 object-contain mx-auto mb-2"
-            style={isNewShiny ? { filter: "drop-shadow(0 0 10px #f2b705aa)" } : undefined}
+            style={celebrate ? { filter: "drop-shadow(0 0 10px #f2b705aa)" } : undefined}
           />
         )}
 
         {isNewShiny ? (
           <h3 className="font-display text-xl mb-1" style={{ color: "#f2b705" }}>¡✨ Has conseguido un {result.name} SHINY! ✨</h3>
+        ) : isShinyRepeat ? (
+          <h3 className="font-display text-xl mb-1" style={{ color: "#f2b705" }}>✨ ¡Repetido SHINY de {result.name}!</h3>
         ) : result.repeat ? (
           <h3 className="font-display text-xl text-white mb-1">Ya tenías a {result.name}</h3>
         ) : (
@@ -2987,7 +3094,11 @@ function GachaResultModal({ result, onClose }) {
           </span>
         </div>
 
-        {result.repeat ? (
+        {isShinyRepeat ? (
+          <p className="text-sm leading-relaxed" style={{ color: "#f2b705" }}>
+            Recibes <span className="font-bold">{result.refund}</span> monedas (x4 por ser repetido shiny).
+          </p>
+        ) : result.repeat ? (
           <p className="text-sm text-[#9aa0b4] leading-relaxed">
             Como repetido, se te reembolsan <span className="text-[#f2b705] font-bold">{result.refund}</span> monedas de torneo.
           </p>
@@ -3002,6 +3113,10 @@ function GachaResultModal({ result, onClose }) {
 // Panel de una rareza dentro del desglose de un gacha concreto: probabilidad
 // fija y cuántos Pokémon de esa rareza quedan por descubrir en ESTE pool
 // (general o de un tipo), recalculado cada vez que cambia la colección.
+// Criterio: "por descubrir" cuenta ESPECIES distintas del pool, sin
+// importar shiny — el shiny es un plus sobre una especie ya del pool, no
+// una entrada nueva de él, así que tener solo la versión shiny de una
+// especie ya la cuenta como "descubierta" a efectos de este contador.
 function RarityProgressCard({ rarity, pool, collection }) {
   const meta = RARITY_META[rarity];
   const candidates = pool.filter((p) => p.rarity === rarity);
@@ -3043,22 +3158,27 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection }) {
       const { chosen, rarity, emptyRarities } = roll;
       setCoins((c) => c - cost);
 
-      const alreadyOwned = collection.some((c) => c.slug === chosen.slug);
+      // Primero se decide la especie (rareza+pool, ya resuelto arriba), y
+      // DESPUÉS si esta tirada concreta es shiny; el resultado es "nuevo"
+      // si el usuario no tiene todavía exactamente esa combinación
+      // slug+shiny en su colección (tener la versión normal no hace que la
+      // shiny de esa misma especie cuente como repetida, y viceversa).
+      const shiny = Math.random() < SHINY_CHANCE;
+      const alreadyOwned = collection.some((c) => c.slug === chosen.slug && c.shiny === shiny);
       const pokeData = await api.getPokemon(chosen.slug);
+      const sprite = shiny ? (pokeData.shinySprite || pokeData.sprite) : pokeData.sprite;
 
       if (alreadyOwned) {
-        const refund = refundTable[rarity];
+        const baseRefund = refundTable[rarity];
+        // Repetido shiny de verdad (misma especie Y mismo shiny que una
+        // entrada ya existente): reembolso x4 sobre el de esa rareza.
+        const refund = shiny ? baseRefund * 4 : baseRefund;
         setCoins((c) => c + refund);
-        setResult({ slug: chosen.slug, name: pokeData.name, sprite: pokeData.sprite, rarity, repeat: true, refund, shiny: false, emptyRarities });
+        setResult({ slug: chosen.slug, name: pokeData.name, sprite, rarity, repeat: true, refund, shiny, emptyRarities });
       } else {
         const moves = await api.assignRandomMoveset(chosen.slug);
-        const shiny = Math.random() < SHINY_CHANCE;
         setCollection((c) => [...c, { slug: chosen.slug, moves, obtainedAt: Date.now(), shiny }]);
-        setResult({
-          slug: chosen.slug, name: pokeData.name,
-          sprite: shiny ? (pokeData.shinySprite || pokeData.sprite) : pokeData.sprite,
-          rarity, repeat: false, shiny, emptyRarities,
-        });
+        setResult({ slug: chosen.slug, name: pokeData.name, sprite, rarity, repeat: false, shiny, emptyRarities });
       }
     } catch (e) {
       setError("No se pudo completar la tirada. Comprueba tu conexión e inténtalo de nuevo.");
@@ -3146,8 +3266,119 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection }) {
    TAB: POKÉMON
 --------------------------------------------------------------- */
 
-function PokemonCard({ entry, api }) {
+// Selector de los 4 movimientos de un Pokémon de la colección, entre TODOS
+// los que puede aprender de verdad (level-up/huevo/tutor/MT), no solo los
+// que ya tiene ni el pool aleatorio inicial. Reutiliza el mismo formato de
+// descripción (tipo/categoría/potencia/precisión/PP) del selector de
+// movimientos de combate, con buscador porque la lista puede ser larga.
+function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
+  const [allMoves, setAllMoves] = useState(null);
+  const [selected, setSelected] = useState([]);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (!open || !entry) return;
+    setSelected(entry.moves);
+    setSearch("");
+    setAllMoves(null);
+    let cancelled = false;
+    (async () => {
+      const moves = await api.getLearnableMovesDetailed(entry.slug);
+      if (!cancelled) setAllMoves(moves);
+    })();
+    return () => { cancelled = true; };
+  }, [open, entry, api]);
+
+  if (!open || !entry) return null;
+
+  function toggle(name) {
+    setSelected((sel) => {
+      if (sel.includes(name)) return sel.filter((n) => n !== name);
+      if (sel.length >= 4) return sel;
+      return [...sel, name];
+    });
+  }
+
+  const filtered = (allMoves || []).filter((m) => displayMoveName(m.name).toLowerCase().includes(search.toLowerCase()));
+  const canConfirm = selected.length === 4;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-lg w-full rounded-2xl p-6 max-h-[85vh] overflow-y-auto flex flex-col"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+          <X size={18} />
+        </button>
+        <h3 className="font-display text-xl text-white mb-1">Editar movimientos</h3>
+        <p className="text-sm text-[#9aa0b4] mb-3">Elige exactamente 4 movimientos que {displayName(entry.slug)} pueda aprender de verdad.</p>
+
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar movimiento..."
+          className="w-full mb-3 px-3 py-2 rounded-lg text-sm text-white outline-none shrink-0"
+          style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+        />
+
+        <div className="flex items-center justify-between mb-2 shrink-0">
+          <span className="text-xs font-semibold text-[#8a8fa3]">{filtered.length} movimientos disponibles</span>
+          <span className="text-xs font-semibold" style={{ color: selected.length === 4 ? "#5fae5f" : "#8a8fa3" }}>{selected.length} / 4</span>
+        </div>
+
+        {!allMoves ? (
+          <div className="flex items-center justify-center py-10"><Loader2 className="animate-spin" size={22} color="#e3350d" /></div>
+        ) : (
+          <div className="space-y-1.5 overflow-y-auto mb-4" style={{ maxHeight: "40vh" }}>
+            {filtered.map((m) => {
+              const isSelected = selected.includes(m.name);
+              const isStatus = m.damageClass === "status" || (!m.power && !m.specialDamage);
+              const categoryLabel = isStatus ? "Estado" : m.damageClass === "special" ? "Especial" : "Físico";
+              const powerLabel = isStatus ? "—" : (m.power ?? "Variable");
+              const disabled = !isSelected && selected.length >= 4;
+              return (
+                <button
+                  key={m.name}
+                  onClick={() => toggle(m.name)}
+                  disabled={disabled}
+                  className="w-full rounded-lg p-2.5 text-left flex items-center justify-between gap-2 disabled:opacity-40"
+                  style={{ background: isSelected ? "#e3350d1e" : "#14161f", border: isSelected ? "1.5px solid #e3350d" : "1px solid #262a3a" }}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="text-white text-xs font-semibold">{displayMoveName(m.name)}</span>
+                      <TypeBadge type={m.type} />
+                    </div>
+                    <div className="text-[10px] text-[#8a8fa3]">
+                      {categoryLabel} · Potencia {powerLabel} · Precisión {m.accuracy ?? "—"} · PP {m.pp ?? "—"}
+                    </div>
+                  </div>
+                  {isSelected && <Check size={14} color="#5fae5f" className="shrink-0" />}
+                </button>
+              );
+            })}
+            {filtered.length === 0 && <div className="text-sm text-[#5c6178] text-center py-4">Sin resultados.</div>}
+          </div>
+        )}
+
+        <button
+          onClick={() => canConfirm && onConfirm(selected)}
+          disabled={!canConfirm}
+          className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          Guardar movimientos
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PokemonCard({ entry, api, onUpdateMoves }) {
   const [poke, setPoke] = useState(null);
+  const [showEditMoves, setShowEditMoves] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -3194,18 +3425,37 @@ function PokemonCard({ entry, api }) {
           </span>
         </div>
       )}
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-wrap gap-1 mb-2">
         {entry.moves.map((m) => (
           <span key={m} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "#1c1f2c", color: "#9aa0b4", border: "1px solid #262a3a" }}>
             {displayMoveName(m)}
           </span>
         ))}
       </div>
+      <button
+        onClick={() => setShowEditMoves(true)}
+        className="text-[11px] px-2.5 py-1 rounded-full font-semibold"
+        style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+      >
+        Editar movimientos
+      </button>
+
+      <MoveEditModal
+        open={showEditMoves}
+        entry={entry}
+        api={api}
+        onConfirm={(moves) => { onUpdateMoves(entry, moves); setShowEditMoves(false); }}
+        onClose={() => setShowEditMoves(false)}
+      />
     </div>
   );
 }
 
-function PokemonTab({ api, collection, onGoToGatcha }) {
+function PokemonTab({ api, collection, setCollection, onGoToGatcha }) {
+  function handleUpdateMoves(entry, moves) {
+    setCollection((c) => c.map((e) => (e.slug === entry.slug && !!e.shiny === !!entry.shiny) ? { ...e, moves } : e));
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -3225,7 +3475,7 @@ function PokemonTab({ api, collection, onGoToGatcha }) {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[70vh] overflow-y-auto pr-1">
           {collection.map((entry, i) => (
-            <PokemonCard key={`${entry.slug}-${entry.obtainedAt}-${i}`} entry={entry} api={api} />
+            <PokemonCard key={`${entry.slug}-${entry.shiny ? "shiny" : "normal"}-${i}`} entry={entry} api={api} onUpdateMoves={handleUpdateMoves} />
           ))}
         </div>
       )}
@@ -3266,7 +3516,7 @@ export default function App() {
   const [coins, setCoins] = useState(loadStoredCoins);
   const [purchasedTrainerIds, setPurchasedTrainerIds] = useState(loadStoredPurchasedTrainers);
   const [collection, setCollection] = useState(loadStoredCollection);
-  const [customTrainer, setCustomTrainer] = useState(loadStoredCustomTrainer);
+  const [customTrainer, setCustomTrainer] = useState(() => loadStoredCustomTrainer(loadStoredCollection()));
   const [soon, setSoon] = useState(null);
 
   useEffect(() => {
@@ -3294,10 +3544,19 @@ export default function App() {
 
   // Solo puede haber un entrenador propio en total: si ya existe, esta
   // función no debería poder llamarse de nuevo (la tarjeta de creación deja
-  // de ofrecer el formulario en cuanto customTrainer no es null).
-  function createCustomTrainer(name, teamSlugs) {
+  // de ofrecer el formulario en cuanto customTrainer no es null). `team` es
+  // un array de 6 { slug, shiny }.
+  function createCustomTrainer(name, team) {
     if (customTrainer) return;
-    setCustomTrainer({ name, team: teamSlugs });
+    setCustomTrainer({ name, team });
+  }
+
+  // Edición del equipo del entrenador propio ya creado: el nombre no
+  // cambia, solo el array de 6 { slug, shiny }. El próximo torneo que se
+  // inicie con este entrenador ya usa el equipo nuevo (startTournament
+  // vuelve a precargar movesetCache con primeMoveset en ese momento).
+  function updateCustomTrainerTeam(team) {
+    setCustomTrainer((prev) => (prev ? { ...prev, team } : prev));
   }
 
   const tabs = [
@@ -3361,10 +3620,11 @@ export default function App() {
             collection={collection}
             customTrainer={customTrainer}
             onCreateCustomTrainer={createCustomTrainer}
+            onUpdateCustomTrainerTeam={updateCustomTrainerTeam}
           />
         )}
         {tab === "pokemon" && (
-          <PokemonTab api={api} collection={collection} onGoToGatcha={() => setTab("tienda")} />
+          <PokemonTab api={api} collection={collection} setCollection={setCollection} onGoToGatcha={() => setTab("tienda")} />
         )}
         {tab === "tienda" && (
           <GatchaTab api={api} coins={coins} setCoins={setCoins} collection={collection} setCollection={setCollection} />
