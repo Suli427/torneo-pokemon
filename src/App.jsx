@@ -124,6 +124,24 @@ function loadStoredCollection() {
   return [];
 }
 
+const TOURNAMENT_HISTORY_STORAGE_KEY = "liga-pokemon:tournament-history";
+const TOURNAMENT_HISTORY_LIMIT = 20;
+
+// Historial de torneos jugados: [{ date, mode, trainerId, trainerName,
+// finalPosition, points, coinsEarned }], más recientes primero, limitado a
+// las últimas TOURNAMENT_HISTORY_LIMIT entradas. Mismo patrón try/catch que
+// el resto de datos persistidos.
+function loadStoredTournamentHistory() {
+  try {
+    const raw = localStorage.getItem(TOURNAMENT_HISTORY_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return [];
+}
+
 // Identidad única de una entrada de colección: slug + shiny, ya que ahora
 // una misma especie puede tener hasta dos entradas independientes (normal y
 // shiny), cada una con su propio moveset. Se usa tanto para comprobar
@@ -248,6 +266,11 @@ function rollGachaPokemon(pool) {
   }
   return null;
 }
+
+// Número total de rondas de un torneo (Swiss por puntos): único punto de
+// verdad, usado tanto en la condición de "torneo finalizado" como en toda
+// la interfaz que muestra "Ronda X de N".
+const TOURNAMENT_ROUNDS = 5;
 
 const ACHIEVEMENTS = [
   "Primera victoria", "Racha de 3", "Campeón de Liga", "Equipo perfecto",
@@ -2309,7 +2332,113 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
   );
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection }) {
+// Panel con las estadísticas agregadas del historial de torneos y la lista
+// completa (más reciente primero). El historial ya se guarda en ese orden,
+// así que la racha actual de victorias consecutivas es simplemente contar
+// desde el principio del array mientras finalPosition sea 1.
+function TournamentHistoryModal({ open, history, onClose }) {
+  if (!open) return null;
+
+  const played = history.length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-2xl w-full rounded-2xl p-6 max-h-[85vh] overflow-y-auto"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+          <X size={18} />
+        </button>
+        <h3 className="font-display text-xl text-white mb-4 flex items-center gap-2">
+          <Trophy size={20} color="#f2b705" /> Historial de torneos
+        </h3>
+
+        {played === 0 ? (
+          <div className="text-center py-8">
+            <Trophy size={32} color="#5c6178" className="mx-auto mb-3" />
+            <div className="text-[#c7cbdb] font-medium mb-1">Todavía no has jugado ningún torneo.</div>
+            <p className="text-sm text-[#8a8fa3]">¡Juega tu primer torneo para empezar tu historial de estadísticas!</p>
+          </div>
+        ) : (
+          (() => {
+            const wins = history.filter((h) => h.finalPosition === 1).length;
+            const winPct = Math.round((wins / played) * 100);
+            const bestPosition = Math.min(...history.map((h) => h.finalPosition));
+            const totalCoins = history.reduce((sum, h) => sum + h.coinsEarned, 0);
+            let streak = 0;
+            for (const h of history) {
+              if (h.finalPosition === 1) streak++;
+              else break;
+            }
+            const modeStats = (m) => {
+              const list = history.filter((h) => h.mode === m);
+              const w = list.filter((h) => h.finalPosition === 1).length;
+              return { played: list.length, wins: w, pct: list.length ? Math.round((w / list.length) * 100) : 0 };
+            };
+            const modeA = modeStats("A");
+            const modeB = modeStats("B");
+
+            return (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+                  {[
+                    ["Torneos jugados", played, "#c7cbdb"],
+                    ["Victorias", `${wins} (${winPct}%)`, "#5fae5f"],
+                    ["Mejor posición", `${bestPosition}º`, "#4a90d9"],
+                    ["Monedas ganadas", totalCoins, "#f2b705"],
+                    ["Racha de victorias", streak, "#e3350d"],
+                  ].map(([label, value, color]) => (
+                    <div key={label} className="rounded-lg p-2.5 text-center" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+                      <div className="text-[10px] text-[#8a8fa3] mb-0.5">{label}</div>
+                      <div className="text-lg font-display" style={{ color }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-2 mb-5">
+                  <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+                    <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo A · Solo tu entrenador</div>
+                    <div className="text-sm text-white">{modeA.played} jugados · {modeA.wins} victorias ({modeA.pct}%)</div>
+                  </div>
+                  <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+                    <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo B · Cualquier entrenador</div>
+                    <div className="text-sm text-white">{modeB.played} jugados · {modeB.wins} victorias ({modeB.pct}%)</div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl overflow-hidden border border-[#262a3a]">
+                  <div className="px-3 py-2 bg-[#181b26] text-[10px] uppercase tracking-wide text-[#8a8fa3] font-semibold grid grid-cols-[1fr_2.2rem_1fr_2.5rem_2.5rem_4rem] gap-1">
+                    <span>Fecha</span><span>Modo</span><span>Entrenador</span><span>Pos.</span><span>Ptos</span><span className="text-right">Monedas</span>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {history.map((h, i) => (
+                      <div
+                        key={i}
+                        className="px-3 py-2 grid grid-cols-[1fr_2.2rem_1fr_2.5rem_2.5rem_4rem] gap-1 items-center text-xs"
+                        style={{ background: i % 2 ? "#14161f" : "#12141c", borderTop: "1px solid #1e2130" }}
+                      >
+                        <span className="text-[#9aa0b4]">{new Date(h.date).toLocaleDateString()}</span>
+                        <span className="text-[#c7cbdb]">{h.mode}</span>
+                        <span className="text-white truncate" title={h.trainerName}>{h.trainerName}</span>
+                        <span className="text-[#c7cbdb]">{h.finalPosition}º</span>
+                        <span className="text-[#c7cbdb]">{h.points}</span>
+                        <span className="text-right text-[#f2b705] font-semibold">+{h.coinsEarned}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            );
+          })()
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, tournamentHistory, onTournamentFinished }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -2320,7 +2449,17 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // momento para no tocar la lógica de emparejamientos ni la clasificación,
   // solo cambia qué nombre/equipo resuelve ese id concreto.
   const [playAsCustom, setPlayAsCustom] = useState(false);
-  const [pairMode, setPairMode] = useState("position");
+  // Modo de torneo: "A" = solo con el entrenador propio (nunca se muestra
+  // el selector, va directo con él); "B" = cualquier entrenador desbloqueado
+  // EXCEPTO el propio (el comportamiento ya existente antes de este
+  // cambio). En ambos modos el entrenador propio nunca puede tocarle a la
+  // CPU: en modo A porque ocupa el único slot "ash" que el propio usuario
+  // usa (se excluye a sí mismo de los rivales, como ya pasaba); en modo B
+  // porque directamente no se ofrece como opción del selector, así que
+  // `playAsCustom` nunca llega a activarse y el slot "ash" sigue
+  // resolviendo al Ash real de toda la vida.
+  const [mode, setMode] = useState("B");
+  const [pairMode, setPairMode] = useState("random");
   const [standings, setStandings] = useState([]);
   const [round, setRound] = useState(0);
   const [history, setHistory] = useState([]);
@@ -2330,9 +2469,25 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   const [interactiveMatch, setInteractiveMatch] = useState(null); // { trainerA, trainerB, userSide, idx }
   const [pendingRoundResults, setPendingRoundResults] = useState(null);
   const [tournamentReward, setTournamentReward] = useState(null); // { amount, before, after }
+  const [showHistory, setShowHistory] = useState(false);
 
   function toggleMatch(key) {
     setExpandedMatches((e) => ({ ...e, [key]: !e[key] }));
+  }
+
+  // Cambiar de modo obliga a recolocar la elección del usuario: en modo A
+  // se fuerza directamente al entrenador propio (mismo truco de "reskin"
+  // del slot ash ya usado); al salir de modo A hay que desactivar
+  // `playAsCustom` para que el slot "ash" vuelva a representar al Ash real
+  // y el selector de modo B muestre correctamente qué tarjeta está elegida.
+  function handleModeChange(newMode) {
+    setMode(newMode);
+    if (newMode === "A" && customTrainer) {
+      setUserTrainerId("ash");
+      setPlayAsCustom(true);
+    } else if (newMode === "B") {
+      setPlayAsCustom(false);
+    }
   }
 
   // Lista real de 8 (para el selector de entrenador): siempre la original,
@@ -2415,14 +2570,29 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     setRound(newRound);
     setSimulating(false);
 
-    if (newRound >= 4) {
+    if (newRound >= TOURNAMENT_ROUNDS) {
       const final = sortedStandings(updated);
       const userIdx = final.findIndex((s) => s.id === userTrainerId);
+      // La recompensa depende solo de la posición final (0-7), no del
+      // número de rondas en sí: con 5 rondas en vez de 4 el torneo separa
+      // mejor a los 8 participantes, pero la tabla de premios por puesto
+      // sigue teniendo el mismo sentido sin cambios.
       const reward = Math.max(50, 400 - userIdx * 50);
       const before = coins;
       setTournamentReward({ amount: reward, before, after: before + reward });
       setCoins((c) => c + reward);
       setPhase("finished");
+
+      const trainer = trainerById(userTrainerId);
+      onTournamentFinished({
+        date: Date.now(),
+        mode,
+        trainerId: userTrainerId,
+        trainerName: trainer?.name ?? userTrainerId,
+        finalPosition: userIdx + 1,
+        points: final[userIdx]?.points ?? 0,
+        coinsEarned: reward,
+      });
     }
   }
 
@@ -2485,49 +2655,90 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     <div className="space-y-6">
       {phase === "setup" && (
         <div className="space-y-6">
+          <div className="flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2">
+                <Swords size={22} color="#e3350d" /> Elige tu entrenador
+              </h2>
+              <p className="text-sm text-[#9aa0b4]">Competirás junto a los otros 7 entrenadores de la Liga en un torneo de {TOURNAMENT_ROUNDS} rondas.</p>
+            </div>
+            <button
+              onClick={() => setShowHistory(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold shrink-0"
+              style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+            >
+              <Trophy size={14} color="#f2b705" /> Ver historial
+            </button>
+          </div>
+
+          {/* Modo de torneo */}
           <div>
-            <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2">
-              <Swords size={22} color="#e3350d" /> Elige tu entrenador
-            </h2>
-            <p className="text-sm text-[#9aa0b4]">Competirás junto a los otros 7 entrenadores de la Liga en un torneo de 4 rondas.</p>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {unlockedTrainers.map((t) => (
+            <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
+              <Users size={18} color="#f2b705" /> Modo de torneo
+            </h3>
+            <div className="grid sm:grid-cols-2 gap-3">
               <button
-                key={t.id}
-                onClick={() => { setUserTrainerId(t.id); setPlayAsCustom(false); }}
-                className="rounded-xl p-4 text-left transition-all"
+                onClick={() => customTrainer && handleModeChange("A")}
+                disabled={!customTrainer}
+                className="rounded-xl p-4 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50"
                 style={{
-                  background: (userTrainerId === t.id && !playAsCustom) ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
-                  border: (userTrainerId === t.id && !playAsCustom) ? `1.5px solid ${t.color}` : "1px solid #262a3a",
+                  background: mode === "A" ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
+                  border: mode === "A" ? "1.5px solid #2ecc71" : "1px solid #262a3a",
                 }}
               >
-                <div className="w-9 h-9 rounded-full flex items-center justify-center font-display text-sm mb-2"
-                     style={{ background: t.color + "33", color: t.color }}>
-                  {t.name[0]}
+                <div className="text-white font-semibold text-sm mb-1">Solo tu entrenador propio</div>
+                <div className="text-[11px] text-[#8a8fa3]">
+                  {customTrainer
+                    ? "Juegas únicamente con tu entrenador propio; no puedes elegir otro en este modo."
+                    : "Necesitas crear tu propio entrenador primero, en la pestaña Personajes."}
                 </div>
-                <div className="text-white font-semibold text-sm">{t.name}</div>
-                <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
               </button>
-            ))}
-            {customTrainer && (
               <button
-                onClick={() => { setUserTrainerId("ash"); setPlayAsCustom(true); }}
+                onClick={() => handleModeChange("B")}
                 className="rounded-xl p-4 text-left transition-all"
                 style={{
-                  background: playAsCustom ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
-                  border: playAsCustom ? "1.5px solid #2ecc71" : "1px solid #262a3a",
+                  background: mode === "B" ? "linear-gradient(160deg, #e3350d33, #14161f)" : "#14161f",
+                  border: mode === "B" ? "1.5px solid #e3350d" : "1px solid #262a3a",
                 }}
               >
-                <div className="w-9 h-9 rounded-full flex items-center justify-center font-display text-sm mb-2"
-                     style={{ background: "#2ecc7133", color: "#2ecc71" }}>
-                  {customTrainer.name[0]}
-                </div>
-                <div className="text-white font-semibold text-sm">{customTrainer.name}</div>
-                <div className="text-[11px] text-[#8a8fa3]">Tu entrenador</div>
+                <div className="text-white font-semibold text-sm mb-1">Cualquier entrenador excepto el tuyo</div>
+                <div className="text-[11px] text-[#8a8fa3]">Elige entre tus entrenadores desbloqueados. Tu entrenador propio no aparece como opción en este modo.</div>
               </button>
-            )}
+            </div>
           </div>
+
+          {mode === "B" ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {unlockedTrainers.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => { setUserTrainerId(t.id); setPlayAsCustom(false); }}
+                  className="rounded-xl p-4 text-left transition-all"
+                  style={{
+                    background: (userTrainerId === t.id && !playAsCustom) ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
+                    border: (userTrainerId === t.id && !playAsCustom) ? `1.5px solid ${t.color}` : "1px solid #262a3a",
+                  }}
+                >
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center font-display text-sm mb-2"
+                       style={{ background: t.color + "33", color: t.color }}>
+                    {t.name[0]}
+                  </div>
+                  <div className="text-white font-semibold text-sm">{t.name}</div>
+                  <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+                </button>
+              ))}
+            </div>
+          ) : customTrainer ? (
+            <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#2ecc7114", border: "1px solid #2ecc7155" }}>
+              <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>
+                {customTrainer.name[0]}
+              </div>
+              <div>
+                <div className="text-white font-semibold text-sm">Jugarás con {customTrainer.name}</div>
+                <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+              </div>
+            </div>
+          ) : null}
 
           <div>
             <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
@@ -2555,13 +2766,16 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
 
           <button
             onClick={startTournament}
-            className="flex items-center gap-2 px-6 py-3 rounded-xl font-display text-lg text-white"
+            disabled={mode === "A" && !customTrainer}
+            className="flex items-center gap-2 px-6 py-3 rounded-xl font-display text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
           >
             Iniciar torneo <ChevronRight size={18} />
           </button>
         </div>
       )}
+
+      <TournamentHistoryModal open={showHistory} history={tournamentHistory} onClose={() => setShowHistory(false)} />
 
       {phase === "loading" && (
         <div className="flex flex-col items-center justify-center py-20 text-[#9aa0b4]">
@@ -2590,7 +2804,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           <div className="flex items-center justify-between flex-wrap gap-3">
             <h2 className="font-display text-2xl text-white flex items-center gap-2">
               {phase === "finished" ? <Trophy size={22} color="#f2b705" /> : <Swords size={22} color="#e3350d" />}
-              {phase === "finished" ? "Torneo finalizado" : `Ronda ${round} de 4`}
+              {phase === "finished" ? "Torneo finalizado" : `Ronda ${round} de ${TOURNAMENT_ROUNDS}`}
             </h2>
             {phase === "ready" && (
               <button
@@ -3564,6 +3778,7 @@ export default function App() {
   const [purchasedTrainerIds, setPurchasedTrainerIds] = useState(loadStoredPurchasedTrainers);
   const [collection, setCollection] = useState(loadStoredCollection);
   const [customTrainer, setCustomTrainer] = useState(() => loadStoredCustomTrainer(loadStoredCollection()));
+  const [tournamentHistory, setTournamentHistory] = useState(loadStoredTournamentHistory);
   const [soon, setSoon] = useState(null);
 
   useEffect(() => {
@@ -3583,6 +3798,17 @@ export default function App() {
       if (customTrainer) localStorage.setItem(CUSTOM_TRAINER_STORAGE_KEY, JSON.stringify(customTrainer));
     } catch (e) { /* localStorage no disponible */ }
   }, [customTrainer]);
+
+  useEffect(() => {
+    try { localStorage.setItem(TOURNAMENT_HISTORY_STORAGE_KEY, JSON.stringify(tournamentHistory)); } catch (e) { /* localStorage no disponible */ }
+  }, [tournamentHistory]);
+
+  // Se añade al terminar cada torneo (fase "finished"); se guarda con el más
+  // reciente primero y se recorta a las últimas TOURNAMENT_HISTORY_LIMIT
+  // entradas para no acumular datos indefinidamente.
+  function addTournamentHistoryEntry(entry) {
+    setTournamentHistory((h) => [entry, ...h].slice(0, TOURNAMENT_HISTORY_LIMIT));
+  }
 
   function purchaseTrainer(trainerId, price) {
     setCoins((c) => c - price);
@@ -3656,6 +3882,8 @@ export default function App() {
             purchasedTrainerIds={purchasedTrainerIds}
             customTrainer={customTrainer}
             collection={collection}
+            tournamentHistory={tournamentHistory}
+            onTournamentFinished={addTournamentHistoryEntry}
           />
         )}
         {tab === "personajes" && (
