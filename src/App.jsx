@@ -1063,17 +1063,43 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
 // aquí una potencia fija de 150 en una implementación anterior; ya NO se
 // tratan como movimientos de daño normal (ver OHKO_MOVES/isOHKO más abajo),
 // así que se quitan de esta lista para que su `power` se quede en null.
-const FIXED_POWER_OVERRIDES = { bide: 100, "low-kick": 60, "grass-knot": 60 };
+const FIXED_POWER_OVERRIDES = { bide: 100 };
 const SPEED_RATIO_MOVES = new Set(["electro-ball", "gyro-ball"]);
 const FIXED_LEVEL_MOVES = new Set(["night-shade", "seismic-toss"]);
 
+// Hierba Lazo (Grass Knot) y Patada Baja (Low Kick): su potencia real
+// depende del PESO del OBJETIVO (no del atacante), no del `power` que da la
+// API — que además no viene como null para estos dos (a diferencia de los
+// casos de arriba), sino como un valor "placeholder" (1) que NO representa
+// su potencia real; por eso este chequeo va ANTES del `entry.power != null`
+// de más abajo, si no, nunca se llegaría a activar. Tabla oficial (idéntica
+// para ambos movimientos desde que Patada Baja pasó a depender del peso en
+// la Gen III): resuelta en tiempo de combate por weightBasedPower(), ya que
+// necesita el peso del objetivo, que solo se conoce al ejecutar el golpe.
+const WEIGHT_BASED_POWER_MOVES = new Set(["grass-knot", "low-kick"]);
+
 function resolveVariablePower(entry) {
+  if (WEIGHT_BASED_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "weight-based" };
   if (entry.power != null || entry.damageClass === "status") return entry;
   if (SPEED_RATIO_MOVES.has(entry.name)) return { ...entry, specialDamage: "speed-ratio" };
   if (FIXED_LEVEL_MOVES.has(entry.name)) return { ...entry, specialDamage: "fixed-level" };
   if (SUPER_FANG_MOVES.has(entry.name)) return { ...entry, specialDamage: "fixed-half-hp" };
   if (FIXED_POWER_OVERRIDES[entry.name] != null) return { ...entry, power: FIXED_POWER_OVERRIDES[entry.name] };
   return entry;
+}
+
+// Tabla oficial de potencia según el peso del objetivo (en kg). weightKg
+// puede faltar si el fetch de /pokemon/{slug} falló y se usó el fallback sin
+// peso (ver getPokemon): 60kg de fallback da una potencia media (80),
+// razonable para no penalizar ni beneficiar el golpe en ese caso raro.
+function weightBasedPower(weightKg) {
+  const w = weightKg ?? 60;
+  if (w < 10) return 20;
+  if (w < 25) return 40;
+  if (w < 50) return 60;
+  if (w < 100) return 80;
+  if (w < 200) return 100;
+  return 120;
 }
 
 function moveEffectSummary(move) {
@@ -1146,6 +1172,10 @@ function useApiCache() {
         name: displayName(slug),
         types: data.types.map((t) => t.type.name),
         stats,
+        // /pokemon/{slug} da el peso en hectogramos; se convierte a kg aquí,
+        // una única vez, para que el resto del motor (weightBasedPower) ya
+        // trabaje directamente en kg.
+        weightKg: typeof data.weight === "number" ? data.weight / 10 : null,
         sprite: data.sprites?.other?.["official-artwork"]?.front_default || data.sprites?.front_default || null,
         shinySprite: data.sprites?.other?.["official-artwork"]?.front_shiny || data.sprites?.front_shiny || null,
       };
@@ -1155,6 +1185,7 @@ function useApiCache() {
       const fallback = {
         slug, name: displayName(slug), types: ["normal"],
         stats: { hp: 70, attack: 70, defense: 70, "special-attack": 70, "special-defense": 70, speed: 70 },
+        weightKg: null,
         sprite: null, shinySprite: null,
       };
       pokeCache.current[slug] = fallback;
@@ -1359,6 +1390,13 @@ function useApiCache() {
     if (move.specialDamage === "speed-ratio") {
       const ratio = getEffectiveSpeed(attacker, weather) / Math.max(1, getEffectiveSpeed(defender, weather));
       power = ratio >= 4 ? 150 : ratio >= 3 ? 120 : ratio >= 2 ? 80 : ratio >= 1 ? 60 : 40;
+    } else if (move.specialDamage === "weight-based") {
+      // Hierba Lazo/Patada Baja: potencia según el peso del OBJETIVO, no el
+      // `power` de la API (que para estos dos es un placeholder sin
+      // significado real, ver WEIGHT_BASED_POWER_MOVES). A partir de aquí
+      // sigue la fórmula de daño estándar sin ninguna otra excepción (STAB,
+      // tipo, crítico, aleatoriedad...).
+      power = weightBasedPower(defender.weightKg);
     }
 
     // El crítico se decide antes de leer los stages: ignora bajadas propias
@@ -1421,6 +1459,8 @@ function useApiCache() {
     if (move.specialDamage === "speed-ratio") {
       const ratio = getEffectiveSpeed(attacker, weather) / Math.max(1, getEffectiveSpeed(defender, weather));
       power = ratio >= 4 ? 150 : ratio >= 3 ? 120 : ratio >= 2 ? 80 : ratio >= 1 ? 60 : 40;
+    } else if (move.specialDamage === "weight-based") {
+      power = weightBasedPower(defender.weightKg);
     }
     let atkStat = move.damageClass === "special"
       ? getEffectiveStat(attacker, "special-attack")
@@ -2816,7 +2856,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
               {userPoke.moves.map((m, i) => {
                 const isStatus = m.damageClass === "status" || (!m.power && !m.specialDamage);
                 const categoryLabel = isStatus ? "Estado" : m.damageClass === "special" ? "Especial" : "Físico";
-                const powerLabel = isStatus ? "—" : (m.power ?? "Variable");
+                const powerLabel = isStatus ? "—" : (m.specialDamage ? "Variable" : (m.power ?? "Variable"));
                 const effectSummary = moveEffectSummary(m);
                 const eff = isStatus ? null : effectivenessMeta(effectiveness[m.name]);
                 const noPp = m.ppLeft != null && m.ppLeft <= 0;
