@@ -48,14 +48,22 @@ export const TRAINER_MOVESETS = {
 
   // --- Máximo (Steven) ---
   "maximo:metagross": ["meteor-mash", "earthquake", "ice-punch", "zen-headbutt"], // TODO: revisar
-  "maximo:skarmory": ["brave-bird", "iron-head", "toxic", "iron-defense"],
+  // Placaje de Cuerpo sustituye a Tóxico: sinergiza con Defensa Férrea (sube
+  // la misma stat que usa como arma ofensiva). Añadido para probar la nueva
+  // mecánica de Placaje de Cuerpo (usa la Defensa del atacante, no su
+  // Ataque); se deja permanente.
+  "maximo:skarmory": ["brave-bird", "iron-head", "body-press", "iron-defense"],
   "maximo:aggron": ["head-smash", "iron-head", "earthquake", "autotomize"], // TODO: revisar
   "maximo:cradily": ["giga-drain", "earthquake", "ancient-power", "toxic"],
   "maximo:armaldo": ["x-scissor", "stone-edge", "earthquake", "swords-dance"],
   "maximo:claydol": ["earth-power", "psychic", "ice-beam", "cosmic-power"],
 
   // --- Dianta (Diantha) ---
-  "dianta:gardevoir": ["moonblast", "psychic", "shadow-ball", "dazzling-gleam"],
+  // Shadow Ball sustituido por Campo de Niebla para probar la nueva
+  // mecánica de campos de batalla (Gardevoir es Hada/Psíquico, temática
+  // razonable aunque no sea su learnset real de los juegos principales;
+  // TODO: revisar si se ajusta al learnset real). Se deja permanente.
+  "dianta:gardevoir": ["moonblast", "psychic", "misty-terrain", "dazzling-gleam"],
   "dianta:hawlucha": ["swords-dance", "close-combat", "flying-press", "poison-jab"],
   "dianta:tyrantrum": ["head-smash", "dragon-claw", "earthquake", "dragon-dance"],
   "dianta:goodra": ["draco-meteor", "sludge-bomb", "fire-blast", "thunderbolt"],
@@ -80,7 +88,11 @@ export const TRAINER_MOVESETS = {
 
   // --- Gary ---
   "gary:blastoise": ["hydro-pump", "ice-beam", "flash-cannon", "dark-pulse"], // TODO: revisar
-  "gary:umbreon": ["dark-pulse", "foul-play", "toxic", "confuse-ray"],
+  // Tóxico sustituido por Bostezo para probar el sueño retardado de Bostezo
+  // (Umbreon es un muro de estado clásico, buen encaje temático; se
+  // conserva Rayo Confuso para poder seguir probando la confusión aplicada
+  // directamente por un movimiento). Se deja permanente.
+  "gary:umbreon": ["dark-pulse", "foul-play", "yawn", "confuse-ray"],
   "gary:arcanine": ["flare-blitz", "extreme-speed", "wild-charge", "crunch"],
   "gary:nidoking": ["earthquake", "poison-jab", "ice-beam", "thunderbolt"],
   "gary:scizor": ["bullet-punch", "x-scissor", "superpower", "pursuit"],
@@ -89,7 +101,10 @@ export const TRAINER_MOVESETS = {
   // --- Iris ---
   "iris:dragonite": ["outrage", "extreme-speed", "earthquake", "fire-punch"],
   "iris:excadrill": ["drill-run", "iron-head", "swords-dance", "rock-slide"],
-  "iris:emolga": ["thunderbolt", "acrobatics", "volt-switch", "u-turn"], // TODO: revisar
+  // U-turn sustituido por Viento Afín (Emolga es un setter de Viento Afín
+  // habitual en los juegos reales; se conserva Cambio de Voltios para poder
+  // seguir probando el autocambio tras golpear). Se deja permanente.
+  "iris:emolga": ["thunderbolt", "acrobatics", "volt-switch", "tailwind"], // TODO: revisar
   "iris:dragonair": ["dragon-rush", "aqua-tail", "ice-beam", "thunder-wave"], // TODO: revisar
   "iris:gigalith": ["stone-edge", "earthquake", "superpower", "sandstorm"],
   "iris:druddigon": ["dragon-claw", "earthquake", "sucker-punch", "gunk-shot"], // TODO: revisar
@@ -139,7 +154,10 @@ export const TRAINER_MOVESETS = {
 
   // --- Benito (Barry) ---
   "benito:empoleon": ["hydro-pump", "flash-cannon", "ice-beam", "grass-knot"],
-  "benito:roserade": ["sludge-bomb", "giga-drain", "sleep-powder", "shadow-ball"],
+  // Shadow Ball sustituido por Campo de Hierba para probar la nueva
+  // mecánica de campos de batalla (Roserade es tipo Planta, sinergiza con
+  // el propio Giga Drain). Se deja permanente.
+  "benito:roserade": ["sludge-bomb", "giga-drain", "sleep-powder", "grassy-terrain"],
   "benito:heracross": ["close-combat", "megahorn", "stone-edge", "swords-dance"],
   "benito:rapidash": ["flare-blitz", "wild-charge", "zen-headbutt", "iron-tail"], // TODO: revisar
   "benito:staraptor": ["brave-bird", "close-combat", "u-turn", "facade"], // TODO: revisar
@@ -162,7 +180,11 @@ export const TRAINER_MOVESETS = {
   // de tipo del resto del equipo (fuego/tierra/dragón con Flygon, acero/
   // eléctrico con Magnezone). TODO: revisar equipo.
   "cameron:flygon": ["earthquake", "dragon-claw", "fire-blast", "u-turn"], // TODO: revisar equipo
-  "cameron:magnezone": ["thunderbolt", "flash-cannon", "volt-switch", "screech"], // TODO: revisar equipo
+  // Chirrido sustituido por Campo Eléctrico para probar la nueva mecánica de
+  // campos de batalla (Magnezone es tipo Eléctrico, buen encaje temático;
+  // se conserva Cambio de Voltios en el resto de Magnezone del roster). Se
+  // deja permanente.
+  "cameron:magnezone": ["thunderbolt", "flash-cannon", "volt-switch", "electric-terrain"], // TODO: revisar equipo
 
   // --- Red ---
   "red:raichu": ["thunderbolt", "iron-tail", "volt-switch", "grass-knot"], // TODO: revisar
@@ -197,7 +219,9 @@ export const TRAINER_MOVESETS = {
   "giovanni:nidoking": ["earthquake", "poison-jab", "ice-beam", "thunderbolt"],
   "giovanni:nidoqueen": ["earthquake", "poison-jab", "ice-beam", "fire-blast"], // TODO: revisar
   "giovanni:rhyperior": ["earthquake", "stone-edge", "megahorn", "ice-punch"], // TODO: revisar
-  "giovanni:persian": ["facade", "u-turn", "night-slash", "screech"], // TODO: revisar
+  // Chirrido sustituido por Supercolmillo para probar el daño fijo (mitad
+  // de los PS actuales del objetivo). Se deja permanente.
+  "giovanni:persian": ["facade", "u-turn", "night-slash", "super-fang"], // TODO: revisar
   "giovanni:kangaskhan": ["double-edge", "earthquake", "crunch", "sucker-punch"], // TODO: revisar
   // 6º Pokémon elegido por encajar con el perfil "jefe de Team Rocket":
   // rápido, tipo Veneno/Volador para complementar la pared física
@@ -207,7 +231,10 @@ export const TRAINER_MOVESETS = {
   // --- Colress ---
   "colress:klinklang": ["gear-grind", "flash-cannon", "zen-headbutt", "thunder-wave"], // TODO: revisar
   "colress:escavalier": ["megahorn", "iron-head", "swords-dance", "drill-run"], // TODO: revisar
-  "colress:beheeyem": ["psychic", "thunderbolt", "calm-mind", "shadow-ball"], // TODO: revisar
+  // Bola Sombra sustituida por Campo Psíquico para probar la nueva mecánica
+  // de campos de batalla (Beheeyem es tipo Psíquico, buen encaje temático).
+  // Se deja permanente.
+  "colress:beheeyem": ["psychic", "thunderbolt", "calm-mind", "psychic-terrain"], // TODO: revisar
   "colress:magnezone": ["thunderbolt", "flash-cannon", "volt-switch", "screech"], // TODO: revisar
   "colress:metang": ["psychic", "zen-headbutt", "iron-head", "earthquake"], // TODO: revisar
   // 6º Pokémon elegido por encajar con el perfil de científico creador de
