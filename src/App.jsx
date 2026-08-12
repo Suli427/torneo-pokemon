@@ -4127,15 +4127,32 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection }) {
 // que ya tiene ni el pool aleatorio inicial. Reutiliza el mismo formato de
 // descripción (tipo/categoría/potencia/precisión/PP) del selector de
 // movimientos de combate, con buscador porque la lista puede ser larga.
+const MOVE_CATEGORY_OPTIONS = [
+  { value: "physical", label: "Físico" },
+  { value: "special", label: "Especial" },
+  { value: "status", label: "Estado" },
+];
+
+// Categoría visible de un movimiento ya resuelto (mismo criterio que ya usa
+// el resto de la app: de estado si su clase lo es o si no tiene ninguna
+// potencia real, ni fija ni variable).
+function moveCategoryOf(m) {
+  return m.damageClass === "status" || (!m.power && !m.specialDamage) ? "status" : m.damageClass;
+}
+
 function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
   const [allMoves, setAllMoves] = useState(null);
   const [selected, setSelected] = useState([]);
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
 
   useEffect(() => {
     if (!open || !entry) return;
     setSelected(entry.moves);
     setSearch("");
+    setTypeFilter("all");
+    setCategoryFilter("all");
     setAllMoves(null);
     let cancelled = false;
     (async () => {
@@ -4155,7 +4172,25 @@ function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
     });
   }
 
-  const filtered = (allMoves || []).filter((m) => displayMoveName(m.name).toLowerCase().includes(search.toLowerCase()));
+  // Solo se ofrecen en los selectores los tipos/categorías que de verdad
+  // aparecen entre los movimientos aprendibles de este Pokémon en concreto
+  // (no los 18 tipos/3 categorías siempre), para no mostrar opciones vacías.
+  const availableTypes = ALL_TYPES.filter((t) => (allMoves || []).some((m) => m.type === t));
+  const availableCategories = MOVE_CATEGORY_OPTIONS.filter((c) => (allMoves || []).some((m) => moveCategoryOf(m) === c.value));
+
+  const hasActiveFilters = search !== "" || typeFilter !== "all" || categoryFilter !== "all";
+  function clearFilters() {
+    setSearch("");
+    setTypeFilter("all");
+    setCategoryFilter("all");
+  }
+
+  const filtered = (allMoves || []).filter((m) => {
+    if (search && !displayMoveName(m.name).toLowerCase().includes(search.toLowerCase())) return false;
+    if (typeFilter !== "all" && m.type !== typeFilter) return false;
+    if (categoryFilter !== "all" && moveCategoryOf(m) !== categoryFilter) return false;
+    return true;
+  });
   const canConfirm = selected.length === 4;
 
   return (
@@ -4175,9 +4210,35 @@ function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Buscar movimiento..."
-          className="w-full mb-3 px-3 py-2 rounded-lg text-sm text-white outline-none shrink-0"
+          className="w-full mb-2 px-3 py-2 rounded-lg text-sm text-white outline-none shrink-0"
           style={{ background: "#0e1018", border: "1px solid #262a3a" }}
         />
+
+        <div className="flex flex-wrap items-center gap-2 mb-3 shrink-0">
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="px-2.5 py-1.5 rounded-lg text-xs text-white outline-none"
+            style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+          >
+            <option value="all">Todos los tipos</option>
+            {availableTypes.map((t) => <option key={t} value={t}>{TYPE_ES[t] || t}</option>)}
+          </select>
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="px-2.5 py-1.5 rounded-lg text-xs text-white outline-none"
+            style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+          >
+            <option value="all">Todas las categorías</option>
+            {availableCategories.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+          {hasActiveFilters && (
+            <button onClick={clearFilters} className="text-xs font-semibold" style={{ color: "#ff6b4a" }}>
+              Limpiar filtros
+            </button>
+          )}
+        </div>
 
         <div className="flex items-center justify-between mb-2 shrink-0">
           <span className="text-xs font-semibold text-[#8a8fa3]">{filtered.length} movimientos disponibles</span>
@@ -4215,7 +4276,7 @@ function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
                 </button>
               );
             })}
-            {filtered.length === 0 && <div className="text-sm text-[#5c6178] text-center py-4">Sin resultados.</div>}
+            {filtered.length === 0 && <div className="text-sm text-[#5c6178] text-center py-4">No se han encontrado movimientos con estos filtros.</div>}
           </div>
         )}
 
@@ -4308,9 +4369,47 @@ function PokemonCard({ entry, api, onUpdateMoves }) {
 }
 
 function PokemonTab({ api, collection, setCollection, onGoToGatcha }) {
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [rarityFilter, setRarityFilter] = useState("all");
+  const [shinyOnly, setShinyOnly] = useState(false);
+
   function handleUpdateMoves(entry, moves) {
     setCollection((c) => c.map((e) => (e.slug === entry.slug && !!e.shiny === !!entry.shiny) ? { ...e, moves } : e));
   }
+
+  // Tipo(s)/rareza de cada entrada vienen de GACHA_POOL (mismo lookup
+  // síncrono que ya usa PokemonCard como fallback mientras poke aún no ha
+  // cargado): no hace falta esperar al fetch async de cada tarjeta para
+  // poder filtrar. Una entrada normal y su versión shiny comparten especie,
+  // así que comparten tipo/rareza automáticamente por venir del mismo slug.
+  const infoBySlug = (slug) => GACHA_POOL.find((g) => g.slug === slug);
+
+  // Solo se ofrecen en los selectores los tipos/rarezas que de verdad están
+  // presentes en la colección actual del usuario (no los 18 tipos/6 rarezas
+  // siempre), para no mostrar opciones vacías. Un Pokémon con dos tipos
+  // cuenta para ambos.
+  const presentTypes = new Set(collection.flatMap((e) => infoBySlug(e.slug)?.types || []));
+  const availableTypes = ALL_TYPES.filter((t) => presentTypes.has(t));
+  const presentRarities = new Set(collection.map((e) => infoBySlug(e.slug)?.rarity).filter(Boolean));
+  const availableRarities = RARITY_ORDER.filter((r) => presentRarities.has(r));
+
+  const hasActiveFilters = search !== "" || typeFilter !== "all" || rarityFilter !== "all" || shinyOnly;
+  function clearFilters() {
+    setSearch("");
+    setTypeFilter("all");
+    setRarityFilter("all");
+    setShinyOnly(false);
+  }
+
+  const filteredCollection = collection.filter((entry) => {
+    if (search && !displayName(entry.slug).toLowerCase().includes(search.toLowerCase())) return false;
+    const info = infoBySlug(entry.slug);
+    if (typeFilter !== "all" && !(info?.types || []).includes(typeFilter)) return false;
+    if (rarityFilter !== "all" && info?.rarity !== rarityFilter) return false;
+    if (shinyOnly && !entry.shiny) return false;
+    return true;
+  });
 
   return (
     <div className="space-y-6">
@@ -4329,11 +4428,63 @@ function PokemonTab({ api, collection, setCollection, onGoToGatcha }) {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[70vh] overflow-y-auto pr-1">
-          {collection.map((entry, i) => (
-            <PokemonCard key={`${entry.slug}-${entry.shiny ? "shiny" : "normal"}-${i}`} entry={entry} api={api} onUpdateMoves={handleUpdateMoves} />
-          ))}
-        </div>
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar Pokémon..."
+              className="px-3 py-2 rounded-lg text-sm text-white outline-none flex-1 min-w-[10rem]"
+              style={{ background: "#14161f", border: "1px solid #262a3a" }}
+            />
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+              className="px-2.5 py-2 rounded-lg text-xs text-white outline-none"
+              style={{ background: "#14161f", border: "1px solid #262a3a" }}
+            >
+              <option value="all">Todos los tipos</option>
+              {availableTypes.map((t) => <option key={t} value={t}>{TYPE_ES[t] || t}</option>)}
+            </select>
+            <select
+              value={rarityFilter}
+              onChange={(e) => setRarityFilter(e.target.value)}
+              className="px-2.5 py-2 rounded-lg text-xs text-white outline-none"
+              style={{ background: "#14161f", border: "1px solid #262a3a" }}
+            >
+              <option value="all">Todas las rarezas</option>
+              {availableRarities.map((r) => <option key={r} value={r}>{RARITY_META[r].label}</option>)}
+            </select>
+            <button
+              onClick={() => setShinyOnly((s) => !s)}
+              className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-semibold"
+              style={{
+                background: shinyOnly ? "#f2b70522" : "#14161f",
+                border: shinyOnly ? "1px solid #f2b705" : "1px solid #262a3a",
+                color: shinyOnly ? "#f2b705" : "#8a8fa3",
+              }}
+            >
+              <Star size={12} fill={shinyOnly ? "#f2b705" : "none"} /> Solo shiny
+            </button>
+            {hasActiveFilters && (
+              <button onClick={clearFilters} className="text-xs font-semibold" style={{ color: "#ff6b4a" }}>
+                Limpiar filtros
+              </button>
+            )}
+          </div>
+
+          {filteredCollection.length === 0 ? (
+            <div className="rounded-xl p-8 text-center" style={{ background: "#14161f", border: "1px dashed #3a3f57" }}>
+              <div className="text-[#c7cbdb] font-medium">No se han encontrado Pokémon con estos filtros.</div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[70vh] overflow-y-auto pr-1">
+              {filteredCollection.map((entry, i) => (
+                <PokemonCard key={`${entry.slug}-${entry.shiny ? "shiny" : "normal"}-${i}`} entry={entry} api={api} onUpdateMoves={handleUpdateMoves} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
