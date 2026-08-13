@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
@@ -2659,7 +2659,19 @@ function useApiCache() {
     return pokes;
   }, [getPokemon, getType, getMoveset]);
 
-  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed };
+  // Memoizado: cada función individual ya es estable (useCallback), pero el
+  // objeto que las agrupa se recreaba en CADA render de App (era un objeto
+  // literal nuevo cada vez) aunque nada dentro hubiera cambiado. Mientras
+  // TorneoTab se desmontaba entero al cambiar de pestaña esto era
+  // invisible; ahora que se mantiene montado para no perder el torneo en
+  // curso (ver App), un `api` inestable volvía a disparar el useEffect de
+  // preparación de equipo de InteractiveBattle en cada re-render de App
+  // (por ejemplo, al cambiar de pestaña, que actualiza el estado `tab`),
+  // reseteando PS/PP y volviendo a sortear el Pokémon inicial de la CPU a
+  // mitad de combate. Memoizar el objeto entero evita esa cascada.
+  return useMemo(() => ({
+    getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed,
+  }), [getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed]);
 }
 
 /* ---------------------------------------------------------------
@@ -5721,8 +5733,21 @@ export default function App() {
         })}
       </nav>
 
+      {/* Las 5 tabs se montan TODAS a la vez y se ocultan con CSS
+          (display: none) en vez de renderizarse condicionalmente: así
+          ninguna se desmonta al navegar entre ellas, y el estado interno de
+          cada una (sobre todo el del torneo/combate en curso de TorneoTab,
+          que vive en sus propios useState/useRef) sobrevive a cambiar de
+          pestaña y volver. Solo sobrevive dentro de la misma sesión de la
+          app abierta (no hay nada nuevo persistido en localStorage para
+          esto): recargar la página sigue perdiendo el torneo en curso,
+          igual que antes. Ninguna de las otras tabs tiene fetches
+          recurrentes/listeners que debieran preocupar por seguir montadas
+          en segundo plano (solo hacen fetch puntual al montar o al cambiar
+          alguna de sus props), así que no hay fugas de recursos ni llamadas
+          de red de más por mantenerlas ocultas en vez de desmontadas. */}
       <main className="p-5 max-w-5xl mx-auto">
-        {tab === "torneo" && (
+        <div style={{ display: tab === "torneo" ? "block" : "none" }}>
           <TorneoTab
             api={api}
             coins={coins}
@@ -5735,8 +5760,8 @@ export default function App() {
             onTournamentFinished={addTournamentHistoryEntry}
             onCombatMechanics={recordCombatMechanics}
           />
-        )}
-        {tab === "personajes" && (
+        </div>
+        <div style={{ display: tab === "personajes" ? "block" : "none" }}>
           <PersonajesTab
             api={api}
             coins={coins}
@@ -5750,14 +5775,16 @@ export default function App() {
             onUpdateOwnedTrainerMoves={updateOwnedTrainerMoves}
             onEnsureTrainerMovesetsInitialized={ensureOwnedTrainerMovesetsInitialized}
           />
-        )}
-        {tab === "pokemon" && (
+        </div>
+        <div style={{ display: tab === "pokemon" ? "block" : "none" }}>
           <PokemonTab api={api} collection={collection} setCollection={setCollection} onGoToGatcha={() => setTab("tienda")} />
-        )}
-        {tab === "tienda" && (
+        </div>
+        <div style={{ display: tab === "tienda" ? "block" : "none" }}>
           <GatchaTab api={api} coins={coins} setCoins={setCoins} collection={collection} setCollection={setCollection} onGachaPull={recordGachaPull} />
-        )}
-        {tab === "logros" && <LogrosTab progress={achievementProgress} derived={achievementDerived} />}
+        </div>
+        <div style={{ display: tab === "logros" ? "block" : "none" }}>
+          <LogrosTab progress={achievementProgress} derived={achievementDerived} />
+        </div>
       </main>
 
       <AchievementToastStack toasts={achievementToasts} onDismiss={dismissAchievementToast} />
