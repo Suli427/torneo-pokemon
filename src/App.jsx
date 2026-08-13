@@ -2,6 +2,12 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
+import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
+import {
+  ACHIEVEMENT_PROGRESS_STORAGE_KEY, loadStoredAchievementProgress, reconstructProgress,
+  buildDerivedContext, evaluateAchievements, getProgressCounter,
+  applyTournamentResult, applyGachaPull, applyCombatMechanics,
+} from "./achievementProgress";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -300,10 +306,6 @@ function rollGachaPokemon(pool) {
 // la interfaz que muestra "Ronda X de N".
 const TOURNAMENT_ROUNDS = 5;
 
-const ACHIEVEMENTS = [
-  "Primera victoria", "Racha de 3", "Campeón de Liga", "Equipo perfecto",
-  "Coleccionista novato", "Sin ni un rasguño", "Gacha afortunado", "100 combates",
-];
 
 /* ---------------------------------------------------------------
    EFECTOS DE ESTADO Y CAMBIOS DE ESTADÍSTICAS
@@ -2282,6 +2284,16 @@ function useApiCache() {
         target: defender.name,
         effectText: inlineEffect,
         hitCount: result.hitCount,
+        // Campos añadidos únicamente para que el sistema de logros pueda
+        // detectar mecánicas concretas (OHKO, golpes múltiples perfectos,
+        // Protección exitosa, autodebilitamiento por retroceso) leyendo el
+        // log ya generado, sin necesidad de volver a ejecutar ni modificar
+        // en nada la resolución del turno (ver analyzeInteractiveBattleMechanics).
+        moveSlug: move.name,
+        maxHits: move.maxHits ?? null,
+        ohkoSuccess: !!move.isOHKO && defender.hp <= 0,
+        protectSuccess: PROTECT_MOVES.has(move.name) && attacker.protected === true,
+        attackerFainted: attacker.hp <= 0,
       });
       // El debilitamiento del rival se anota justo después del golpe, antes
       // que cualquier evento adicional (bajada de stat propia, drenaje,
@@ -2471,6 +2483,13 @@ function useApiCache() {
         target: target.name,
         effectText: inlineEffect,
         hitCount: result.hitCount,
+        // Ver comentario equivalente en runSlot (resolveTurn): mismos campos
+        // añadidos solo para la detección de logros vía log.
+        moveSlug: opponentMove.name,
+        maxHits: opponentMove.maxHits ?? null,
+        ohkoSuccess: !!opponentMove.isOHKO && target.hp <= 0,
+        protectSuccess: PROTECT_MOVES.has(opponentMove.name) && opponent.protected === true,
+        attackerFainted: opponent.hp <= 0,
       });
       // Mismo orden que en resolveTurn: el debilitamiento del objetivo se
       // anota antes que los efectos adicionales que le queden al que
@@ -2667,32 +2686,6 @@ function TypeBadge({ type }) {
     >
       {TYPE_ES[type] || type}
     </span>
-  );
-}
-
-function ComingSoonModal({ open, onClose, title }) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
-        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
-          <X size={18} />
-        </button>
-        <div className="flex justify-center mb-3"><Sparkles size={30} color="#f2b705" /></div>
-        <h3 className="font-display text-xl text-white mb-1">{title}</h3>
-        <p className="text-sm text-[#9aa0b4] leading-relaxed">
-          Esta función todavía está en el laboratorio del Profesor. ¡Vuelve pronto, entrenador!
-        </p>
-        <div className="mt-4 inline-block px-4 py-1.5 rounded-full text-xs font-bold tracking-wide"
-             style={{ background: "#f2b70522", color: "#f2b705", border: "1px solid #f2b70555" }}>
-          PRÓXIMAMENTE
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -2977,6 +2970,21 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   // estado de React.
   const weatherRef = useRef({ type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {} });
 
+  // Acumulado a lo largo de TODO el combate, solo para el sistema de
+  // logros (ver analyzeInteractiveBattleMechanics/handleInteractiveFinish
+  // en TorneoTab): no forma parte del motor de combate ni afecta a su
+  // resolución, es un simple contador de qué pasó turno a turno desde
+  // fuera. `turnsTotal`/`weatherActiveTurns`/`terrainActiveTurns` cuentan
+  // turnos resueltos (cada llamada a resolveTurn/resolveSwitchTurn) para
+  // la mayoría de clima/campo; `usedTailwindSuccess` se marca si el
+  // usuario llegó a usar Viento Afín con éxito en algún momento;
+  // `sleptRivalNames`/`forcedOutRivalNames` acumulan qué Pokémon rivales
+  // (por nombre) el usuario llegó a dormir/forzar a salir en algún punto.
+  const mechanicsRef = useRef({
+    turnsTotal: 0, weatherActiveTurns: 0, terrainActiveTurns: 0,
+    usedTailwindSuccess: false, sleptRivalNames: new Set(), forcedOutRivalNames: new Set(),
+  });
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -3180,6 +3188,30 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     setMustSwitchSide(null);
   }
 
+  // Actualiza mechanicsRef con lo ocurrido en un turno ya resuelto (ver
+  // declaración de mechanicsRef): se llama tras cada resolveTurn/
+  // resolveSwitchTurn con los `turns` que acaba de devolver y si clima/
+  // campo estaban activos ANTES de resolver ese turno (para no contar de
+  // más un clima/campo que expira justo al final del propio turno).
+  function recordMechanics(turnsChunk, weatherWasActive, terrainWasActive) {
+    const m = mechanicsRef.current;
+    m.turnsTotal += 1;
+    if (weatherWasActive) m.weatherActiveTurns += 1;
+    if (terrainWasActive) m.terrainActiveTurns += 1;
+    const aiNames = new Set(aiTeam.map((p) => p.name));
+    for (const t of turnsChunk) {
+      if (t.type === "move" && t.trainerId === userTrainer.id && t.hit && t.moveSlug && TAILWIND_MOVES.has(t.moveSlug)) {
+        m.usedTailwindSuccess = true;
+      }
+      if (t.type === "statusText" && typeof t.text === "string") {
+        for (const name of aiNames) {
+          if (t.text === `${name} se ha quedado dormido`) m.sleptRivalNames.add(name);
+          if (t.text === `¡${name} fue forzado a retirarse!`) m.forcedOutRivalNames.add(name);
+        }
+      }
+    }
+  }
+
   async function handleUserMove(move) {
     if (busy || result) return;
     setBusy(true);
@@ -3209,7 +3241,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       // abajo — así Persecución, Golpe Bajo, etc. siguen funcionando igual
       // sin duplicar ninguna lógica.
       const incoming = aiTeam[aiDecision.targetIdx];
+      const weatherWasActive = !!weather.type, terrainWasActive = !!weather.terrainType;
       const { turns, decisiveWinnerIsOpponent } = await api.resolveSwitchTurn(aiPoke, incoming, userPoke, move, userTrainer.id, weather);
+      recordMechanics(turns, weatherWasActive, terrainWasActive);
       setLog((l) => [...l, ...turns]);
       const decisiveWinnerSide = decisiveWinnerIsOpponent ? userSide : null;
       finalizeIndices(
@@ -3255,7 +3289,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       return { poke: team[idx], idx };
     }
 
+    const weatherWasActive = !!weather.type, terrainWasActive = !!weather.terrainType;
     const { turns, switchSignals, decisiveWinnerSide } = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id, weather, { benchAlive, resolveMidTurnSwitch });
+    recordMechanics(turns, weatherWasActive, terrainWasActive);
     setLog((l) => [...l, ...turns]);
     finalizeIndices(midTurnIdxA, midTurnIdxB, switchSignals, decisiveWinnerSide);
     setBusy(false);
@@ -3273,7 +3309,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     const opponentTrainerId = userSide === "a" ? trainerB.id : trainerA.id;
     const weather = weatherRef.current;
     const aiMove = await api.chooseMove(opponent, outgoing, weather, difficulty);
+    const weatherWasActive = !!weather.type, terrainWasActive = !!weather.terrainType;
     const { turns, decisiveWinnerIsOpponent } = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId, weather);
+    recordMechanics(turns, weatherWasActive, terrainWasActive);
     setLog((l) => [...l, ...turns]);
 
     // El elegido pasa a ser el candidato a activo del usuario; si el rival
@@ -3290,6 +3328,57 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   }
 
   const userWon = result && result.winnerId === userTrainer.id;
+
+  // Analiza el log COMPLETO ya acumulado del combate (todos los turnos, de
+  // los tres orígenes posibles: ataque normal, cambio forzado a mitad de
+  // turno, cambio voluntario) para el sistema de logros. Solo tiene
+  // sentido si el usuario ganó (todos los logros de mecánicas de combate
+  // son "gana un combate tras..."), así que devuelve null si no.
+  function buildBattleMechanicsFlags() {
+    if (!userWon) return null;
+    const aiNames = aiTeam.map((p) => p.name);
+    const m = mechanicsRef.current;
+
+    let ohko = false;
+    let perfectMultiHit = false;
+    let protectStreak = 0, maxProtectStreak = 0;
+    for (const t of log) {
+      if (t.type !== "move" || t.trainerId !== userTrainer.id) continue;
+      if (t.ohkoSuccess) ohko = true;
+      if (t.maxHits != null && t.hitCount === t.maxHits && t.maxHits >= 5) perfectMultiHit = true;
+      if (t.protectSuccess) { protectStreak += 1; if (protectStreak > maxProtectStreak) maxProtectStreak = protectStreak; }
+      else protectStreak = 0;
+    }
+
+    // "Sacrificio Total": el ÚLTIMO movimiento del combate entero fue del
+    // usuario, con retroceso que también le debilitó a él, Y remató al
+    // último Pokémon rival (si no hubiera sido el último rival, el combate
+    // no habría terminado ahí y seguiría habiendo más entradas en el log).
+    let simultaneousRecoilKO = false;
+    let lastMoveIdx = -1;
+    for (let i = log.length - 1; i >= 0; i--) {
+      if (log[i].type === "move") { lastMoveIdx = i; break; }
+    }
+    if (lastMoveIdx !== -1) {
+      const lastMove = log[lastMoveIdx];
+      if (lastMove.trainerId === userTrainer.id && lastMove.attackerFainted) {
+        const next = log[lastMoveIdx + 1];
+        if (next && next.type === "faint" && aiNames.includes(next.pokemon)) simultaneousRecoilKO = true;
+      }
+    }
+
+    return {
+      ohko,
+      simultaneousRecoilKO,
+      weatherMajority: m.turnsTotal > 0 && m.weatherActiveTurns > m.turnsTotal / 2,
+      terrainActive: m.terrainActiveTurns > 0,
+      usedTailwind: m.usedTailwindSuccess,
+      protectStreak3: maxProtectStreak >= 3,
+      sleptAllRivals: aiNames.length > 0 && aiNames.every((n) => m.sleptRivalNames.has(n)),
+      perfectMultiHit,
+      forcedOutAllRivals: aiNames.length > 0 && aiNames.every((n) => m.forcedOutRivalNames.has(n)),
+    };
+  }
 
   return (
     <div className="space-y-4">
@@ -3483,7 +3572,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
             {userWon ? "¡Has ganado tu combate!" : "Has perdido tu combate."} Quedan <span className="font-bold text-white">{result.remaining}</span> Pokémon en pie del ganador.
           </div>
           <button
-            onClick={() => onFinish({ ...result, log: [{ pokemonAName: trainerA.name, pokemonBName: trainerB.name, turns: log }] })}
+            onClick={() => onFinish({ ...result, log: [{ pokemonAName: trainerA.name, pokemonBName: trainerB.name, turns: log }], mechanicsFlags: buildBattleMechanicsFlags() })}
             className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-white shrink-0"
             style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
           >
@@ -3606,7 +3695,7 @@ function TournamentHistoryModal({ open, history, onClose }) {
   );
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -3804,6 +3893,15 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     setRound(newRound);
     setSimulating(false);
 
+    // Logros de mecánicas de combate (42-50): se evalúan tras CADA combate
+    // interactivo del usuario, no solo al terminar el torneo entero (ver
+    // buildBattleMechanicsFlags en InteractiveBattle, que ya deja este
+    // campo listo solo si el usuario ganó ese combate concreto).
+    const userResult = results.find((r) => r.a.id === userTrainerId || r.b.id === userTrainerId);
+    if (userResult && userResult.mechanicsFlags && onCombatMechanics) {
+      onCombatMechanics(userResult.mechanicsFlags);
+    }
+
     if (newRound >= TOURNAMENT_ROUNDS) {
       const final = sortedStandings(updated);
       const userIdx = final.findIndex((s) => s.id === userTrainerId);
@@ -3818,6 +3916,39 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       setPhase("finished");
 
       const trainer = trainerById(userTrainerId);
+      // Campos adicionales SOLO para el sistema de logros (ver
+      // src/achievementProgress.js): no afectan en nada a la clasificación
+      // ni al emparejamiento, que siguen calculándose exactamente igual
+      // que antes más arriba (standings/points/reward).
+      const trainerIdentity = mode === "C" ? "roulette" : (playAsCustom ? "custom" : userTrainerId);
+      const teamSlugs = (mode === "C" && rouletteTeam) ? rouletteTeam.map((e) => e.slug)
+        : (playAsCustom && customTrainer) ? customTrainer.team.map((t) => t.slug)
+        : (trainer?.team || []);
+      // Rareza/tipos del equipo usado, mirando el pool del gacha (única
+      // fuente ya existente de rareza/tipos por especie): si alguna especie
+      // del equipo no aparece en el pool (puede pasar con formas de equipos
+      // prediseñados que el gacha no incluye), esa comprobación se
+      // descarta sin más, sin desbloquear el logro correspondiente.
+      const teamMeta = teamSlugs.map((slug) => GACHA_POOL.find((p) => p.slug === slug)).filter(Boolean);
+      const teamRarity = (teamMeta.length === 6 && teamMeta.every((p) => p.rarity === teamMeta[0].rarity)) ? teamMeta[0].rarity : null;
+      const teamTypeDiversity3Plus = mode === "C" && new Set(teamMeta.flatMap((p) => p.types)).size >= 3;
+      const teamTypeSets = teamMeta.map((p) => new Set(p.types));
+      const teamSharedType = teamMeta.length === 6 && ALL_TYPES.some((t) => teamTypeSets.every((s) => s.has(t)));
+      // "Perfecto": el usuario ganó TODAS las rondas del torneo Y en
+      // NINGUNA perdió siquiera un Pokémon (remaining===6 en su propio
+      // resultado de cada ronda). `history` (estado de React) todavía no
+      // incluye esta última ronda en este punto, así que se reconstruye
+      // igual que el setHistory funcional de arriba.
+      const allRounds = [...history, { round: newRound, results }];
+      let perfectTournament = true;
+      let perfectRoundWins = 0;
+      for (const r of allRounds) {
+        const uR = r.results.find((res) => res.a.id === userTrainerId || res.b.id === userTrainerId);
+        const perfect = !!uR && uR.winnerId === userTrainerId && uR.remaining === 6;
+        if (perfect) perfectRoundWins += 1;
+        else perfectTournament = false;
+      }
+
       onTournamentFinished({
         date: Date.now(),
         mode,
@@ -3826,6 +3957,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         finalPosition: userIdx + 1,
         points: final[userIdx]?.points ?? 0,
         coinsEarned: reward,
+        difficulty,
+        trainerIdentity,
+        teamRarity,
+        teamTypeDiversity3Plus,
+        teamSharedType,
+        perfectTournament,
+        perfectRoundWins,
       });
     }
   }
@@ -4206,7 +4344,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
 --------------------------------------------------------------- */
 
 // Modal de confirmación de compra de entrenador, y su mensaje de éxito
-// tras confirmar. Reutiliza la misma estructura visual que ComingSoonModal.
+// tras confirmar.
 function PurchaseTrainerModal({ trainer, coins, successName, onConfirm, onClose }) {
   if (!trainer && !successName) return null;
   return (
@@ -4719,7 +4857,7 @@ function RarityProgressCard({ rarity, pool, collection }) {
   );
 }
 
-function GatchaTab({ api, coins, setCoins, collection, setCollection }) {
+function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPull }) {
   const [selectedType, setSelectedType] = useState(null); // null = gacha general
   const [showAllTypes, setShowAllTypes] = useState(false);
   const [drawing, setDrawing] = useState(false);
@@ -4761,10 +4899,12 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection }) {
         const refund = shiny ? baseRefund * 4 : baseRefund;
         setCoins((c) => c + refund);
         setResult({ slug: chosen.slug, name: pokeData.name, sprite, rarity, repeat: true, refund, shiny, emptyRarities });
+        onGachaPull?.({ isNew: false, shiny });
       } else {
         const moves = await api.assignRandomMoveset(chosen.slug);
         setCollection((c) => [...c, { slug: chosen.slug, moves, obtainedAt: Date.now(), shiny }]);
         setResult({ slug: chosen.slug, name: pokeData.name, sprite, rarity, repeat: false, shiny, emptyRarities });
+        onGachaPull?.({ isNew: true, shiny });
       }
     } catch (e) {
       setError("No se pudo completar la tirada. Comprueba tu conexión e inténtalo de nuevo.");
@@ -5224,21 +5364,129 @@ function PokemonTab({ api, collection, setCollection, onGoToGatcha }) {
    TAB: LOGROS
 --------------------------------------------------------------- */
 
-function LogrosTab({ onSoon }) {
+// Tarjeta de UN logro dentro de la tab Logros: icono/título/descripción,
+// recompensa (siempre visible, "cobrada" si ya está desbloqueado o como
+// incentivo si no), estado visual (destacado+fecha si desbloqueado,
+// candado si no) y, si el logro es acumulable, una barra de progreso.
+function AchievementCard({ achievement, unlocked, unlockedAt, counter }) {
+  const Icon = achievement.icon;
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{
+        background: unlocked ? "linear-gradient(160deg,#3a3312,#14161f)" : "#14161f",
+        border: unlocked ? "1px solid #f2b70566" : "1px solid #262a3a",
+        opacity: unlocked ? 1 : 0.85,
+      }}
+    >
+      <div className="flex items-start justify-between mb-2">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: unlocked ? "#f2b70522" : "#1c1f2c" }}>
+          {unlocked ? <Icon size={18} color="#f2b705" /> : <Lock size={16} color="#5c6178" />}
+        </div>
+        {unlocked && <Check size={16} color="#5fae5f" />}
+      </div>
+      <div className={"text-sm font-semibold mb-0.5 " + (unlocked ? "text-white" : "text-[#c7cbdb]")}>{achievement.title}</div>
+      <div className="text-[11px] text-[#8a8fa3] mb-2 leading-snug">{achievement.description}</div>
+      {counter && !unlocked && (
+        <div className="mb-2">
+          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#1c1f2c" }}>
+            <div className="h-full rounded-full" style={{ width: `${Math.min(100, (counter.current / counter.target) * 100)}%`, background: "#e3350d" }} />
+          </div>
+          <div className="text-[10px] text-[#6b7086] mt-1">{counter.current}/{counter.target}</div>
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-semibold" style={{ color: unlocked ? "#f2b705" : "#8a8fa3" }}>
+          {unlocked ? `+${achievement.reward} monedas cobradas` : `Recompensa: ${achievement.reward} monedas`}
+        </span>
+        {unlocked && unlockedAt && (
+          <span className="text-[10px] text-[#5c6178] shrink-0">{new Date(unlockedAt).toLocaleDateString("es-ES")}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LogrosTab({ progress, derived }) {
+  const unlockedIds = progress.unlockedAchievementIds;
+  const totalCoinsFromAchievements = ACHIEVEMENTS.filter((a) => unlockedIds.includes(a.id)).reduce((sum, a) => sum + a.reward, 0);
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Award size={22} color="#e3350d" /> Logros</h2>
-        <p className="text-sm text-[#9aa0b4]">Completa retos en la Liga para desbloquear insignias especiales.</p>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Award size={22} color="#e3350d" /> Logros</h2>
+          <p className="text-sm text-[#9aa0b4]">Completa retos en la Liga para desbloquear insignias especiales y monedas extra.</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "#1c1f2c", border: "1px solid #2c2f42", color: "#c7cbdb" }}>
+            {unlockedIds.length}/{ACHIEVEMENTS.length} logros desbloqueados
+          </div>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: "#f2b70518", border: "1px solid #f2b70544" }}>
+            <Coins size={14} color="#f2b705" />
+            <span className="text-xs font-display text-[#f2b705]">+{totalCoinsFromAchievements} monedas por logros</span>
+          </div>
+        </div>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {ACHIEVEMENTS.map((a) => (
-          <button key={a} onClick={() => onSoon(a)} className="rounded-xl p-4 text-left" style={{ background: "#14161f", border: "1px dashed #3a3f57" }}>
-            <Lock size={18} color="#5c6178" className="mb-3" />
-            <div className="text-sm text-[#c7cbdb] font-medium">{a}</div>
-          </button>
-        ))}
+
+      {ACHIEVEMENT_CATEGORIES.map((cat) => {
+        const items = ACHIEVEMENTS.filter((a) => a.category === cat.id);
+        return (
+          <div key={cat.id}>
+            <h3 className="text-xs font-display text-[#8a8fa3] mb-2 uppercase tracking-wide">{cat.label}</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {items.map((a) => (
+                <AchievementCard
+                  key={a.id}
+                  achievement={a}
+                  unlocked={unlockedIds.includes(a.id)}
+                  unlockedAt={progress.unlockedAt[a.id]}
+                  counter={getProgressCounter(a.id, progress, derived)}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Notificación breve de logro recién desbloqueado: se apila en la esquina
+// (varias a la vez si se desbloquea más de uno de golpe) y se retira sola
+// tras unos segundos, o al pulsarla. Mismo estilo dorado de celebración
+// que ya usa GachaResultModal para un Pokémon shiny.
+function AchievementToast({ toast, onDismiss }) {
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 5000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast.key]);
+  const Icon = toast.icon;
+  return (
+    <div
+      onClick={onDismiss}
+      className="rounded-xl p-3.5 flex items-center gap-3 cursor-pointer shadow-lg"
+      style={{ background: "linear-gradient(135deg,#3a3312,#1b1e2b)", border: "1px solid #f2b705" }}
+    >
+      <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style={{ background: "#f2b70522" }}>
+        <Icon size={20} color="#f2b705" />
       </div>
+      <div className="min-w-0">
+        <div className="text-[11px] font-bold" style={{ color: "#f2b705" }}>🏆 ¡Logro desbloqueado!</div>
+        <div className="text-sm text-white font-semibold truncate">{toast.title}</div>
+        <div className="text-[11px] text-[#c7cbdb]">+{toast.reward} monedas</div>
+      </div>
+    </div>
+  );
+}
+
+function AchievementToastStack({ toasts, onDismiss }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div className="fixed bottom-4 right-4 z-50 space-y-2 w-[92%] max-w-sm">
+      {toasts.map((t) => (
+        <AchievementToast key={t.key} toast={t} onDismiss={() => onDismiss(t.key)} />
+      ))}
     </div>
   );
 }
@@ -5256,7 +5504,29 @@ export default function App() {
   const [customTrainer, setCustomTrainer] = useState(() => loadStoredCustomTrainer(loadStoredCollection()));
   const [ownedTrainerMovesets, setOwnedTrainerMovesets] = useState(loadStoredOwnedTrainerMovesets);
   const [tournamentHistory, setTournamentHistory] = useState(loadStoredTournamentHistory);
-  const [soon, setSoon] = useState(null);
+  // Progreso del sistema de logros: si ya existe guardado, se usa tal
+  // cual; si esta es la PRIMERA vez que se activa el sistema sobre una
+  // partida ya en curso (no existe todavía la clave en localStorage), se
+  // reconstruye retroactivamente a partir de todo lo que ya hay
+  // persistido (ver reconstructProgress) y lo que ya se cumpla con ese
+  // progreso reconstruido queda desbloqueado EN SILENCIO — sin toast ni
+  // monedas, es una carga inicial, no un evento en vivo. Se relee
+  // localStorage de forma independiente (mismo patrón que
+  // `loadStoredCustomTrainer(loadStoredCollection())` más abajo) porque
+  // este useState se ejecuta antes de que el resto de useState de arriba
+  // "compartan" su valor ya cargado.
+  const [achievementProgress, setAchievementProgress] = useState(() => {
+    const stored = loadStoredAchievementProgress();
+    if (stored) return stored;
+    return reconstructProgress({
+      tournamentHistory: loadStoredTournamentHistory(),
+      collection: loadStoredCollection(),
+      purchasedTrainerIds: loadStoredPurchasedTrainers(),
+      customTrainer: loadStoredCustomTrainer(loadStoredCollection()),
+      coins: loadStoredCoins(),
+    });
+  });
+  const [achievementToasts, setAchievementToasts] = useState([]);
 
   useEffect(() => {
     try { localStorage.setItem(COINS_STORAGE_KEY, String(coins)); } catch (e) { /* localStorage no disponible */ }
@@ -5284,11 +5554,61 @@ export default function App() {
     try { localStorage.setItem(TOURNAMENT_HISTORY_STORAGE_KEY, JSON.stringify(tournamentHistory)); } catch (e) { /* localStorage no disponible */ }
   }, [tournamentHistory]);
 
+  useEffect(() => {
+    try { localStorage.setItem(ACHIEVEMENT_PROGRESS_STORAGE_KEY, JSON.stringify(achievementProgress)); } catch (e) { /* localStorage no disponible */ }
+  }, [achievementProgress]);
+
+  // Contexto derivado en vivo (colección/entrenadores comprados/entrenador
+  // propio) para las condiciones de logros que no hace falta duplicar como
+  // contador aparte en achievementProgress (ver buildDerivedContext).
+  const achievementDerived = buildDerivedContext({ collection, purchasedTrainerIds, customTrainer, gachaPool: GACHA_POOL });
+
+  // Reevalúa los 50 logros cada vez que cambia el progreso o cualquiera de
+  // los datos de los que dependen las condiciones derivadas en vivo
+  // (colección, entrenadores comprados, entrenador propio): si algo se
+  // acaba de cumplir que todavía no estaba en unlockedAchievementIds, se
+  // otorgan sus monedas y se encola su notificación toast. Converge solo:
+  // el propio setAchievementProgress de aquí añade esos ids a
+  // unlockedAchievementIds, así que la siguiente pasada de este mismo
+  // efecto ya no encuentra nada nuevo que desbloquear.
+  useEffect(() => {
+    const { progress: nextProgress, newlyUnlocked } = evaluateAchievements(achievementProgress, achievementDerived);
+    if (newlyUnlocked.length === 0) return;
+    setAchievementProgress(nextProgress);
+    setCoins((c) => c + newlyUnlocked.reduce((sum, a) => sum + a.reward, 0));
+    setAchievementToasts((prev) => [
+      ...prev,
+      ...newlyUnlocked.map((a) => ({ key: `${a.id}-${Date.now()}-${Math.random()}`, title: a.title, reward: a.reward, icon: a.icon })),
+    ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [achievementProgress, collection, purchasedTrainerIds, customTrainer]);
+
+  function dismissAchievementToast(key) {
+    setAchievementToasts((prev) => prev.filter((t) => t.key !== key));
+  }
+
   // Se añade al terminar cada torneo (fase "finished"); se guarda con el más
   // reciente primero y se recorta a las últimas TOURNAMENT_HISTORY_LIMIT
-  // entradas para no acumular datos indefinidamente.
+  // entradas para no acumular datos indefinidamente. También alimenta el
+  // progreso de logros (torneos jugados/ganados, rachas, modo, dificultad,
+  // rareza/tipos del equipo...), a partir de los mismos campos que ya trae
+  // `entry` desde TorneoTab (ver finalizeRound).
   function addTournamentHistoryEntry(entry) {
     setTournamentHistory((h) => [entry, ...h].slice(0, TOURNAMENT_HISTORY_LIMIT));
+    setAchievementProgress((p) => applyTournamentResult(p, entry));
+  }
+
+  // Al hacer una tirada de gacha (ver GatchaTab): alimenta los contadores
+  // de tiradas totales/repetidos seguidos/shinies del progreso de logros.
+  function recordGachaPull({ isNew, shiny }) {
+    setAchievementProgress((p) => applyGachaPull(p, { isNew, shiny }));
+  }
+
+  // Al terminar cada combate interactivo del usuario dentro de un torneo
+  // (ver TorneoTab.finalizeRound / InteractiveBattle.buildBattleMechanicsFlags):
+  // alimenta los flags de mecánicas de combate del progreso de logros.
+  function recordCombatMechanics(flags) {
+    setAchievementProgress((p) => applyCombatMechanics(p, flags));
   }
 
   function purchaseTrainer(trainerId, price) {
@@ -5390,6 +5710,7 @@ export default function App() {
             ownedTrainerMovesets={ownedTrainerMovesets}
             tournamentHistory={tournamentHistory}
             onTournamentFinished={addTournamentHistoryEntry}
+            onCombatMechanics={recordCombatMechanics}
           />
         )}
         {tab === "personajes" && (
@@ -5410,12 +5731,12 @@ export default function App() {
           <PokemonTab api={api} collection={collection} setCollection={setCollection} onGoToGatcha={() => setTab("tienda")} />
         )}
         {tab === "tienda" && (
-          <GatchaTab api={api} coins={coins} setCoins={setCoins} collection={collection} setCollection={setCollection} />
+          <GatchaTab api={api} coins={coins} setCoins={setCoins} collection={collection} setCollection={setCollection} onGachaPull={recordGachaPull} />
         )}
-        {tab === "logros" && <LogrosTab onSoon={setSoon} />}
+        {tab === "logros" && <LogrosTab progress={achievementProgress} derived={achievementDerived} />}
       </main>
 
-      <ComingSoonModal open={!!soon} title={soon} onClose={() => setSoon(null)} />
+      <AchievementToastStack toasts={achievementToasts} onDismiss={dismissAchievementToast} />
     </div>
   );
 }
