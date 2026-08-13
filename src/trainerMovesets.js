@@ -242,6 +242,248 @@ export const TRAINER_MOVESETS = {
   "colress:porygon-z": ["tri-attack", "thunderbolt", "ice-beam", "nasty-plot"], // TODO: revisar equipo
 };
 
+/* ---------------------------------------------------------------
+   MOVESETS AVANZADOS (SOLO CPU, DIFICULTAD DIFÍCIL/MAESTRO)
+   Misma clave `${trainerId}:${slug}` que TRAINER_MOVESETS. Usados
+   ÚNICAMENTE por la CPU cuando la dificultad del torneo es Difícil o
+   Maestro (App.jsx, getMoveset) — nunca por el equipo que controla el
+   propio usuario, sea cual sea su origen (entrenador propio, Ruleta
+   Pokémon, o un entrenador comprado con el que el usuario juegue: ver
+   item 5, ownedTrainerMovesets). Si algún Pokémon no tiene entrada aquí,
+   getMoveset cae a su set de TRAINER_MOVESETS con normalidad.
+
+   A diferencia de TRAINER_MOVESETS (cada Pokémon optimizado por sí solo),
+   aquí el criterio es de EQUIPO: cobertura de tipos combinada entre los 6
+   para no compartir la misma debilidad sin que el resto la tape, y un rol
+   de utilidad (Viento Afín/campo de batalla) en el Pokémon del equipo que
+   mejor encaja para dárselo a los más lentos/al resto de tipos afines,
+   cuando el equipo se beneficia claramente de ello. Mismas restricciones
+   de mecánica que TRAINER_MOVESETS (ver su cabecera): nada de curación
+   plana, hazards, pantallas, Substitute, Leech Seed, Roar/Whirlwind,
+   Taunt/Encore/Disable, Trick Room ni movimientos de auto-KO.
+--------------------------------------------------------------- */
+
+export const TRAINER_MOVESETS_ADVANCED = {
+  // --- Cintia: núcleo ofensivo variado; Milotic sigue de "phazer" (Cola
+  // Dragón) para desgastar detrás de Roserade (dormir) y Spiritomb (quemar),
+  // dejando que Garchomp/Lucario/Togekiss rematen ya debilitados/con setup. ---
+  "cintia:garchomp": ["earthquake", "dragon-claw", "stone-edge", "swords-dance"],
+  "cintia:spiritomb": ["shadow-ball", "dark-pulse", "sucker-punch", "will-o-wisp"],
+  "cintia:lucario": ["close-combat", "extreme-speed", "swords-dance", "crunch"],
+  "cintia:milotic": ["scald", "ice-beam", "dragon-tail", "toxic"],
+  "cintia:roserade": ["sludge-bomb", "giga-drain", "sleep-powder", "shadow-ball"],
+  "cintia:togekiss": ["air-slash", "dazzling-gleam", "aura-sphere", "nasty-plot"],
+
+  // --- Máximo: núcleo Acero/Roca defensivo; Skarmory (Defensa Férrea +
+  // Placaje de Cuerpo) es la pared que aguanta mientras Metagross/Aggron
+  // rematan con Puñetazo Bala/Cabezazo Zen de prioridad. ---
+  "maximo:metagross": ["meteor-mash", "earthquake", "bullet-punch", "zen-headbutt"],
+  "maximo:skarmory": ["brave-bird", "iron-head", "body-press", "iron-defense"],
+  "maximo:aggron": ["head-smash", "iron-head", "earthquake", "autotomize"],
+  "maximo:cradily": ["giga-drain", "earthquake", "ancient-power", "toxic"],
+  "maximo:armaldo": ["x-scissor", "stone-edge", "earthquake", "swords-dance"],
+  "maximo:claydol": ["earth-power", "psychic", "ice-beam", "cosmic-power"],
+
+  // --- Dianta: Gardevoir pone Campo de Niebla (protege a todo el equipo de
+  // estados y confusión, y debilita a la mitad los golpes Dragón que Goodra/
+  // Tyrantrum reciben con frecuencia) mientras el resto ataca con libertad. ---
+  "dianta:gardevoir": ["moonblast", "psychic", "misty-terrain", "dazzling-gleam"],
+  "dianta:hawlucha": ["swords-dance", "close-combat", "flying-press", "poison-jab"],
+  "dianta:tyrantrum": ["head-smash", "dragon-claw", "earthquake", "dragon-dance"],
+  "dianta:goodra": ["draco-meteor", "sludge-bomb", "fire-blast", "thunderbolt"],
+  "dianta:aurorus": ["freeze-dry", "ancient-power", "thunderbolt", "earth-power"],
+  "dianta:gourgeist-average": ["shadow-ball", "seed-bomb", "will-o-wisp", "toxic"],
+
+  // --- Lionel: equipo de intercambios rápidos (Cambio de Voltios/U-turn en
+  // tres miembros) que va metiendo daño y trayendo al mejor matchup sin
+  // arriesgar el turno; Aegislash cierra con Espada Sagrada tras el Rey Escudo. ---
+  "lionel:charizard": ["flare-blitz", "air-slash", "dragon-claw", "earthquake"],
+  "lionel:dragapult": ["dragon-darts", "phantom-force", "u-turn", "sucker-punch"],
+  "lionel:aegislash-shield": ["iron-head", "shadow-ball", "kings-shield", "sacred-sword"],
+  "lionel:rillaboom": ["wood-hammer", "u-turn", "superpower", "earthquake"],
+  "lionel:cinderace": ["pyro-ball", "u-turn", "sucker-punch", "gunk-shot"],
+  "lionel:mr-rime": ["icy-wind", "psychic", "nasty-plot", "fire-punch"],
+
+  // --- Paul: Ninjask (Danza Espada + Viento Afín en vez de Chirrido) duplica
+  // su propia Velocidad para el resto del equipo durante 4 turnos, dejando
+  // que Torterra/Ursaring/Electivire (más lentos) golpeen primero también. ---
+  "paul:electivire": ["thunder-punch", "fire-punch", "ice-punch", "earthquake"],
+  "paul:torterra": ["frenzy-plant", "earthquake", "stone-edge", "superpower"],
+  "paul:ninjask": ["swords-dance", "x-scissor", "aerial-ace", "tailwind"],
+  "paul:ursaring": ["facade", "close-combat", "hammer-arm", "swords-dance"],
+  "paul:ariados": ["megahorn", "poison-jab", "sucker-punch", "crunch"],
+  "paul:ambipom": ["double-hit", "u-turn", "low-kick", "fake-out"],
+
+  // --- Gary: equipo balanceado clásico; Scizor (Puñetazo Bala) da control
+  // de prioridad al único punto lento del equipo, Electivire limpia con
+  // Trueno tras el desgaste de Umbreon/Nidoking. ---
+  "gary:blastoise": ["hydro-pump", "ice-beam", "flash-cannon", "dark-pulse"],
+  "gary:umbreon": ["dark-pulse", "foul-play", "toxic", "confuse-ray"],
+  "gary:arcanine": ["flare-blitz", "extreme-speed", "wild-charge", "crunch"],
+  "gary:nidoking": ["earthquake", "poison-jab", "ice-beam", "thunderbolt"],
+  "gary:scizor": ["bullet-punch", "x-scissor", "superpower", "pursuit"],
+  "gary:electivire": ["thunder", "ice-punch", "fire-punch", "protect"],
+
+  // --- Iris: equipo pesado en Dragón/Roca (débil a Hielo por todas partes);
+  // Emolga (Viento Afín en vez de Acrobacia) es quien de verdad arregla eso,
+  // dando velocidad a Gigalith/Druddigon/Dragonair antes de que el rival
+  // pueda aprovechar esa debilidad compartida. ---
+  "iris:dragonite": ["outrage", "extreme-speed", "earthquake", "fire-punch"],
+  "iris:excadrill": ["drill-run", "iron-head", "swords-dance", "rock-slide"],
+  "iris:emolga": ["thunderbolt", "volt-switch", "tailwind", "acrobatics"],
+  "iris:dragonair": ["dragon-rush", "aqua-tail", "ice-beam", "thunder-wave"],
+  "iris:gigalith": ["stone-edge", "earthquake", "superpower", "sandstorm"],
+  "iris:druddigon": ["dragon-claw", "earthquake", "sucker-punch", "gunk-shot"],
+
+  // --- Ash: Raichu (Cambio de Voltios) trae al mejor matchup entre
+  // Dragonite/Lucario/Gengar según lo que salga enfrente; Sirfetch'd y
+  // Goodra cubren los huecos de Lucha/Dragón que el resto deja abiertos. ---
+  "ash:raichu": ["thunderbolt", "iron-tail", "volt-switch", "grass-knot"],
+  "ash:dragonite": ["dragon-claw", "extreme-speed", "earthquake", "fire-punch"],
+  "ash:sirfetchd": ["close-combat", "leaf-blade", "brave-bird", "swords-dance"],
+  "ash:gengar": ["shadow-ball", "sludge-bomb", "thunderbolt", "focus-blast"],
+  "ash:lucario": ["close-combat", "extreme-speed", "ice-punch", "crunch"],
+  "ash:goodra": ["draco-meteor", "sludge-bomb", "fire-blast", "thunderbolt"],
+
+  // --- Lance: equipo Dragón/Volador/Agua muy ofensivo pero con debilidades
+  // compartidas (Hielo, Roca, Eléctrico) difíciles de tapar sin hazards;
+  // Kingdra pone Danza Lluvia para que su propio Hidrobomba y el Agua de
+  // Gyarados peguen más fuerte mientras dura. ---
+  "lance:gyarados": ["dragon-dance", "waterfall", "crunch", "ice-fang"],
+  "lance:dragonite": ["outrage", "extreme-speed", "earthquake", "fire-punch"],
+  "lance:charizard": ["flare-blitz", "air-slash", "dragon-claw", "earthquake"],
+  "lance:aerodactyl": ["stone-edge", "aerial-ace", "crunch", "ice-fang"],
+  "lance:kingdra": ["hydro-pump", "dragon-pulse", "ice-beam", "rain-dance"],
+
+  // --- Wallace: equipo de lluvia real — Ludicolo YA pone Danza Lluvia, y
+  // ahora Milotic/Starmie también se benefician de su Agua potenciado x1.5
+  // mientras dura, con Whiscash (inmune a Electrizar por Tierra) tapando el
+  // hueco eléctrico que el resto del equipo comparte. ---
+  "wallace:milotic": ["scald", "ice-beam", "dragon-tail", "toxic"],
+  "wallace:ludicolo": ["giga-drain", "scald", "ice-beam", "rain-dance"],
+  "wallace:whiscash": ["earthquake", "scald", "ice-beam", "toxic"],
+  "wallace:gyarados": ["dragon-dance", "waterfall", "crunch", "ice-fang"],
+  "wallace:wailord": ["hydro-pump", "ice-beam", "double-edge", "toxic"],
+  "wallace:starmie": ["hydro-pump", "psychic", "ice-beam", "thunderbolt"],
+
+  // --- Alder: Volcarona (Danza Plumas) es el sweeper principal; el resto
+  // del equipo (Bouffalant/Druddigon/Escavalier) pega fuerte para desgastar
+  // antes de que Volcarona/Accelgor rematen con velocidad. ---
+  "alder:volcarona": ["quiver-dance", "fire-blast", "bug-buzz", "hurricane"],
+  "alder:bouffalant": ["facade", "earthquake", "swords-dance", "superpower"],
+  "alder:vanilluxe": ["blizzard", "flash-cannon", "signal-beam", "ice-beam"],
+  "alder:druddigon": ["dragon-claw", "earthquake", "sucker-punch", "gunk-shot"],
+  "alder:escavalier": ["megahorn", "iron-head", "swords-dance", "drill-run"],
+  "alder:accelgor": ["bug-buzz", "focus-blast", "sludge-bomb", "acid-spray"],
+
+  // --- Alain: núcleo Siniestro/Acero/Roca muy físico (Bisharp/Weavile/
+  // Tyranitar); Metagross con Puñetazo Bala da la prioridad que al resto le
+  // falta, y Charizard cubre el hueco Lucha que ese núcleo comparte. ---
+  "alain:charizard": ["flare-blitz", "air-slash", "dragon-claw", "earthquake"],
+  "alain:bisharp": ["iron-head", "sucker-punch", "swords-dance", "knock-off"],
+  "alain:unfezant": ["facade", "air-slash", "superpower", "steel-wing"],
+  "alain:weavile": ["ice-punch", "knock-off", "swords-dance", "pursuit"],
+  "alain:metagross": ["meteor-mash", "earthquake", "bullet-punch", "zen-headbutt"],
+  "alain:tyranitar": ["stone-edge", "crunch", "earthquake", "dragon-dance"],
+
+  // --- Sabino: Sceptile pone Campo de Hierba (potencia su propio Planta
+  // x1.3 y cura 1/16 cada turno a todo el equipo con los pies en el suelo),
+  // sustento extra muy útil para Slaking, que no tiene forma de recuperar
+  // PS por sí mismo. ---
+  "sabino:sceptile": ["leaf-storm", "dragon-pulse", "focus-blast", "grassy-terrain"],
+  "sabino:slaking": ["giga-impact", "earthquake", "facade", "double-edge"],
+  "sabino:aegislash-shield": ["iron-head", "shadow-ball", "kings-shield", "sacred-sword"],
+  "sabino:salamence": ["dragon-claw", "earthquake", "fire-fang", "dragon-dance"],
+  "sabino:clawitzer": ["hydro-pump", "dark-pulse", "aura-sphere", "ice-beam"],
+  "sabino:beedrill": ["poison-jab", "x-scissor", "brick-break", "swords-dance"],
+
+  // --- Benito: Roserade YA pone Campo de Hierba, que cura 1/16 cada turno a
+  // todo el equipo (Empoleon/Heracross/Rapidash/Staraptor/Floatzel incluidos,
+  // ninguno tiene recuperación propia) y debilita el Terremoto que el equipo
+  // comparte como debilidad frecuente. ---
+  "benito:empoleon": ["hydro-pump", "flash-cannon", "ice-beam", "grass-knot"],
+  "benito:roserade": ["sludge-bomb", "giga-drain", "sleep-powder", "grassy-terrain"],
+  "benito:heracross": ["close-combat", "megahorn", "stone-edge", "swords-dance"],
+  "benito:rapidash": ["flare-blitz", "wild-charge", "zen-headbutt", "iron-tail"],
+  "benito:staraptor": ["brave-bird", "close-combat", "u-turn", "facade"],
+  "benito:floatzel": ["waterfall", "aqua-jet", "crunch", "ice-punch"],
+
+  // --- Trip: Conkeldurr (Golpe Drenaje) es el único con sustento propio;
+  // Serperior/Darmanitan pegan fuerte primero para que Jellicent/Vanilluxe
+  // rematen con su propio STAB sin resistencias de por medio. ---
+  "trip:serperior": ["leaf-storm", "dragon-pulse", "glare", "giga-drain"],
+  "trip:conkeldurr": ["drain-punch", "mach-punch", "ice-punch", "knock-off"],
+  "trip:jellicent-male": ["scald", "shadow-ball", "will-o-wisp", "toxic"],
+  "trip:vanilluxe": ["blizzard", "flash-cannon", "signal-beam", "ice-beam"],
+  "trip:darmanitan-standard": ["flare-blitz", "superpower", "rock-slide", "u-turn"],
+  "trip:boldore": ["rock-slide", "earthquake", "toxic", "sandstorm"],
+
+  // --- Cameron: Magnezone YA pone Campo Eléctrico, que potencia su propio
+  // Rayo x1.3 y protege a todo el equipo con los pies en el suelo de
+  // quedarse dormido (Lucario/Hydreigon/Samurott/Flygon), un problema real
+  // contra equipos con Hipnosis/Somnífero/Bostezo. ---
+  "cameron:lucario": ["close-combat", "extreme-speed", "ice-punch", "crunch"],
+  "cameron:hydreigon": ["dark-pulse", "draco-meteor", "flamethrower", "earth-power"],
+  "cameron:samurott": ["hydro-pump", "megahorn", "ice-beam", "aqua-jet"],
+  "cameron:swanna": ["hurricane", "scald", "ice-beam", "facade"],
+  "cameron:flygon": ["earthquake", "dragon-claw", "fire-blast", "u-turn"],
+  "cameron:magnezone": ["thunderbolt", "flash-cannon", "volt-switch", "electric-terrain"],
+
+  // --- Red: Espeon pone Campo Psíquico en vez de Poder Oculto — potencia su
+  // propio Psíquico x1.3 y, más importante, bloquea la prioridad rival
+  // contra el resto del equipo con los pies en el suelo mientras Snorlax
+  // (con Malicioso de setup) y Venusaur se preparan sin miedo a un
+  // Puñetazo Bala/Mach Punch que los remate antes de tiempo. ---
+  "red:raichu": ["thunderbolt", "iron-tail", "volt-switch", "grass-knot"],
+  "red:charizard": ["flare-blitz", "air-slash", "dragon-claw", "earthquake"],
+  "red:snorlax": ["body-slam", "earthquake", "crunch", "curse"],
+  "red:espeon": ["psychic", "shadow-ball", "dazzling-gleam", "psychic-terrain"],
+  "red:venusaur": ["giga-drain", "sludge-bomb", "earthquake", "sleep-powder"],
+  "red:blastoise": ["hydro-pump", "ice-beam", "flash-cannon", "dark-pulse"],
+
+  // --- Cyrus: Magnezone (Campo Eléctrico) repite la misma sinergia que en
+  // el equipo de Cameron (protege de sueño a Weavile/Crobat/Gyarados/
+  // Honchkrow/Houndoom, todos sin recuperación propia). ---
+  "cyrus:weavile": ["ice-punch", "knock-off", "swords-dance", "pursuit"],
+  "cyrus:crobat": ["brave-bird", "cross-poison", "u-turn", "toxic"],
+  "cyrus:gyarados": ["dragon-dance", "waterfall", "crunch", "ice-fang"],
+  "cyrus:honchkrow": ["brave-bird", "sucker-punch", "superpower", "heat-wave"],
+  "cyrus:houndoom": ["dark-pulse", "flamethrower", "sludge-bomb", "nasty-plot"],
+  "cyrus:magnezone": ["thunderbolt", "flash-cannon", "volt-switch", "electric-terrain"],
+
+  // --- N: Carracosta (Concha Filo) se auto-prepara para barrer; Zoroark
+  // limpia con Maquinación; sin forma de dar velocidad al resto, así que
+  // Archeops/Darmanitan siguen apoyándose en Cambio de Voltios propio para
+  // salir del paso ante un mal matchup. ---
+  "n:zoroark": ["dark-pulse", "flamethrower", "sludge-bomb", "nasty-plot"],
+  "n:carracosta": ["shell-smash", "waterfall", "stone-edge", "earthquake"],
+  "n:klinklang": ["gear-grind", "flash-cannon", "zen-headbutt", "thunder-wave"],
+  "n:vanilluxe": ["blizzard", "flash-cannon", "signal-beam", "ice-beam"],
+  "n:archeops": ["stone-edge", "earthquake", "u-turn", "acrobatics"],
+  "n:darmanitan-standard": ["flare-blitz", "superpower", "rock-slide", "u-turn"],
+
+  // --- Giovanni: Rhyperior (inmune por completo a Tormenta de Arena, y su
+  // Roca recibe el x1.5 de Defensa Especial que da el clima) pone Tormenta
+  // de Arena en vez de Puño Hielo, chip constante contra cualquiera que no
+  // sea Roca/Tierra/Acero mientras Nidoking/Nidoqueen/Persian rematan. ---
+  "giovanni:nidoking": ["earthquake", "poison-jab", "ice-beam", "thunderbolt"],
+  "giovanni:nidoqueen": ["earthquake", "poison-jab", "ice-beam", "fire-blast"],
+  "giovanni:rhyperior": ["earthquake", "stone-edge", "megahorn", "sandstorm"],
+  "giovanni:persian": ["facade", "u-turn", "night-slash", "super-fang"],
+  "giovanni:kangaskhan": ["double-edge", "earthquake", "crunch", "sucker-punch"],
+  "giovanni:crobat": ["brave-bird", "cross-poison", "u-turn", "toxic"],
+
+  // --- Colress: Beheeyem YA pone Campo Psíquico — potencia su propio
+  // Psíquico x1.3 y bloquea la prioridad rival contra Klinklang/Magnezone/
+  // Metang mientras ganan sus propios stages/setup. ---
+  "colress:klinklang": ["gear-grind", "flash-cannon", "zen-headbutt", "thunder-wave"],
+  "colress:escavalier": ["megahorn", "iron-head", "swords-dance", "drill-run"],
+  "colress:beheeyem": ["psychic", "thunderbolt", "calm-mind", "psychic-terrain"],
+  "colress:magnezone": ["thunderbolt", "flash-cannon", "volt-switch", "electric-terrain"],
+  "colress:metang": ["psychic", "zen-headbutt", "iron-head", "earthquake"],
+  "colress:porygon-z": ["tri-attack", "thunderbolt", "ice-beam", "nasty-plot"],
+};
+
 // Fallback genérico por tipo elemental, usado solo si en el futuro se añade
 // un Pokémon sin entrada en TRAINER_MOVESETS. Se mantiene sin cambios: ya
 // eran movimientos de cobertura/STAB razonables, coherentes con el mismo

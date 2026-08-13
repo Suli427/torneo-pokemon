@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check } from "lucide-react";
-import { TRAINER_MOVESETS, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
+import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 
 /* ---------------------------------------------------------------
@@ -142,6 +142,26 @@ function loadStoredTournamentHistory() {
   return [];
 }
 
+const OWNED_TRAINER_MOVESETS_STORAGE_KEY = "liga-pokemon:owned-trainer-movesets";
+
+// Movesets EDITADOS por el usuario para entrenadores comprados que usa para
+// jugar él mismo (no el entrenador propio creado desde cero, que tiene su
+// propia estructura vía `collection`): { [`${trainerId}:${slug}`]: [4
+// nombres de movimiento] }. Independiente de TRAINER_MOVESETS/
+// TRAINER_MOVESETS_ADVANCED (que la CPU sigue usando siempre sin
+// modificar, ver App.jsx); solo se lee/escribe cuando el propio usuario
+// juega CON ese entrenador. Mismo patrón try/catch que el resto.
+function loadStoredOwnedTrainerMovesets() {
+  try {
+    const raw = localStorage.getItem(OWNED_TRAINER_MOVESETS_STORAGE_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return {};
+}
+
 // Identidad única de una entrada de colección: slug + shiny, ya que ahora
 // una misma especie puede tener hasta dos entradas independientes (normal y
 // shiny), cada una con su propio moveset. Se usa tanto para comprobar
@@ -182,11 +202,19 @@ function loadStoredCustomTrainer(collection) {
 }
 
 const NAME_OVERRIDES = { sirfetchd: "Sirfetch'd", "mr-rime": "Mr. Rime", "gourgeist-average": "Gourgeist", "aegislash-shield": "Aegislash" };
+// `w[0].toUpperCase()` asume que cada trozo entre guiones no está vacío;
+// algunos slugs de la propia API (ej. las dos variantes "--physical"/
+// "--special" de los movimientos Z, con guion doble) rompen esa asunción y
+// dejaban algún trozo vacío tras el split, lanzando un TypeError al
+// intentar leer w[0] de undefined. Se filtran los trozos vacíos antes de
+// mapear, así cualquier slug con formato inesperado degrada con
+// normalidad (ej. "breakneck-blitz--physical" → "Breakneck Blitz Physical")
+// en vez de romper la pantalla entera.
 function displayName(slug) {
-  return NAME_OVERRIDES[slug] || slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+  return NAME_OVERRIDES[slug] || slug.split("-").filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 function displayMoveName(slug) {
-  return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+  return slug.split("-").filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
 // Orden cronológico de grupos de versión de PokeAPI, usado para elegir el
@@ -1322,11 +1350,34 @@ function useApiCache() {
   // Moveset fijo del anime para esta combinación entrenador+Pokémon; si no
   // existe, cae a movimientos genéricos de daño por tipo, y siempre se
   // rellena con Tackle/Struggle si faltan movimientos o ninguno hace daño.
-  const getMoveset = useCallback(async (trainerId, slug) => {
-    const cacheKey = `${trainerId}:${slug}`;
-    if (movesetCache.current[cacheKey]) return movesetCache.current[cacheKey];
+  //
+  // `difficulty` decide qué TABLA de movesets fijos se usa para la CPU:
+  // Normal usa siempre TRAINER_MOVESETS (sin cambios); Difícil/Maestro usan
+  // TRAINER_MOVESETS_ADVANCED (con sinergia de equipo), cayendo a
+  // TRAINER_MOVESETS si ese Pokémon en concreto no tuviera entrada ahí. Se
+  // cachea por separado para cada tier ("normal"/"advanced": ver
+  // `tierCacheKey`) para que jugar un torneo en una dificultad no deje en
+  // caché el moveset equivocado para la siguiente vez que el mismo
+  // entrenador aparezca con la otra dificultad.
+  //
+  // ANTES de mirar la tabla que corresponda por dificultad, se comprueba la
+  // entrada "primed:" (ver primeMoveset/clearPrimedMovesets): así, el
+  // entrenador propio, la Ruleta Pokémon, o un entrenador comprado que el
+  // USUARIO esté jugando siempre usan su moveset real (editado o no) sin
+  // que la dificultad de la CPU les afecte nunca, tal y como pide el
+  // pedido ("Este segundo conjunto se aplica únicamente a la CPU").
+  const getMoveset = useCallback(async (trainerId, slug, difficulty = "normal") => {
+    const primedKey = `primed:${trainerId}:${slug}`;
+    if (movesetCache.current[primedKey]) return movesetCache.current[primedKey];
 
-    let chosenNames = TRAINER_MOVESETS[cacheKey];
+    const tier = (difficulty === "hard" || difficulty === "master") ? "advanced" : "normal";
+    const tierCacheKey = `${tier}:${trainerId}:${slug}`;
+    if (movesetCache.current[tierCacheKey]) return movesetCache.current[tierCacheKey];
+
+    const plainKey = `${trainerId}:${slug}`;
+    let chosenNames = tier === "advanced"
+      ? (TRAINER_MOVESETS_ADVANCED[plainKey] || TRAINER_MOVESETS[plainKey])
+      : TRAINER_MOVESETS[plainKey];
     if (!chosenNames) {
       const poke = await getPokemon(slug);
       const primaryType = poke.types[0];
@@ -1340,22 +1391,35 @@ function useApiCache() {
     if (!hasDamage) {
       moves[moves.length - 1] = await getMove("tackle");
     }
-    movesetCache.current[cacheKey] = moves;
+    movesetCache.current[tierCacheKey] = moves;
     return moves;
   }, [getPokemon, getMove]);
 
   // Precarga movesetCache para trainerId:slug con un moveset YA decidido de
-  // antemano (los 4 movimientos ya asignados en la colección de gacha al
-  // capturar ese Pokémon), sin pasar por TRAINER_MOVESETS/DEFAULT_MOVES_BY_TYPE.
-  // Se usa para que el entrenador propio combata con el moveset que ya tiene
-  // cada Pokémon en la colección, sin tocar getMoveset ni el resto del motor
-  // de combate: getMoveset ya devuelve directamente de caché si la entrada
-  // existe, así que basta con rellenarla antes de que empiece el combate.
+  // antemano: el entrenador propio (con los movimientos de su colección de
+  // gacha), la Ruleta Pokémon (aleatorios pero aprendibles), o un
+  // entrenador COMPRADO que el usuario ha editado (ver item 5). Se guarda
+  // bajo un namespace "primed:" aparte de los tiers normal/advanced (ver
+  // getMoveset), que SIEMPRE se comprueba primero: así el equipo que
+  // controla el propio usuario nunca se ve afectado por la dificultad de
+  // la CPU elegida para esa partida.
   const primeMoveset = useCallback(async (trainerId, slug, moveNames) => {
-    const cacheKey = `${trainerId}:${slug}`;
     const moves = await Promise.all(moveNames.map((n) => getMove(n)));
-    movesetCache.current[cacheKey] = moves;
+    movesetCache.current[`primed:${trainerId}:${slug}`] = moves;
   }, [getMove]);
+
+  // Se llama al empezar CADA torneo, antes de volver a primar lo que haga
+  // falta para el equipo del propio usuario en esa partida concreta: sin
+  // esto, un moveset "primed:" de una partida anterior (por ejemplo, el
+  // usuario jugó una vez con Lance editando su Dragonite) se quedaría en
+  // caché para siempre y contaminaría una partida FUTURA en la que Lance
+  // aparezca como CPU normal, ignorando por completo TRAINER_MOVESETS/
+  // TRAINER_MOVESETS_ADVANCED para él (justo lo que el pedido pide evitar).
+  const clearPrimedMovesets = useCallback(() => {
+    for (const key of Object.keys(movesetCache.current)) {
+      if (key.startsWith("primed:")) delete movesetCache.current[key];
+    }
+  }, []);
 
   // Nombres de movimientos que una especie puede aprender realmente según
   // /pokemon/{slug} (level-up, huevo, tutor o MT/MO), para el moveset
@@ -1363,6 +1427,47 @@ function useApiCache() {
   // del anime o el genérico por tipo). Se cachea aparte, por especie.
   const getLearnableMoveNames = useCallback(async (slug) => {
     if (learnableMovesCache.current[slug]) return learnableMovesCache.current[slug];
+    // Smeargle en la API real solo tiene Esquema (Sketch) como movimiento de
+    // level-up (el resto de métodos tampoco le dan casi nada), lo que lo
+    // dejaría prácticamente sin nada que aprender con la lógica normal de
+    // abajo. En los juegos, gracias a Esquema, Smeargle puede copiar y
+    // aprender de forma permanente CUALQUIER movimiento del juego: se trata
+    // como caso especial aquí, en la única función de la que dependen tanto
+    // el moveset aleatorio del gacha (assignRandomMoveset) como el editor de
+    // movimientos de la colección (getLearnableMovesDetailed), así que
+    // ambos heredan el pool ampliado sin ningún cambio propio.
+    //
+    // Se trae la lista de TODOS los movimientos existentes (solo nombres,
+    // /move con límite alto) en una única petición ligera — mucho más barato
+    // que consultar el detalle de cada uno. Para el editor de movimientos,
+    // que sí resuelve el detalle de TODOS los nombres devueltos de golpe (a
+    // diferencia del gacha, que ya recorta a 40 al azar antes de resolver
+    // detalles), se recorta aquí a 400 movimientos para no disparar ~937
+    // peticiones simultáneas la primera vez que se abre; se mezclan antes de
+    // recortar para no sesgar hacia los movimientos más antiguos del juego
+    // (la API los devuelve más o menos en orden de aparición histórica).
+    if (slug === "smeargle") {
+      try {
+        const res = await fetch("https://pokeapi.co/api/v2/move?limit=2000");
+        const data = await res.json();
+        // Se descartan las variantes técnicas "--physical"/"--special" de
+        // los movimientos Z (guion doble): no son movimientos seleccionables
+        // de verdad, solo entradas auxiliares de la propia API para calcular
+        // su daño según el movimiento base, y confunden más que ayudan en
+        // un selector pensado para elegir un movimiento real.
+        const allNames = (data.results || []).map((m) => m.name).filter((n) => !n.includes("--"));
+        for (let i = allNames.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [allNames[i], allNames[j]] = [allNames[j], allNames[i]];
+        }
+        const names = allNames.slice(0, 400);
+        learnableMovesCache.current[slug] = names;
+        return names;
+      } catch (e) {
+        learnableMovesCache.current[slug] = [];
+        return [];
+      }
+    }
     const validMethods = new Set(["level-up", "egg", "tutor", "machine"]);
     try {
       const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
@@ -2082,20 +2187,44 @@ function useApiCache() {
   // prioridad/velocidad (con parálisis afectando la velocidad efectiva),
   // ejecuta cada ataque y aplica el daño residual de quemadura/veneno al
   // final. Muta pa.hp / pb.hp directamente.
+  //
+  // El PRIMER mover se resuelve POR COMPLETO (movimiento + todos sus
+  // efectos, incluido un cambio de Pokémon resultante) antes de que el
+  // SEGUNDO mover actúe: si el primero se autocambia (Cambio de
+  // Voltios/U-turn) o fuerza la salida del rival (Cola Dragón), ese cambio
+  // se resuelve YA, en mitad del turno, no al final. Bug corregido: antes,
+  // un Raichu (rápido) que usaba Cambio de Voltios contra Aggron (lento)
+  // seguía recibiendo el golpe de Aggron ese turno, porque el cambio de
+  // Raichu no se aplicaba hasta después de que Aggron ya hubiera actuado
+  // contra el propio Raichu (el "cambio real" se difería al final de
+  // resolveTurn). Ahora, si el primer mover se autocambia, el SEGUNDO mover
+  // (si no ha sido también forzado a salir) dirige su ataque contra QUIEN
+  // HA ENTRADO, nunca contra el que ya se fue; y si el primer mover fuerza
+  // la salida del segundo, el turno del segundo se pierde por completo (no
+  // llega a actuar, igual que en los juegos reales: un Pokémon obligado a
+  // salir no ataca ese mismo turno).
+  //
   // `options.enableSwitchEffects` (por defecto true) controla si Cola
   // Dragón/Golpe Bajo... llegan a forzar/permitir un cambio de Pokémon: el
   // modelo de simulación automática CPU-vs-CPU (simulateDuel) es "1 contra 1
   // hasta debilitarse" y no tiene ningún concepto de banquillo dentro de un
   // mismo duelo (eso ya lo gestiona simulateMatch por fuera, avanzando de
-  // Pokémon solo cuando uno se debilita), así que ahí se desactiva para no
-  // generar un cambio a medias que nadie puede completar; solo el combate
-  // interactivo (con acceso al equipo completo) lo activa de verdad.
+  // Pokémon solo cuando uno se debilita), así que ahí se desactiva; solo el
+  // combate interactivo (con acceso al equipo completo) lo activa de
+  // verdad, vía `options.resolveMidTurnSwitch`.
   // `options.benchAlive` ({a,b}, true por defecto) le dice a resolveTurn si
   // el bando en cuestión tiene algún otro Pokémon con vida al que cambiar,
   // para no anunciar un cambio forzado que luego no tiene a dónde ir.
+  // `options.resolveMidTurnSwitch(side, reason)` (opcional, async): cuando
+  // el primer mover provoca un cambio, se llama YA (antes del segundo
+  // mover) para decidir el reemplazo — auto para la CPU, o esperando la
+  // elección real del usuario si le toca a él. Devuelve `{ poke, idx }` o
+  // `null` (sin banquillo/sin decisión posible, cae al aviso diferido de
+  // siempre vía `switchSignals`, igual que si no se pasa esta opción).
   const resolveTurn = useCallback(async (pa, pb, moveA, moveB, trainerAId, trainerBId, weather, options = {}) => {
     const enableSwitchEffects = options.enableSwitchEffects !== false;
     const benchAlive = options.benchAlive || { a: true, b: true };
+    const resolveMidTurnSwitch = options.resolveMidTurnSwitch || null;
     const turns = [];
     const switchSignals = { a: null, b: null };
     // Qué lado inflige el golpe que deja al RIVAL a 0 PS primero: si más
@@ -2105,6 +2234,13 @@ function useApiCache() {
     // termina en el instante en que el rival se queda sin Pokémon, antes de
     // que el retroceso pueda "deshacer" esa victoria).
     let decisiveWinnerSide = null;
+
+    // Pokémon activo REAL de cada lado mientras se resuelve este turno:
+    // puede cambiar a mitad de función si el primer mover provoca un
+    // cambio (ver comentario de arriba). pa/pb (los parámetros) se dejan
+    // intactos como referencia a quién empezó el turno.
+    let activePa = pa, activePb = pb;
+
     const prioA = moveA ? (moveA.priority || 0) : -100;
     const prioB = moveB ? (moveB.priority || 0) : -100;
     let aFirst;
@@ -2113,40 +2249,20 @@ function useApiCache() {
       const spA = getEffectiveSpeed(pa, weather), spB = getEffectiveSpeed(pb, weather);
       aFirst = spA !== spB ? spA > spB : Math.random() < 0.5;
     }
-    const order = aFirst
-      ? [[pa, pb, moveA, trainerAId], [pb, pa, moveB, trainerBId]]
-      : [[pb, pa, moveB, trainerBId], [pa, pb, moveA, trainerAId]];
 
-    for (let slotIndex = 0; slotIndex < order.length; slotIndex++) {
-      const [attacker, defender, move, atkTrainer] = order[slotIndex];
-      if (attacker.hp <= 0 || defender.hp <= 0) continue;
+    const firstSide = aFirst ? "a" : "b";
+    const secondSide = aFirst ? "b" : "a";
+    const firstMove = aFirst ? moveA : moveB;
+    const secondMove = aFirst ? moveB : moveA;
+    const firstTrainer = aFirst ? trainerAId : trainerBId;
+    const secondTrainer = aFirst ? trainerBId : trainerAId;
+    let skipSecondSlot = false;
 
-      if (!statusPreMoveCheck(attacker, turns)) {
-        if (attacker.hp <= 0) turns.push({ type: "faint", pokemon: attacker.name });
-        continue;
-      }
-
-      // Sin PP en ningún movimiento (chooseMove ya lo filtró y devolvió
-      // null): el turno se pierde sin más, sin implementar Forcejeo.
-      if (!move) {
-        turns.push({ type: "statusText", text: `${attacker.name} no tiene PP para ningún movimiento y pierde el turno` });
-        continue;
-      }
-
-      // Golpe Bajo: solo funciona si el usuario golpea ANTES de que el
-      // rival complete su acción este turno (slotIndex===0, ya que ambos
-      // movimientos se eligieron de antemano y el orden ya está fijado) Y el
-      // rival tiene planeado un movimiento que hace daño (no de estado) Y no
-      // está ya dormido al empezar el turno (si el rival es más rápido o
-      // tiene aún más prioridad, ya habrá actuado en el slot 0 y este
-      // chequeo ni se alcanza para él, ya que su propio turno se resuelve
-      // primero con normalidad).
-      let suckerPunchFails = false;
-      if (move.name === "sucker-punch") {
-        const opponentMove = attacker === pa ? moveB : moveA;
-        suckerPunchFails = slotIndex !== 0 || !opponentMove || opponentMove.damageClass === "status" || defender.status === "sleep";
-      }
-
+    // Ejecuta el movimiento de `attacker` contra `defender` y empuja sus
+    // entradas de log; devuelve el `result` de executeMove para que cada
+    // slot gestione sus propios efectos de cambio (que difieren entre el
+    // primer y el segundo mover, ver más abajo).
+    async function runSlot(attacker, defender, move, atkTrainer, suckerPunchFails) {
       const result = await executeMove(attacker, defender, move, weather, { suckerPunchFails });
       let inlineEffect = null;
       const extraEvents = [];
@@ -2174,43 +2290,115 @@ function useApiCache() {
       // que iban dirigidos al rival ya se omiten en ese caso), así que el
       // orden natural es "impacta → el rival cae → el atacante asume las
       // consecuencias de haber atacado".
-      if (defender.hp <= 0) {
-        turns.push({ type: "faint", pokemon: defender.name });
-        if (decisiveWinnerSide === null) decisiveWinnerSide = attacker === pa ? "a" : "b";
-      }
+      if (defender.hp <= 0) turns.push({ type: "faint", pokemon: defender.name });
       turns.push(...extraEvents);
+      return result;
+    }
 
-      // Cola Dragón/Circle Throw fuerzan la salida del objetivo tras
-      // dañarlo; Cambio de Voltios/U-turn permiten al propio atacante
-      // cambiar tras golpear. Ninguno de los dos tiene efecto si el golpe no
-      // conectó de verdad (fallo, inmunidad o bloqueado por Protección: en
-      // todos esos casos result.damage es 0), ni si el lado en cuestión no
-      // tiene a nadie más con vida al que cambiar. Esta app resuelve el
-      // cambio real DESPUÉS de que termine todo el turno (ver caller): un
-      // Pokémon más lento forzado a salir igualmente completa su propia
-      // acción de este turno si le tocaba, simplificación deliberada frente
-      // al juego real (donde el cambio interrumpe el turno al instante).
-      if (enableSwitchEffects && result.hit && result.damage > 0) {
-        const attackerSide = attacker === pa ? "a" : "b";
-        const defenderSide = attackerSide === "a" ? "b" : "a";
-        if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && benchAlive[defenderSide]) {
-          switchSignals[defenderSide] = "forced";
-          turns.push({ type: "statusText", text: `¡${defender.name} fue forzado a retirarse!` });
+    // --- Primer mover: se resuelve POR COMPLETO, cambio incluido, antes de
+    // que el segundo mover llegue siquiera a decidirse. ---
+    {
+      const attacker = firstSide === "a" ? activePa : activePb;
+      const defender = firstSide === "a" ? activePb : activePa;
+      const move = firstMove;
+
+      if (attacker.hp > 0 && defender.hp > 0) {
+        if (!statusPreMoveCheck(attacker, turns)) {
+          if (attacker.hp <= 0) turns.push({ type: "faint", pokemon: attacker.name });
+        } else if (!move) {
+          turns.push({ type: "statusText", text: `${attacker.name} no tiene PP para ningún movimiento y pierde el turno` });
+        } else {
+          const result = await runSlot(attacker, defender, move, firstTrainer, false);
+          if (defender.hp <= 0 && decisiveWinnerSide === null) decisiveWinnerSide = firstSide;
+
+          if (enableSwitchEffects && result.hit && result.damage > 0) {
+            if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && benchAlive[secondSide]) {
+              turns.push({ type: "statusText", text: `¡${defender.name} fue forzado a retirarse!` });
+              if (resolveMidTurnSwitch) {
+                const replacement = await resolveMidTurnSwitch(secondSide, "forced");
+                if (replacement) {
+                  resetPokemonOnSwitchOut(defender);
+                  if (secondSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
+                  turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
+                  // El Pokémon forzado a salir no llega a actuar este mismo
+                  // turno (igual que en los juegos reales): el segundo slot
+                  // se salta por completo.
+                  skipSecondSlot = true;
+                } else {
+                  switchSignals[secondSide] = "forced";
+                }
+              } else {
+                switchSignals[secondSide] = "forced";
+              }
+            }
+            if (attacker.hp > 0 && SWITCH_OUT_MOVES.has(move.name) && benchAlive[firstSide]) {
+              if (resolveMidTurnSwitch) {
+                const replacement = await resolveMidTurnSwitch(firstSide, "self");
+                if (replacement) {
+                  resetPokemonOnSwitchOut(attacker);
+                  if (firstSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
+                  turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
+                } else {
+                  switchSignals[firstSide] = "self";
+                }
+              } else {
+                switchSignals[firstSide] = "self";
+              }
+            }
+          }
         }
-        if (attacker.hp > 0 && SWITCH_OUT_MOVES.has(move.name) && benchAlive[attackerSide]) {
-          switchSignals[attackerSide] = "self";
-        }
+      } else if (attacker.hp <= 0) {
+        turns.push({ type: "faint", pokemon: attacker.name });
       }
     }
 
-    applyResidualStatusDamage(pa, turns);
-    applyResidualStatusDamage(pb, turns);
-    applyWeatherResidualDamage(pa, weather, turns);
-    applyWeatherResidualDamage(pb, weather, turns);
-    applyGrassyTerrainHeal(pa, weather, turns);
-    applyGrassyTerrainHeal(pb, weather, turns);
-    tickYawn(pa, turns, weather);
-    tickYawn(pb, turns, weather);
+    // --- Segundo mover: usa el estado YA actualizado (si el primero se
+    // autocambió, su objetivo ahora es quien ha entrado; si el primero lo
+    // forzó a salir a él, este slot se salta entero). ---
+    if (!skipSecondSlot) {
+      const attacker = secondSide === "a" ? activePa : activePb;
+      const defender = secondSide === "a" ? activePb : activePa;
+      const move = secondMove;
+
+      if (attacker.hp > 0 && defender.hp > 0) {
+        if (!statusPreMoveCheck(attacker, turns)) {
+          if (attacker.hp <= 0) turns.push({ type: "faint", pokemon: attacker.name });
+        } else if (!move) {
+          turns.push({ type: "statusText", text: `${attacker.name} no tiene PP para ningún movimiento y pierde el turno` });
+        } else {
+          // Golpe Bajo del segundo mover SIEMPRE falla: por definición actúa
+          // después de que el rival ya haya completado su acción este turno.
+          const suckerPunchFails = move.name === "sucker-punch";
+          const result = await runSlot(attacker, defender, move, secondTrainer, suckerPunchFails);
+          if (defender.hp <= 0 && decisiveWinnerSide === null) decisiveWinnerSide = secondSide;
+
+          if (enableSwitchEffects && result.hit && result.damage > 0) {
+            // El cambio del SEGUNDO mover (si lo hay) es el último efecto
+            // del turno: no hay un tercer mover al que afecte, así que basta
+            // con el aviso diferido de siempre (se resuelve después de
+            // devolver, igual que ya hacía todo esto antes de este cambio).
+            if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && benchAlive[firstSide]) {
+              switchSignals[firstSide] = "forced";
+              turns.push({ type: "statusText", text: `¡${defender.name} fue forzado a retirarse!` });
+            }
+            if (attacker.hp > 0 && SWITCH_OUT_MOVES.has(move.name) && benchAlive[secondSide]) {
+              switchSignals[secondSide] = "self";
+            }
+          }
+        }
+      } else if (attacker.hp <= 0) {
+        turns.push({ type: "faint", pokemon: attacker.name });
+      }
+    }
+
+    applyResidualStatusDamage(activePa, turns);
+    applyResidualStatusDamage(activePb, turns);
+    applyWeatherResidualDamage(activePa, weather, turns);
+    applyWeatherResidualDamage(activePb, weather, turns);
+    applyGrassyTerrainHeal(activePa, weather, turns);
+    applyGrassyTerrainHeal(activePb, weather, turns);
+    tickYawn(activePa, turns, weather);
+    tickYawn(activePb, turns, weather);
     tickWeatherDuration(weather, turns);
     tickTerrainDuration(weather, turns);
     tickTailwindDuration(weather, turns);
@@ -2219,20 +2407,20 @@ function useApiCache() {
     // dentro de este mismo turno (si el Pokémon actúa en segundo lugar);
     // si no se consumió aquí, se limpia igualmente para que su próximo
     // turno real sí cuente como el primer turno dormido.
-    pa.justFellAsleep = false;
-    pb.justFellAsleep = false;
+    activePa.justFellAsleep = false;
+    activePb.justFellAsleep = false;
 
     // La Protección solo dura el turno en el que se usó: se limpia aquí
     // para que, al empezar el turno siguiente, ya no bloquee nada (la
     // racha de usos consecutivos sí se conserva, se gestiona aparte).
-    pa.protected = false;
-    pb.protected = false;
+    activePa.protected = false;
+    activePb.protected = false;
 
     // Amedrentar (flinch) solo vale para un posible chequeo dentro de
     // este mismo turno (si el objetivo aún no había actuado); si no se
     // consumió aquí, se limpia igual para no arrastrarlo al turno siguiente.
-    pa.flinched = false;
-    pb.flinched = false;
+    activePa.flinched = false;
+    activePb.flinched = false;
 
     return { turns, switchSignals, decisiveWinnerSide };
   }, [executeMove]);
@@ -2381,9 +2569,9 @@ function useApiCache() {
     return { pokemonAName: pa.name, pokemonBName: pb.name, trainerAId, trainerBId, winnerSide, turns };
   }, [chooseMove, resolveTurn]);
 
-  const preparePokemonForBattle = useCallback(async (trainerId, slug) => {
+  const preparePokemonForBattle = useCallback(async (trainerId, slug, difficulty = "normal") => {
     const base = await getPokemon(slug);
-    const baseMoves = await getMoveset(trainerId, slug);
+    const baseMoves = await getMoveset(trainerId, slug, difficulty);
     // Copia por instancia de cada movimiento (con su propio PP) para que
     // gastar PP en este Pokémon no afecte al mismo movimiento cacheado que
     // usan otros Pokémon. El PP no se restaura si el Pokémon es cambiado
@@ -2401,13 +2589,13 @@ function useApiCache() {
     };
   }, [getPokemon, getMoveset]);
 
-  const prepareTeam = useCallback(async (trainer) => {
-    return Promise.all(trainer.team.map((s) => preparePokemonForBattle(trainer.id, s)));
+  const prepareTeam = useCallback(async (trainer, difficulty = "normal") => {
+    return Promise.all(trainer.team.map((s) => preparePokemonForBattle(trainer.id, s, difficulty)));
   }, [preparePokemonForBattle]);
 
   const simulateMatch = useCallback(async (trainerA, trainerB, difficulty = "normal") => {
-    const teamA = await prepareTeam(trainerA);
-    const teamB = await prepareTeam(trainerB);
+    const teamA = await prepareTeam(trainerA, difficulty);
+    const teamB = await prepareTeam(trainerB, difficulty);
     // Ambos lados son "CPU" desde el punto de vista de este simulador (el
     // combate del propio usuario nunca pasa por aquí, ver InteractiveBattle):
     // los dos equipos empiezan por un Pokémon aleatorio, no siempre el
@@ -2452,7 +2640,7 @@ function useApiCache() {
     return pokes;
   }, [getPokemon, getType, getMoveset]);
 
-  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, getLearnableMovesDetailed };
+  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed };
 }
 
 /* ---------------------------------------------------------------
@@ -2758,6 +2946,30 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   // activo aunque el actual siga con vida (Cola Dragón lo forzó a
   // retirarse, o el propio usuario usó Cambio de Voltios/U-turn).
   const [mustSwitchSide, setMustSwitchSide] = useState(null);
+  // Elección del usuario A MITAD DE TURNO (no al final): cuando su propio
+  // Cambio de Voltios/U-turn conecta, o cuando el rival lo obliga a salir
+  // con Cola Dragón siendo más rápido, resolveTurn se detiene a media
+  // resolución y espera aquí antes de que el rival (más lento) llegue a
+  // actuar — ver `resolveMidTurnSwitch` en handleUserMove. `null` cuando no
+  // hay ninguna elección pendiente; si no, { team, excludeIdx }.
+  const [midTurnChoice, setMidTurnChoice] = useState(null);
+  const midTurnChoiceResolverRef = useRef(null);
+
+  function requestMidTurnUserChoice(team, excludeIdx) {
+    return new Promise((resolve) => {
+      midTurnChoiceResolverRef.current = resolve;
+      setMidTurnChoice({ team, excludeIdx });
+    });
+  }
+
+  function handleMidTurnChoicePick(idx) {
+    const resolve = midTurnChoiceResolverRef.current;
+    if (!resolve) return;
+    midTurnChoiceResolverRef.current = null;
+    setMidTurnChoice(null);
+    resolve(idx);
+  }
+
   const logEndRef = useRef(null);
   // El clima/campo/viento afín es del combate entero, no de cada Pokémon:
   // se guarda en un ref mutable (igual que en simulateMatch) para que
@@ -2768,7 +2980,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [ta, tb] = await Promise.all([api.prepareTeam(trainerA), api.prepareTeam(trainerB)]);
+      const [ta, tb] = await Promise.all([api.prepareTeam(trainerA, difficulty), api.prepareTeam(trainerB, difficulty)]);
       // El lado de la CPU empieza con un Pokémon aleatorio, no siempre el
       // primero de la fila; el lado del usuario mantiene su equipo tal cual
       // recibido, ya que él mismo elige con quién empezar más abajo.
@@ -2777,7 +2989,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       if (!cancelled) { setTeamA(ta); setTeamB(tb); }
     })();
     return () => { cancelled = true; };
-  }, [api, trainerA, trainerB, userSide]);
+  }, [api, trainerA, trainerB, userSide, difficulty]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -3020,9 +3232,32 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       a: teamA.filter((p) => p.hp > 0).length > 1,
       b: teamB.filter((p) => p.hp > 0).length > 1,
     };
-    const { turns, switchSignals, decisiveWinnerSide } = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id, weather, { benchAlive });
+
+    // Si el más rápido de los dos se autocambia (Cambio de Voltios/U-turn)
+    // o fuerza la salida del rival (Cola Dragón), resolveTurn necesita el
+    // reemplazo YA, antes de que el más lento actúe (ver comentario de
+    // resolveTurn). Para la CPU se resuelve solo (siguiente con vida en
+    // orden fijo); para el usuario, se le pregunta de verdad a mitad de
+    // turno con el mismo panel que ya usa el reemplazo tras un
+    // debilitamiento. Se llevan idxA/idxB "locales" aparte del estado de
+    // React porque setIdxA/setIdxB no se reflejan de forma síncrona dentro
+    // de esta misma función.
+    let midTurnIdxA = idxA, midTurnIdxB = idxB;
+    async function resolveMidTurnSwitch(side) {
+      const team = side === "a" ? teamA : teamB;
+      const currentIdx = side === "a" ? midTurnIdxA : midTurnIdxB;
+      const aliveOthers = team.filter((p, i) => i !== currentIdx && p.hp > 0);
+      if (aliveOthers.length === 0) return null;
+      const idx = side === userSide
+        ? await requestMidTurnUserChoice(team, currentIdx)
+        : nextAliveIndex(team, currentIdx);
+      if (side === "a") midTurnIdxA = idx; else midTurnIdxB = idx;
+      return { poke: team[idx], idx };
+    }
+
+    const { turns, switchSignals, decisiveWinnerSide } = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id, weather, { benchAlive, resolveMidTurnSwitch });
     setLog((l) => [...l, ...turns]);
-    finalizeIndices(idxA, idxB, switchSignals, decisiveWinnerSide);
+    finalizeIndices(midTurnIdxA, midTurnIdxB, switchSignals, decisiveWinnerSide);
     setBusy(false);
   }
 
@@ -3079,7 +3314,18 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
         <div ref={logEndRef} />
       </div>
 
-      {!result && (userPoke.hp <= 0 || mustSwitchSide === userSide) ? (
+      {midTurnChoice ? (
+        <div className="rounded-lg p-4" style={{ background: "#14161f", border: "1px solid #e3350d55" }}>
+          <div className="text-sm text-[#e5e7f0] mb-3 text-center">¿A quién quieres enviar a continuación?</div>
+          <TeamPicker
+            team={midTurnChoice.team}
+            onChoose={handleMidTurnChoicePick}
+            showHp={true}
+            disabled={false}
+            excludeIndex={midTurnChoice.excludeIdx}
+          />
+        </div>
+      ) : !result && (userPoke.hp <= 0 || mustSwitchSide === userSide) ? (
         <div className="rounded-lg p-4" style={{ background: "#14161f", border: "1px solid #e3350d55" }}>
           <TeamPicker
             team={userTeam}
@@ -3360,7 +3606,7 @@ function TournamentHistoryModal({ open, history, onClose }) {
   );
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, tournamentHistory, onTournamentFinished }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -3445,6 +3691,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     setPhase("loading");
     setError(null);
     try {
+      // Limpia cualquier moveset "primed:" de una partida anterior (por
+      // ejemplo, el usuario jugó una vez con Lance editando su Dragonite)
+      // antes de volver a primar solo lo que corresponda a ESTA partida:
+      // sin esto, esa edición se quedaría en caché y contaminaría una
+      // partida futura en la que ese mismo entrenador aparezca como CPU
+      // normal (ver clearPrimedMovesets).
+      api.clearPrimedMovesets();
       await api.preloadAll();
       // El entrenador propio no usa TRAINER_MOVESETS/DEFAULT_MOVES_BY_TYPE: se
       // precarga movesetCache con los movimientos que cada Pokémon ya tiene
@@ -3479,6 +3732,21 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           const entry = findCollectionEntry(collection, slug, shiny);
           return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
         }));
+      } else {
+        // Modo B: el equipo del propio usuario SIEMPRE usa dificultad
+        // Normal, nunca Avanzado (la dificultad de la CPU elegida para esta
+        // partida no debe afectar nunca a su propio equipo, sea cual sea).
+        // Si ha editado algún movimiento de este entrenador COMPRADO (ver
+        // item 5), se usa esa edición; si no, el moveset Normal de base de
+        // TRAINER_MOVESETS, igual que si nunca lo hubiera tocado.
+        const userTrainerDef = TRAINERS.find((t) => t.id === userTrainerId);
+        if (userTrainerDef) {
+          await Promise.all(userTrainerDef.team.map((slug) => {
+            const key = `${userTrainerId}:${slug}`;
+            const names = ownedTrainerMovesets[key] || TRAINER_MOVESETS[key];
+            return names ? api.primeMoveset(userTrainerId, slug, names) : Promise.resolve();
+          }));
+        }
       }
       // El torneo sigue siendo de exactamente 8 participantes (el criterio
       // ya existente de emparejamiento y clasificación asume ese número),
@@ -4128,12 +4396,15 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, o
   );
 }
 
-function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam }) {
+function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves }) {
   const [sprites, setSprites] = useState({});
   const [confirmTrainer, setConfirmTrainer] = useState(null);
   const [successName, setSuccessName] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  // Edición de movimientos de UN Pokémon de un entrenador COMPRADO (las
+  // especies son fijas; solo esto se edita): { trainerId, slug } o null.
+  const [editingTrainerMon, setEditingTrainerMon] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -4198,15 +4469,32 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                 </div>
               </div>
               <div className="flex flex-wrap gap-2 mb-3">
-                {t.team.map((slug) => {
+                {t.team.map((slug, i) => {
                   const p = sprites[slug];
+                  // Editable solo si es un entrenador COMPRADO (t.locked
+                  // true en su definición original) y ya desbloqueado: los
+                  // 4 entrenadores gratis de inicio no tienen esta opción,
+                  // igual que pide el pedido ("junto a cada entrenador ya
+                  // comprado").
+                  const editable = unlocked && t.locked;
                   return (
-                    <div key={slug} className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: "1px solid #22263a" }} title={displayName(slug)}>
+                    <button
+                      key={`${slug}-${i}`}
+                      type="button"
+                      onClick={() => editable && setEditingTrainerMon({ trainerId: t.id, slug })}
+                      disabled={!editable}
+                      className="w-12 h-12 rounded-lg flex items-center justify-center relative disabled:cursor-default"
+                      style={{ background: "#0e1018", border: editable ? "1px solid #3a3f57" : "1px solid #22263a" }}
+                      title={editable ? `${displayName(slug)} · editar movimientos` : displayName(slug)}
+                    >
                       {!unlocked ? <Lock size={14} color="#4c5066" /> : p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
+              {unlocked && t.locked && (
+                <p className="text-[10px] text-[#6b7086] mb-2">Toca un Pokémon para editar sus movimientos.</p>
+              )}
               {!unlocked && (
                 <button
                   onClick={() => setConfirmTrainer(t)}
@@ -4306,6 +4594,30 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
         onConfirm={handleConfirmPurchase}
         onClose={closeModal}
       />
+
+      {/* Edición de movimientos de un Pokémon de un entrenador comprado: la
+          especie es fija, reutiliza el mismo editor (filtros de tipo/
+          categoría/nombre incluidos) que ya usa la colección del gacha. Se
+          guarda aparte, en ownedTrainerMovesets, nunca en
+          TRAINER_MOVESETS/TRAINER_MOVESETS_ADVANCED (que la CPU sigue
+          usando sin tocar). */}
+      {editingTrainerMon && (
+        <MoveEditModal
+          open={!!editingTrainerMon}
+          entry={{
+            slug: editingTrainerMon.slug,
+            moves: ownedTrainerMovesets[`${editingTrainerMon.trainerId}:${editingTrainerMon.slug}`]
+              || TRAINER_MOVESETS[`${editingTrainerMon.trainerId}:${editingTrainerMon.slug}`]
+              || [],
+          }}
+          api={api}
+          onConfirm={(moves) => {
+            onUpdateOwnedTrainerMoves(editingTrainerMon.trainerId, editingTrainerMon.slug, moves);
+            setEditingTrainerMon(null);
+          }}
+          onClose={() => setEditingTrainerMon(null)}
+        />
+      )}
     </div>
   );
 }
@@ -4942,6 +5254,7 @@ export default function App() {
   const [purchasedTrainerIds, setPurchasedTrainerIds] = useState(loadStoredPurchasedTrainers);
   const [collection, setCollection] = useState(loadStoredCollection);
   const [customTrainer, setCustomTrainer] = useState(() => loadStoredCustomTrainer(loadStoredCollection()));
+  const [ownedTrainerMovesets, setOwnedTrainerMovesets] = useState(loadStoredOwnedTrainerMovesets);
   const [tournamentHistory, setTournamentHistory] = useState(loadStoredTournamentHistory);
   const [soon, setSoon] = useState(null);
 
@@ -4964,6 +5277,10 @@ export default function App() {
   }, [customTrainer]);
 
   useEffect(() => {
+    try { localStorage.setItem(OWNED_TRAINER_MOVESETS_STORAGE_KEY, JSON.stringify(ownedTrainerMovesets)); } catch (e) { /* localStorage no disponible */ }
+  }, [ownedTrainerMovesets]);
+
+  useEffect(() => {
     try { localStorage.setItem(TOURNAMENT_HISTORY_STORAGE_KEY, JSON.stringify(tournamentHistory)); } catch (e) { /* localStorage no disponible */ }
   }, [tournamentHistory]);
 
@@ -4977,6 +5294,30 @@ export default function App() {
   function purchaseTrainer(trainerId, price) {
     setCoins((c) => c - price);
     setPurchasedTrainerIds((ids) => (ids.includes(trainerId) ? ids : [...ids, trainerId]));
+    // Se inicializa la copia editable del usuario con el moveset Normal ya
+    // existente (nunca el Avanzado, que es solo para la CPU): así, aunque
+    // el usuario no edite nada nunca, jugar con este entrenador ya usa
+    // dificultad Normal para su equipo sin importar la dificultad de la
+    // CPU elegida para esa partida (ver TorneoTab.startTournament).
+    const trainer = TRAINERS.find((t) => t.id === trainerId);
+    if (trainer) {
+      setOwnedTrainerMovesets((prev) => {
+        const next = { ...prev };
+        for (const slug of trainer.team) {
+          const key = `${trainerId}:${slug}`;
+          if (!next[key] && TRAINER_MOVESETS[key]) next[key] = TRAINER_MOVESETS[key];
+        }
+        return next;
+      });
+    }
+  }
+
+  // Edición de un único Pokémon del equipo de un entrenador COMPRADO (las
+  // especies son fijas, solo se edita qué movimientos usa): reutiliza el
+  // mismo editor (MoveEditModal) que ya usa el entrenador propio, pero
+  // guardando bajo `${trainerId}:${slug}` en vez de dentro de `collection`.
+  function updateOwnedTrainerMoves(trainerId, slug, moves) {
+    setOwnedTrainerMovesets((prev) => ({ ...prev, [`${trainerId}:${slug}`]: moves }));
   }
 
   // Solo puede haber un entrenador propio en total: si ya existe, esta
@@ -5046,6 +5387,7 @@ export default function App() {
             purchasedTrainerIds={purchasedTrainerIds}
             customTrainer={customTrainer}
             collection={collection}
+            ownedTrainerMovesets={ownedTrainerMovesets}
             tournamentHistory={tournamentHistory}
             onTournamentFinished={addTournamentHistoryEntry}
           />
@@ -5060,6 +5402,8 @@ export default function App() {
             customTrainer={customTrainer}
             onCreateCustomTrainer={createCustomTrainer}
             onUpdateCustomTrainerTeam={updateCustomTrainerTeam}
+            ownedTrainerMovesets={ownedTrainerMovesets}
+            onUpdateOwnedTrainerMoves={updateOwnedTrainerMoves}
           />
         )}
         {tab === "pokemon" && (
