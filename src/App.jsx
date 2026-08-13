@@ -1428,7 +1428,18 @@ function useApiCache() {
   // aleatorio del gacha (a diferencia de getMoveset, que usa el moveset fijo
   // del anime o el genérico por tipo). Se cachea aparte, por especie.
   const getLearnableMoveNames = useCallback(async (slug) => {
-    if (learnableMovesCache.current[slug]) return learnableMovesCache.current[slug];
+    // OJO: se comprueba explícitamente `!== undefined` (no solo
+    // "truthy"/`in`) porque un array vacío [] SÍ es un valor cacheado
+    // válido (una especie real sin movimientos aprendibles detectados) que
+    // no debe volver a pedirse — pero antes, un fallo de RED (catch más
+    // abajo) también guardaba [] en la caché, indistinguible de ese caso
+    // legítimo: un solo timeout/error puntual dejaba la especie "sin
+    // movimientos" para el resto de la sesión, sin reintentar nunca más
+    // (afectaba tanto al moveset aleatorio del gacha como al editor). Los
+    // bloques catch de abajo ya NO escriben en la caché, así que aquí solo
+    // se sirve desde caché si hubo una respuesta real (éxito), nunca tras
+    // un error.
+    if (learnableMovesCache.current[slug] !== undefined) return learnableMovesCache.current[slug];
     // Smeargle en la API real solo tiene Esquema (Sketch) como movimiento de
     // level-up (el resto de métodos tampoco le dan casi nada), lo que lo
     // dejaría prácticamente sin nada que aprender con la lógica normal de
@@ -1466,7 +1477,12 @@ function useApiCache() {
         learnableMovesCache.current[slug] = names;
         return names;
       } catch (e) {
-        learnableMovesCache.current[slug] = [];
+        // NO se cachea: un fallo de red es transitorio y debe poder
+        // reintentarse en la próxima llamada (ver comentario de arriba).
+        // Cachear [] aquí dejaba a Smeargle "sin movimientos aprendibles"
+        // de forma permanente para el resto de la sesión tras un único
+        // timeout, tanto en el editor como en el moveset aleatorio del
+        // gacha al capturarlo.
         return [];
       }
     }
@@ -1482,7 +1498,9 @@ function useApiCache() {
       learnableMovesCache.current[slug] = names;
       return names;
     } catch (e) {
-      learnableMovesCache.current[slug] = [];
+      // Mismo criterio que arriba: no cachear un fallo de red, para poder
+      // reintentar en la siguiente llamada en vez de dejar la especie
+      // "sin movimientos aprendibles" para siempre en esta sesión.
       return [];
     }
   }, []);
@@ -5552,6 +5570,9 @@ export default function App() {
     });
   });
   const [achievementToasts, setAchievementToasts] = useState([]);
+  // Aviso visible si se llega a bloquear una escritura sospechosa de la
+  // colección (ver el efecto de persistencia de `collection` más abajo).
+  const [collectionSaveError, setCollectionSaveError] = useState(null);
 
   useEffect(() => {
     try { localStorage.setItem(COINS_STORAGE_KEY, String(coins)); } catch (e) { /* localStorage no disponible */ }
@@ -5561,8 +5582,39 @@ export default function App() {
     try { localStorage.setItem(UNLOCKED_TRAINERS_STORAGE_KEY, JSON.stringify(purchasedTrainerIds)); } catch (e) { /* localStorage no disponible */ }
   }, [purchasedTrainerIds]);
 
+  // Blindaje contra pérdidas de datos de la colección: NINGUNA función de
+  // la app borra entradas hoy (solo se añade una nueva tras una tirada de
+  // gacha, o se sustituye el campo `moves` de una entrada existente al
+  // editarla — ver GatchaTab/PokemonTab), así que el tamaño de la
+  // colección nunca debería reducirse por sí solo. Antes de escribir,
+  // se compara contra lo que YA hay en disco (no solo contra el estado en
+  // memoria, para detectar también el caso de dos pestañas abiertas a la
+  // vez, donde una pudiera intentar sobrescribir con un estado más viejo
+  // que el que la otra ya guardó): si la nueva escritura reduciría el
+  // número de entradas de forma inesperada, se aborta sin tocar
+  // localStorage (el dato previo se conserva intacto) y se avisa. Si el
+  // valor previo en disco está corrupto (JSON inválido) no hay con qué
+  // comparar, así que se deja pasar la escritura — es la única forma de
+  // recuperarse de una corrupción real, y no hay ningún baseline fiable
+  // que proteger en ese caso.
   useEffect(() => {
-    try { localStorage.setItem(COLLECTION_STORAGE_KEY, JSON.stringify(collection)); } catch (e) { /* localStorage no disponible */ }
+    try {
+      let previousLength = null;
+      const raw = localStorage.getItem(COLLECTION_STORAGE_KEY);
+      if (raw) {
+        try {
+          const prev = JSON.parse(raw);
+          if (Array.isArray(prev)) previousLength = prev.length;
+        } catch (parseErr) { /* JSON corrupto: sin baseline fiable, se deja pasar la escritura */ }
+      }
+      if (previousLength != null && collection.length < previousLength) {
+        setCollectionSaveError(
+          `Se ha bloqueado un intento de guardar tu colección con menos Pokémon (${collection.length}) de los que ya tenías guardados (${previousLength}), para no perder datos. Recarga la página antes de seguir editando.`
+        );
+        return;
+      }
+      localStorage.setItem(COLLECTION_STORAGE_KEY, JSON.stringify(collection));
+    } catch (e) { /* localStorage no disponible */ }
   }, [collection]);
 
   useEffect(() => {
@@ -5715,6 +5767,13 @@ export default function App() {
           <span className="text-sm font-display text-[#f2b705]">{coins}</span>
         </div>
       </header>
+
+      {collectionSaveError && (
+        <div className="mx-5 mt-4 text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3 flex items-start justify-between gap-3">
+          <span>{collectionSaveError}</span>
+          <button onClick={() => setCollectionSaveError(null)} className="text-[#ff8a8a] shrink-0"><X size={16} /></button>
+        </div>
+      )}
 
       <nav className="flex px-5 gap-1 border-b overflow-x-auto sticky top-[65px] z-30" style={{ borderColor: "#1e2130", background: "#0c0e15" }}>
         {tabs.map((t) => {
