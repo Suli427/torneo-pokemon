@@ -502,6 +502,18 @@ const THRASHING_MOVES = new Set(["outrage", "petal-dance", "thrash"]);
 // probabilidad de éxito se reduce a la mitad en usos consecutivos.
 const PROTECT_MOVES = new Set(["protect", "detect", "baneful-bunker", "spiky-shield", "kings-shield"]);
 
+// Movimientos que solo pueden usarse con éxito como la PRIMERA acción de
+// ese Pokémon desde que entró al campo (recién salido del banquillo, o en
+// su primer turno si empezó el combate con él en pista): si ya actuó al
+// menos una vez desde que entró (con este movimiento o con cualquier
+// otro), fallan por completo, sin tirada de precisión ni efecto. Ambos son
+// los únicos casos reales de la saga con esta restricción; el resto de
+// movimientos con prioridad alta del roster (Mach Punch incluido) no la
+// tienen. Se controla con `poke.hasActedSinceEntering` (ver
+// preparePokemonForBattle/resetPokemonOnSwitchOut y los puntos de entrada
+// al campo en resolveTurn/resolveSwitchTurn/InteractiveBattle).
+const FIRST_TURN_ONLY_MOVES = new Set(["fake-out", "first-impression"]);
+
 // Movimientos que hacen daño Y ADEMÁS fuerzan al OBJETIVO a retirarse y ser
 // sustituido por otro Pokémon de su equipo (Cola Dragón/Dragon Tail, Giro
 // Vil/Circle Throw: mismo efecto que Rugido/Whirlwind pero después de
@@ -615,6 +627,21 @@ function weatherDamageMultiplier(weather, moveType) {
   return 1;
 }
 
+// Empuja el evento "X se debilita" UNA SOLA VEZ por Pokémon debilitado,
+// sin importar cuántos puntos distintos del código comprueben después
+// "¿sigue con vida?" sobre el mismo objeto (residual de estado, residual
+// de clima, el chequeo del segundo mover cuando el primero ya lo dejó a 0
+// PS...): sin esta guarda, cada una de esas comprobaciones posteriores
+// volvía a añadir el mismo mensaje de debilitamiento al log. `poke.hp<=0`
+// nunca vuelve a subir dentro de un mismo combate (no hay revivir), así
+// que una vez marcado `faintLogged` no hace falta desmarcarlo salvo al
+// preparar una instancia nueva para un combate nuevo (preparePokemonForBattle).
+function pushFaintOnce(poke, arr) {
+  if (poke.faintLogged) return;
+  poke.faintLogged = true;
+  arr.push({ type: "faint", pokemon: poke.name });
+}
+
 // Daño residual de Tormenta de Arena/Granizo al final del turno: 1/16 de
 // los PS máximos, salvo para los tipos inmunes de cada clima.
 function applyWeatherResidualDamage(poke, weather, turns) {
@@ -626,7 +653,7 @@ function applyWeatherResidualDamage(poke, weather, turns) {
   poke.hp = Math.max(0, poke.hp - dmg);
   const stormLabel = weather.type === "sandstorm" ? "la tormenta de arena" : "el granizo";
   turns.push({ type: "statusText", text: `${poke.name} sufre daño por ${stormLabel}` });
-  if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
+  if (poke.hp <= 0) pushFaintOnce(poke, turns);
 }
 
 // Al final de cada turno completo (ambos bandos ya actuaron, o bien se
@@ -971,7 +998,7 @@ function applyResidualStatusDamage(poke, turns) {
   } else {
     return;
   }
-  if (poke.hp <= 0) turns.push({ type: "faint", pokemon: poke.name });
+  if (poke.hp <= 0) pushFaintOnce(poke, turns);
 }
 
 // Drenado/retroceso (meta.drain de PokeAPI): positivo cura al atacante un %
@@ -1000,7 +1027,7 @@ function applyDrainOrRecoil(attacker, damage, move, events) {
     if (recoil > 0) {
       attacker.hp = Math.max(0, attacker.hp - recoil);
       events.push({ type: "statusText", text: `¡${attacker.name} se resiente por el retroceso! (-${recoil} PS)`, inline: false });
-      if (attacker.hp <= 0) events.push({ type: "faint", pokemon: attacker.name });
+      if (attacker.hp <= 0) pushFaintOnce(attacker, events);
     }
   }
 }
@@ -1291,11 +1318,20 @@ function useApiCache() {
     }
   }, []);
 
-  const typeMultiplier = useCallback(async (attackerTypes, defenderTypes) => {
+  // `moveName` (opcional) permite excepciones hardcodeadas por movimiento
+  // concreto, igual que RECHARGE_MOVES/OHKO_MOVES/THRASHING_MOVES/Golpe de
+  // Cuerpo: Liofilización (Freeze-Dry) es de tipo Hielo pero, a diferencia
+  // del resto de movimientos de Hielo (x0.5 contra Agua por tabla), este
+  // en concreto es SIEMPRE supereficaz (x2) contra Agua — se fuerza aquí
+  // ese componente concreto del multiplicador; el resto de tipos del
+  // defensor (si tiene un segundo tipo aparte de Agua) sigue la tabla
+  // normal de Hielo sin ningún cambio.
+  const typeMultiplier = useCallback(async (attackerTypes, defenderTypes, moveName = null) => {
     let mult = 1;
     for (const t of attackerTypes) {
       const rel = await getType(t);
       for (const dt of defenderTypes) {
+        if (moveName === "freeze-dry" && dt === "water") { mult *= 2; continue; }
         if (rel.double.includes(dt)) mult *= 2;
         else if (rel.half.includes(dt)) mult *= 0.5;
         else if (rel.zero.includes(dt)) mult *= 0;
@@ -1549,7 +1585,7 @@ function useApiCache() {
     // Night Shade / Seismic Toss: daño fijo igual al nivel (50), sin STAB
     // ni multiplicadores de ataque/defensa, solo respeta la inmunidad de tipo.
     if (move.specialDamage === "fixed-level") {
-      const mult = await typeMultiplier([move.type], defender.types);
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
       return { damage: mult > 0 ? 50 : 0, isCrit: false, mult };
     }
     // Supercolmillo: daño fijo igual a la mitad de los PS ACTUALES del
@@ -1557,7 +1593,7 @@ function useApiCache() {
     // multiplicador de clima/campo, sin crítico; solo respeta la inmunidad
     // de tipo binaria, igual que Night Shade/Seismic Toss arriba.
     if (move.specialDamage === "fixed-half-hp") {
-      const mult = await typeMultiplier([move.type], defender.types);
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
       return { damage: mult > 0 ? Math.max(1, Math.floor(defender.hp / 2)) : 0, isCrit: false, mult };
     }
     let power = move.power;
@@ -1600,7 +1636,7 @@ function useApiCache() {
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
     const weatherMult = weatherDamageMultiplier(weather, move.type);
     const terrainMult = terrainPowerMultiplier(weather, move, attacker) * terrainDamageReductionMultiplier(weather, move, defender);
-    const mult = await typeMultiplier([move.type], defender.types);
+    const mult = await typeMultiplier([move.type], defender.types, move.name);
     const critMult = isCrit ? 1.5 : 1;
     const rand = 0.85 + Math.random() * 0.15;
     let damage = Math.floor(base * stab * weatherMult * terrainMult * mult * critMult * rand);
@@ -1622,11 +1658,11 @@ function useApiCache() {
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) return 0;
     const acc = getEffectiveAccuracy(attacker, defender, move);
     if (move.specialDamage === "fixed-level") {
-      const mult = await typeMultiplier([move.type], defender.types);
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
       return mult > 0 ? 50 * (acc / 100) : 0;
     }
     if (move.specialDamage === "fixed-half-hp") {
-      const mult = await typeMultiplier([move.type], defender.types);
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
       return mult > 0 ? (defender.hp / 2) * (acc / 100) : 0;
     }
     let power = move.power;
@@ -1646,7 +1682,7 @@ function useApiCache() {
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
     const weatherMult = weatherDamageMultiplier(weather, move.type);
     const terrainMult = terrainPowerMultiplier(weather, move, attacker) * terrainDamageReductionMultiplier(weather, move, defender);
-    const mult = await typeMultiplier([move.type], defender.types);
+    const mult = await typeMultiplier([move.type], defender.types, move.name);
     let expected = base * stab * weatherMult * terrainMult * mult * (acc / 100);
     // Golpes múltiples: la IA debe valorar el total esperado de golpes, no
     // solo uno (si no, infravalora movimientos como Lanzarrocas frente a
@@ -1950,6 +1986,16 @@ function useApiCache() {
     // completado su acción este turno; si no se cumple, falla por completo
     // sin tirada de precisión, igual que un fallo normal.
     if (extra.suckerPunchFails) {
+      return { hit: false, damage: 0, crit: false, status: false, events: [] };
+    }
+
+    // Fake Out/Impresión Primeriza: solo funcionan como la PRIMERA acción
+    // de este Pokémon desde que entró al campo. Si ya actuó antes (con
+    // este movimiento o cualquier otro) desde esa entrada, falla por
+    // completo sin tirada de precisión ni efecto, igual que Golpe Bajo
+    // arriba — el "usa X... ¡pero falla!" ya sale solo con hit:false (ver
+    // battleTurnLine).
+    if (FIRST_TURN_ONLY_MOVES.has(move.name) && attacker.hasActedSinceEntering) {
       return { hit: false, damage: 0, crit: false, status: false, events: [] };
     }
 
@@ -2320,7 +2366,7 @@ function useApiCache() {
       // que iban dirigidos al rival ya se omiten en ese caso), así que el
       // orden natural es "impacta → el rival cae → el atacante asume las
       // consecuencias de haber atacado".
-      if (defender.hp <= 0) turns.push({ type: "faint", pokemon: defender.name });
+      if (defender.hp <= 0) pushFaintOnce(defender, turns);
       turns.push(...extraEvents);
       return result;
     }
@@ -2333,12 +2379,24 @@ function useApiCache() {
       const move = firstMove;
 
       if (attacker.hp > 0 && defender.hp > 0) {
+        // FIRST_TURN_ONLY_MOVES (dentro de executeMove, vía runSlot) se
+        // comprueba usando el valor de `hasActedSinceEntering` de ANTES de
+        // este turno (si es su primera acción desde que entró, sigue
+        // contando como tal en el momento de ejecutar el movimiento). Se
+        // marca `true` en cada una de las tres ramas de abajo (estado le
+        // impide moverse, sin PP, o movimiento normal) para que CUALQUIER
+        // turno futuro ya no cuente como "primera acción" — un turno
+        // desperdiciado por parálisis/sueño también cuenta como su turno
+        // en el campo, igual que en los juegos reales.
         if (!statusPreMoveCheck(attacker, turns)) {
-          if (attacker.hp <= 0) turns.push({ type: "faint", pokemon: attacker.name });
+          attacker.hasActedSinceEntering = true;
+          if (attacker.hp <= 0) pushFaintOnce(attacker, turns);
         } else if (!move) {
+          attacker.hasActedSinceEntering = true;
           turns.push({ type: "statusText", text: `${attacker.name} no tiene PP para ningún movimiento y pierde el turno` });
         } else {
           const result = await runSlot(attacker, defender, move, firstTrainer, false);
+          attacker.hasActedSinceEntering = true;
           if (defender.hp <= 0 && decisiveWinnerSide === null) decisiveWinnerSide = firstSide;
 
           if (enableSwitchEffects && result.hit && result.damage > 0) {
@@ -2348,6 +2406,7 @@ function useApiCache() {
                 const replacement = await resolveMidTurnSwitch(secondSide, "forced");
                 if (replacement) {
                   resetPokemonOnSwitchOut(defender);
+                  replacement.poke.hasActedSinceEntering = false;
                   if (secondSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
                   turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
                   // El Pokémon forzado a salir no llega a actuar este mismo
@@ -2366,6 +2425,7 @@ function useApiCache() {
                 const replacement = await resolveMidTurnSwitch(firstSide, "self");
                 if (replacement) {
                   resetPokemonOnSwitchOut(attacker);
+                  replacement.poke.hasActedSinceEntering = false;
                   if (firstSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
                   turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
                 } else {
@@ -2378,7 +2438,7 @@ function useApiCache() {
           }
         }
       } else if (attacker.hp <= 0) {
-        turns.push({ type: "faint", pokemon: attacker.name });
+        pushFaintOnce(attacker, turns);
       }
     }
 
@@ -2391,15 +2451,22 @@ function useApiCache() {
       const move = secondMove;
 
       if (attacker.hp > 0 && defender.hp > 0) {
+        // Ver comentario equivalente en el primer mover: FIRST_TURN_ONLY_MOVES
+        // debe leer el valor de ANTES de este turno, así que
+        // `hasActedSinceEntering` se marca `true` DESPUÉS de que el
+        // movimiento ya se haya resuelto, no antes.
         if (!statusPreMoveCheck(attacker, turns)) {
-          if (attacker.hp <= 0) turns.push({ type: "faint", pokemon: attacker.name });
+          attacker.hasActedSinceEntering = true;
+          if (attacker.hp <= 0) pushFaintOnce(attacker, turns);
         } else if (!move) {
+          attacker.hasActedSinceEntering = true;
           turns.push({ type: "statusText", text: `${attacker.name} no tiene PP para ningún movimiento y pierde el turno` });
         } else {
           // Golpe Bajo del segundo mover SIEMPRE falla: por definición actúa
           // después de que el rival ya haya completado su acción este turno.
           const suckerPunchFails = move.name === "sucker-punch";
           const result = await runSlot(attacker, defender, move, secondTrainer, suckerPunchFails);
+          attacker.hasActedSinceEntering = true;
           if (defender.hp <= 0 && decisiveWinnerSide === null) decisiveWinnerSide = secondSide;
 
           if (enableSwitchEffects && result.hit && result.damage > 0) {
@@ -2417,7 +2484,13 @@ function useApiCache() {
           }
         }
       } else if (attacker.hp <= 0) {
-        turns.push({ type: "faint", pokemon: attacker.name });
+        // Este "attacker" del segundo slot puede ser EL MISMO Pokémon que
+        // el `defender` del primer slot: si el primer mover ya lo dejó a
+        // 0 PS, runSlot ya empujó su mensaje de debilitamiento más arriba
+        // (era el bug de "se ha debilitado" duplicado). pushFaintOnce
+        // evita repetirlo aquí; si por lo que sea nunca se logueó (no
+        // debería pasar, pero por seguridad), lo añade igualmente.
+        pushFaintOnce(attacker, turns);
       }
     }
 
@@ -2465,24 +2538,50 @@ function useApiCache() {
   // reinician sus stages (el PP de sus movimientos tampoco se restaura).
   const resolveSwitchTurn = useCallback(async (outgoing, incoming, opponent, opponentMove, opponentTrainerId, weather) => {
     const turns = [];
+    // `incoming` entra al campo con este cambio (voluntario o el de la
+    // CPU): ver FIRST_TURN_ONLY_MOVES (Fake Out/Impresión Primeriza), que
+    // solo deben poder usarse en la primera acción tras entrar.
+    incoming.hasActedSinceEntering = false;
     // Si el ataque libre del rival remata al objetivo (último Pokémon del
     // usuario) y ADEMÁS un posible retroceso deja también al propio rival a
     // 0 PS (su último Pokémon), el rival sigue siendo quien gana: su golpe
     // fue lo que terminó el combate, antes de que el retroceso pudiera
     // "deshacerlo" (ver item 9, misma regla que en resolveTurn).
     let decisiveWinnerIsOpponent = false;
+    // BUG corregido: el ataque libre del rival tras un cambio (voluntario
+    // o de la CPU) usaba executeMove normal, pero nunca comprobaba si ESE
+    // movimiento era Cambio de Voltios/U-turn (SWITCH_OUT_MOVES) o Cola
+    // Dragón/Giro Vil (DRAG_OUT_MOVES) — a diferencia de runSlot en
+    // resolveTurn, que sí lo hace. Resultado: si el rival cambiaba de
+    // Pokémon en su turno y el otro lado respondía con Voltiocambio como
+    // "ataque libre" contra el recién entrado, el golpe hacía daño normal
+    // pero el efecto de cambio se perdía sin más, sin ofrecer nunca el
+    // prompt de elección. Se detecta aquí igual que en runSlot y se
+    // devuelve como señal para que el llamante (handleUserMove/
+    // handleUserSwitch) lo traduzca a su `switchSignals` de siempre — el
+    // mismo mecanismo ya usado por finalizeIndices (auto para la CPU, o
+    // pidiéndoselo de verdad al usuario), sin duplicar esa lógica aquí.
+    let opponentSelfSwitch = false;
+    let targetForcedSwitch = false;
 
     const attackTarget = async (target, extra = {}) => {
       if (opponent.hp <= 0 || target.hp <= 0) return;
+      // Igual que en resolveTurn: FIRST_TURN_ONLY_MOVES debe leer el valor
+      // de ANTES de este turno, así que `hasActedSinceEntering` se marca
+      // `true` en cada rama DESPUÉS de que su efecto (o la falta de él) ya
+      // se haya resuelto, nunca antes de executeMove.
       if (!opponentMove) {
+        opponent.hasActedSinceEntering = true;
         turns.push({ type: "statusText", text: `${opponent.name} no tiene PP para ningún movimiento y pierde el turno` });
         return;
       }
       if (!statusPreMoveCheck(opponent, turns)) {
-        if (opponent.hp <= 0) turns.push({ type: "faint", pokemon: opponent.name });
+        opponent.hasActedSinceEntering = true;
+        if (opponent.hp <= 0) pushFaintOnce(opponent, turns);
         return;
       }
       const result = await executeMove(opponent, target, opponentMove, weather, extra);
+      opponent.hasActedSinceEntering = true;
       let inlineEffect = null;
       const extraEvents = [];
       for (const ev of result.events || []) {
@@ -2513,10 +2612,22 @@ function useApiCache() {
       // anota antes que los efectos adicionales que le queden al que
       // atacó (bajada de stat propia, retroceso...).
       if (target.hp <= 0) {
-        turns.push({ type: "faint", pokemon: target.name });
+        pushFaintOnce(target, turns);
         decisiveWinnerIsOpponent = true;
       }
       turns.push(...extraEvents);
+
+      // Ver comentario de más arriba: mismo criterio que runSlot
+      // (resolveTurn) para detectar Cambio de Voltios/U-turn y Cola
+      // Dragón/Giro Vil en este golpe. Solo aplica de verdad cuando el
+      // objetivo es el recién entrado (`incoming`): contra `outgoing` bajo
+      // Persecución, `opponentMove` es siempre "pursuit" (mutuamente
+      // excluyente con estos dos grupos), así que no hace falta
+      // distinguir el caso aquí.
+      if (result.hit && result.damage > 0) {
+        if (target.hp > 0 && DRAG_OUT_MOVES.has(opponentMove.name)) targetForcedSwitch = true;
+        if (opponent.hp > 0 && SWITCH_OUT_MOVES.has(opponentMove.name)) opponentSelfSwitch = true;
+      }
     };
 
     // Golpe Bajo como ataque libre tras un cambio: el objetivo (el Pokémon
@@ -2569,7 +2680,7 @@ function useApiCache() {
     incoming.flinched = false;
     opponent.flinched = false;
 
-    return { turns, decisiveWinnerIsOpponent };
+    return { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch };
   }, [executeMove]);
 
   // Combate 1 contra 1 por turnos hasta que uno de los dos se quede a 0 PS
@@ -2622,6 +2733,12 @@ function useApiCache() {
       status: null, sleepTurns: 0, justFellAsleep: false, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
       lockedMove: null, lockedTurnsRemaining: 0, protected: false, protectChain: 0,
       flinched: false, toxicCounter: 0, yawnTurns: 0, invulnerable: false,
+      // faintLogged: ver pushFaintOnce. hasActedSinceEntering: ver
+      // FIRST_TURN_ONLY_MOVES (Fake Out/Impresión Primeriza) — empieza en
+      // `false` porque este Pokémon acaba de entrar al campo (inicio del
+      // combate); resetPokemonOnSwitchOut hace lo mismo cada vez que entra
+      // por un cambio posterior, voluntario o forzado.
+      faintLogged: false, hasActedSinceEntering: false,
       statStages: { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 },
     };
   }, [getPokemon, getMoveset]);
@@ -3048,7 +3165,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       const entries = await Promise.all(
         userPoke.moves.map(async (m) => {
           if (m.damageClass === "status") return [m.name, null];
-          const mult = await api.typeMultiplier([m.type], aiPoke.types);
+          const mult = await api.typeMultiplier([m.type], aiPoke.types, m.name);
           return [m.name, mult];
         })
       );
@@ -3152,6 +3269,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       } else if (forced) {
         resetPokemonOnSwitchOut(teamA[candidateIdxA]);
         const next = nextAliveIndex(teamA, candidateIdxA);
+        teamA[next].hasActedSinceEntering = false;
         setIdxA(next);
         pendingChoiceLines.push({ type: "statusText", text: `¡Adelante, ${teamA[next].name}!` });
       } else {
@@ -3161,7 +3279,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       setIdxA(candidateIdxA);
       pendingChoiceLines.push({ type: "statusText", text: "¿A quién quieres enviar a continuación?" });
     } else {
-      setIdxA(nextAliveIndex(teamA, candidateIdxA));
+      const next = nextAliveIndex(teamA, candidateIdxA);
+      teamA[next].hasActedSinceEntering = false;
+      setIdxA(next);
     }
 
     if (teamB[candidateIdxB].hp > 0) {
@@ -3173,6 +3293,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       } else if (forced) {
         resetPokemonOnSwitchOut(teamB[candidateIdxB]);
         const next = nextAliveIndex(teamB, candidateIdxB);
+        teamB[next].hasActedSinceEntering = false;
         setIdxB(next);
         pendingChoiceLines.push({ type: "statusText", text: `¡Adelante, ${teamB[next].name}!` });
       } else {
@@ -3182,7 +3303,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       setIdxB(candidateIdxB);
       pendingChoiceLines.push({ type: "statusText", text: "¿A quién quieres enviar a continuación?" });
     } else {
-      setIdxB(nextAliveIndex(teamB, candidateIdxB));
+      const next = nextAliveIndex(teamB, candidateIdxB);
+      teamB[next].hasActedSinceEntering = false;
+      setIdxB(next);
     }
 
     setMustSwitchSide(nextMustSwitch);
@@ -3213,6 +3336,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     // Si estaba debilitado, esto no tiene ningún efecto visible.
     const outgoing = userTeam[userIdx];
     if (outgoing && outgoing.hp > 0) resetPokemonOnSwitchOut(outgoing);
+    incoming.hasActedSinceEntering = false;
     setLog((l) => [...l, { type: "statusText", text: `¡Adelante, ${incoming.name}!` }]);
     if (userSide === "a") setIdxA(idx); else setIdxB(idx);
     setMustSwitchSide(null);
@@ -3272,14 +3396,24 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       // sin duplicar ninguna lógica.
       const incoming = aiTeam[aiDecision.targetIdx];
       const weatherWasActive = !!weather.type, terrainWasActive = !!weather.terrainType;
-      const { turns, decisiveWinnerIsOpponent } = await api.resolveSwitchTurn(aiPoke, incoming, userPoke, move, userTrainer.id, weather);
+      const { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch } = await api.resolveSwitchTurn(aiPoke, incoming, userPoke, move, userTrainer.id, weather);
       recordMechanics(turns, weatherWasActive, terrainWasActive);
       setLog((l) => [...l, ...turns]);
       const decisiveWinnerSide = decisiveWinnerIsOpponent ? userSide : null;
+      // BUG corregido: si el rival cambió de Pokémon este turno Y el
+      // movimiento del usuario (el "ataque libre" tras ese cambio) era
+      // Voltiocambio/U-turn o Cola Dragón/Giro Vil, resolveSwitchTurn ya
+      // detecta el efecto (ver comentario allí) pero antes nunca se
+      // traducía a `switchSignals` aquí — se pasaba `null` siempre, así
+      // que finalizeIndices nunca llegaba a ofrecer el prompt de cambio.
+      const aiSide = userSide === "a" ? "b" : "a";
+      const switchSignals = { a: null, b: null };
+      if (opponentSelfSwitch) switchSignals[userSide] = "self";
+      if (targetForcedSwitch) switchSignals[aiSide] = "forced";
       finalizeIndices(
         userSide === "a" ? idxA : aiDecision.targetIdx,
         userSide === "a" ? aiDecision.targetIdx : idxB,
-        null,
+        switchSignals,
         decisiveWinnerSide
       );
       setBusy(false);
@@ -3340,18 +3474,25 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     const weather = weatherRef.current;
     const aiMove = await api.chooseMove(opponent, outgoing, weather, difficulty);
     const weatherWasActive = !!weather.type, terrainWasActive = !!weather.terrainType;
-    const { turns, decisiveWinnerIsOpponent } = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId, weather);
+    const { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch } = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId, weather);
     recordMechanics(turns, weatherWasActive, terrainWasActive);
     setLog((l) => [...l, ...turns]);
 
     // El elegido pasa a ser el candidato a activo del usuario; si el rival
     // lo debilita antes de que pueda actuar, finalizeIndices ya se encarga
     // de avanzar al siguiente vivo de la fila (sin elección adicional).
+    // Mismo bug corregido que en handleUserMove: si el ataque libre del
+    // rival tras este cambio voluntario resulta ser Voltiocambio/U-turn o
+    // Cola Dragón/Giro Vil, hay que traducirlo a switchSignals para que
+    // finalizeIndices lo resuelva (antes se pasaba `null` siempre).
     const opponentSide = userSide === "a" ? "b" : "a";
+    const switchSignals = { a: null, b: null };
+    if (opponentSelfSwitch) switchSignals[opponentSide] = "self";
+    if (targetForcedSwitch) switchSignals[userSide] = "forced";
     finalizeIndices(
       userSide === "a" ? targetIdx : idxA,
       userSide === "a" ? idxB : targetIdx,
-      null,
+      switchSignals,
       decisiveWinnerIsOpponent ? opponentSide : null
     );
     setBusy(false);
