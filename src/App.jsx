@@ -4534,7 +4534,7 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, o
   );
 }
 
-function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves }) {
+function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves, onEnsureTrainerMovesetsInitialized }) {
   const [sprites, setSprites] = useState({});
   const [confirmTrainer, setConfirmTrainer] = useState(null);
   const [successName, setSuccessName] = useState(null);
@@ -4609,17 +4609,30 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
               <div className="flex flex-wrap gap-2 mb-3">
                 {t.team.map((slug, i) => {
                   const p = sprites[slug];
-                  // Editable solo si es un entrenador COMPRADO (t.locked
-                  // true en su definición original) y ya desbloqueado: los
-                  // 4 entrenadores gratis de inicio no tienen esta opción,
-                  // igual que pide el pedido ("junto a cada entrenador ya
-                  // comprado").
-                  const editable = unlocked && t.locked;
+                  // Editable para CUALQUIER entrenador que el usuario
+                  // pueda jugar, esté desbloqueado por defecto (Ash/Gary/
+                  // Paul/Máximo) o comprado: antes solo se permitía para
+                  // los comprados (t.locked), y como los 4 gratuitos nunca
+                  // pasan por el flujo de compra, nunca se les creaba
+                  // entrada en ownedTrainerMovesets ni se les ofrecía la
+                  // opción de editar.
+                  const editable = unlocked;
                   return (
                     <button
                       key={`${slug}-${i}`}
                       type="button"
-                      onClick={() => editable && setEditingTrainerMon({ trainerId: t.id, slug })}
+                      onClick={() => {
+                        if (!editable) return;
+                        // Inicialización perezosa: si este entrenador
+                        // todavía no tiene entrada en
+                        // ownedTrainerMovesets (los 4 gratuitos nunca
+                        // pasaron por purchaseTrainer, que es donde se
+                        // inicializaba hasta ahora), se crea aquí mismo a
+                        // partir de TRAINER_MOVESETS antes de abrir el
+                        // editor.
+                        onEnsureTrainerMovesetsInitialized(t.id);
+                        setEditingTrainerMon({ trainerId: t.id, slug });
+                      }}
                       disabled={!editable}
                       className="w-12 h-12 rounded-lg flex items-center justify-center relative disabled:cursor-default"
                       style={{ background: "#0e1018", border: editable ? "1px solid #3a3f57" : "1px solid #22263a" }}
@@ -4630,7 +4643,7 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                   );
                 })}
               </div>
-              {unlocked && t.locked && (
+              {unlocked && (
                 <p className="text-[10px] text-[#6b7086] mb-2">Toca un Pokémon para editar sus movimientos.</p>
               )}
               {!unlocked && (
@@ -5611,25 +5624,35 @@ export default function App() {
     setAchievementProgress((p) => applyCombatMechanics(p, flags));
   }
 
+  // Inicializa (si no existe todavía) la copia editable del usuario para
+  // CADA Pokémon del equipo de `trainerId`, con el moveset Normal ya
+  // existente (nunca el Avanzado, que es solo para la CPU): así, aunque el
+  // usuario no edite nada nunca, jugar con este entrenador ya usa
+  // dificultad Normal para su equipo sin importar la dificultad de la CPU
+  // elegida para esa partida (ver TorneoTab.startTournament). Se usa tanto
+  // al comprar un entrenador como, de forma perezosa, la primera vez que
+  // el usuario abre el editor de movimientos de uno de los 4 entrenadores
+  // gratuitos de inicio (Ash/Gary/Paul/Máximo): estos nunca pasan por el
+  // flujo de compra, así que sin esto nunca se les creaba esta entrada y
+  // el editor no tenía nada que guardar para ellos.
+  function ensureOwnedTrainerMovesetsInitialized(trainerId) {
+    const trainer = TRAINERS.find((t) => t.id === trainerId);
+    if (!trainer) return;
+    setOwnedTrainerMovesets((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const slug of trainer.team) {
+        const key = `${trainerId}:${slug}`;
+        if (!next[key] && TRAINER_MOVESETS[key]) { next[key] = TRAINER_MOVESETS[key]; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }
+
   function purchaseTrainer(trainerId, price) {
     setCoins((c) => c - price);
     setPurchasedTrainerIds((ids) => (ids.includes(trainerId) ? ids : [...ids, trainerId]));
-    // Se inicializa la copia editable del usuario con el moveset Normal ya
-    // existente (nunca el Avanzado, que es solo para la CPU): así, aunque
-    // el usuario no edite nada nunca, jugar con este entrenador ya usa
-    // dificultad Normal para su equipo sin importar la dificultad de la
-    // CPU elegida para esa partida (ver TorneoTab.startTournament).
-    const trainer = TRAINERS.find((t) => t.id === trainerId);
-    if (trainer) {
-      setOwnedTrainerMovesets((prev) => {
-        const next = { ...prev };
-        for (const slug of trainer.team) {
-          const key = `${trainerId}:${slug}`;
-          if (!next[key] && TRAINER_MOVESETS[key]) next[key] = TRAINER_MOVESETS[key];
-        }
-        return next;
-      });
-    }
+    ensureOwnedTrainerMovesetsInitialized(trainerId);
   }
 
   // Edición de un único Pokémon del equipo de un entrenador COMPRADO (las
@@ -5725,6 +5748,7 @@ export default function App() {
             onUpdateCustomTrainerTeam={updateCustomTrainerTeam}
             ownedTrainerMovesets={ownedTrainerMovesets}
             onUpdateOwnedTrainerMoves={updateOwnedTrainerMoves}
+            onEnsureTrainerMovesetsInitialized={ensureOwnedTrainerMovesetsInitialized}
           />
         )}
         {tab === "pokemon" && (
