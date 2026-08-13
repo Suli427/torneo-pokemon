@@ -514,6 +514,17 @@ const PROTECT_MOVES = new Set(["protect", "detect", "baneful-bunker", "spiky-shi
 // al campo en resolveTurn/resolveSwitchTurn/InteractiveBattle).
 const FIRST_TURN_ONLY_MOVES = new Set(["fake-out", "first-impression"]);
 
+// Heurística de "movimiento de recuperación" para el moveset competitivo
+// aleatorio de Ruleta Pokémon (ver buildCompetitiveMoveset): PokeAPI no
+// expone ningún flag estructurado de curación fuera de meta.drain (ya
+// cubierto aparte, es vampirismo ligado al daño infligido, no curación
+// pura), así que se usa una lista fija de movimientos de recuperación
+// habituales de la saga, mismo criterio que RECHARGE_MOVES/THRASHING_MOVES.
+const RECOVERY_MOVE_NAMES = new Set([
+  "recover", "roost", "slack-off", "soft-boiled", "milk-drink", "moonlight",
+  "morning-sun", "synthesis", "rest", "shore-up", "wish", "heal-order",
+]);
+
 // Movimientos que hacen daño Y ADEMÁS fuerzan al OBJETIVO a retirarse y ser
 // sustituido por otro Pokémon de su equipo (Cola Dragón/Dragon Tail, Giro
 // Vil/Circle Throw: mismo efecto que Rugido/Whirlwind pero después de
@@ -1577,6 +1588,115 @@ function useApiCache() {
     }
     return chosen.slice(0, 4).map((m) => m.name);
   }, [getLearnableMoveNames, getMove]);
+
+  // Moveset "razonablemente competitivo" para un Pokémon CUALQUIERA del
+  // pool (no solo los 20 entrenadores del roster fijo, que sí tienen
+  // TRAINER_MOVESETS_ADVANCED diseñado a mano): usado por el modo Ruleta
+  // Pokémon para el equipo del usuario Y de los 7 rivales, ya que no es
+  // viable diseñar a mano un set para las ~480 especies del pool. NO
+  // sustituye a assignRandomMoveset (que sigue igual, sin tocar, para el
+  // moveset aleatorio normal de la colección del gacha real).
+  //
+  // Criterio, en este orden: hasta 2 movimientos STAB (mismo tipo que el
+  // propio Pokémon) de mayor potencia disponible, priorizando la categoría
+  // física/especial que corresponda a su stat ofensiva más alta SOLO si
+  // hay una diferencia notable entre Ataque y Ataque Especial (si están
+  // parejos, no se fuerza ninguna categoría); 1 movimiento de cobertura de
+  // un tipo distinto a los propios (evitando repetir tipo entre los ya
+  // elegidos si hay alternativas); un 4º hueco para un movimiento de
+  // estado útil (subida de la stat ofensiva principal, o recuperación si
+  // el Pokémon tiene PS altos) si lo hay, si no, el siguiente movimiento
+  // de daño de mayor potencia disponible. Si el pool aprendible es
+  // demasiado pequeño para cubrir esto, se rellena con lo que haya
+  // (incluido Tackle/Struggle como último recurso), igual que
+  // assignRandomMoveset.
+  const buildCompetitiveMoveset = useCallback(async (slug) => {
+    const [poke, names] = await Promise.all([getPokemon(slug), getLearnableMoveNames(slug)]);
+    const resolved = await Promise.all(names.map((n) => getMove(n)));
+    const isDamaging = (m) => m.damageClass !== "status" && (m.power || m.specialDamage || m.isOHKO);
+    const damaging = resolved.filter(isDamaging);
+    const statusMoves = resolved.filter((m) => !isDamaging(m));
+    const categoryOf = (m) => (m.damageClass === "special" ? "special" : "physical");
+    // Potencia "efectiva" para ordenar movimientos que no tienen un
+    // `power` numérico fijo (fulminantes, daño variable como Bostezo... no,
+    // esos son de estado): un valor nominal razonable para poder comparar,
+    // no una estimación real de daño (esa ya la hace expectedDamage para
+    // el combate en sí, aquí solo hace falta un orden aproximado).
+    const effectivePower = (m) => m.power || (m.isOHKO ? 150 : m.specialDamage ? 80 : 0);
+
+    const atk = poke.stats?.attack ?? 0;
+    const spa = poke.stats?.["special-attack"] ?? 0;
+    const preferredCategory = Math.abs(atk - spa) > 15 ? (spa > atk ? "special" : "physical") : null;
+    const categoryBonus = (m) => (preferredCategory && categoryOf(m) === preferredCategory ? 1 : 0);
+
+    const chosen = [];
+    const usedNames = new Set();
+    function tryAdd(m) {
+      if (!m || usedNames.has(m.name) || chosen.length >= 4) return false;
+      chosen.push(m);
+      usedNames.add(m.name);
+      return true;
+    }
+
+    // Hasta 2 STAB, priorizando categoría preferida y luego potencia.
+    const stabMoves = damaging.filter((m) => poke.types.includes(m.type));
+    const stabSorted = [...stabMoves].sort((a, b) => (categoryBonus(b) - categoryBonus(a)) || (effectivePower(b) - effectivePower(a)));
+    for (const m of stabSorted) {
+      if (chosen.length >= 2) break;
+      tryAdd(m);
+    }
+
+    // 1 de cobertura: tipo distinto a los propios, priorizando no repetir
+    // tipo con lo ya elegido, luego categoría preferida, luego potencia.
+    const coverageMoves = damaging.filter((m) => !poke.types.includes(m.type));
+    const coverageSorted = [...coverageMoves].sort((a, b) => {
+      const usedTypes = new Set(chosen.map((c) => c.type));
+      const aNew = usedTypes.has(a.type) ? 0 : 1, bNew = usedTypes.has(b.type) ? 0 : 1;
+      return (bNew - aNew) || (categoryBonus(b) - categoryBonus(a)) || (effectivePower(b) - effectivePower(a));
+    });
+    for (const m of coverageSorted) {
+      if (tryAdd(m)) break;
+    }
+
+    // 4º hueco: estado útil (setup de la stat ofensiva principal propia, o
+    // recuperación con PS altos) si lo hay; si no, más daño. Si Ataque y
+    // Ataque Especial están parejos (preferredCategory null), se mira qué
+    // categoría domina entre los movimientos YA elegidos (STAB/cobertura)
+    // en vez de asumir físico por defecto — si no, un Pokémon con set
+    // especial de verdad podía acabar con una subida de Ataque físico que
+    // no beneficia a ninguno de sus otros 3 movimientos.
+    if (chosen.length < 4) {
+      let mainOffenseStat;
+      if (preferredCategory) {
+        mainOffenseStat = preferredCategory === "special" ? "special-attack" : "attack";
+      } else {
+        const specialCount = chosen.filter((m) => categoryOf(m) === "special").length;
+        mainOffenseStat = specialCount > chosen.length - specialCount ? "special-attack" : "attack";
+      }
+      const setupMoves = statusMoves.filter((m) => m.selfTargeted && (m.statChanges || []).some((sc) => sc.stat === mainOffenseStat && sc.change > 0));
+      const recoveryMoves = statusMoves.filter((m) => RECOVERY_MOVE_NAMES.has(m.name));
+      const utilityPick = ((poke.stats?.hp ?? 0) >= 90 && recoveryMoves[0]) || setupMoves[0] || recoveryMoves[0] || null;
+      if (utilityPick) tryAdd(utilityPick);
+    }
+
+    // Huecos restantes (incluido si no había ni cobertura ni estado útil
+    // disponibles): siguiente movimiento de daño de mayor potencia, sin
+    // repetir tipo si hay alternativa, ya elegido o no.
+    const remainingDamaging = damaging
+      .filter((m) => !usedNames.has(m.name))
+      .sort((a, b) => effectivePower(b) - effectivePower(a));
+    for (const m of remainingDamaging) {
+      if (chosen.length >= 4) break;
+      tryAdd(m);
+    }
+
+    // Último recurso (pool aprendible casi vacío): mismo relleno que
+    // assignRandomMoveset.
+    while (chosen.length < 4) {
+      chosen.push(await getMove(chosen.length === 3 ? "tackle" : "struggle"));
+    }
+    return chosen.slice(0, 4).map((m) => m.name);
+  }, [getPokemon, getLearnableMoveNames, getMove]);
 
   // Fórmula de daño oficial simplificada a nivel 50 para ambos combatientes.
   // Usa stats efectivos (stages -6..+6) y aplica la quemadura (mitad de
@@ -2805,8 +2925,8 @@ function useApiCache() {
   // reseteando PS/PP y volviendo a sortear el Pokémon inicial de la CPU a
   // mitad de combate. Memoizar el objeto entero evita esa cascada.
   return useMemo(() => ({
-    getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed,
-  }), [getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed]);
+    getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, buildCompetitiveMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed,
+  }), [getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, buildCompetitiveMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed]);
 }
 
 /* ---------------------------------------------------------------
@@ -3866,6 +3986,79 @@ function TournamentHistoryModal({ open, history, onClose }) {
   );
 }
 
+// Clave sin orden para un par de entrenadores, usada para llevar el
+// registro de qué enfrentamientos ya se han dado en el torneo en curso.
+function pairKey(idA, idB) {
+  return idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+}
+
+// Todos los enfrentamientos ya ocurridos en este torneo (todas las rondas
+// ya jugadas de `history`), como un Set de pairKey. Solo vive para la
+// duración del torneo en curso: `history` ya se reinicia a [] en cada
+// startTournament nuevo, así que no hace falta ningún registro aparte ni
+// persistirlo en localStorage.
+function buildPlayedPairsSet(history) {
+  const set = new Set();
+  for (const h of history) {
+    for (const r of h.results) set.add(pairKey(r.a.id, r.b.id));
+  }
+  return set;
+}
+
+// Todos los emparejamientos perfectos posibles (parejas disjuntas) de una
+// lista de longitud par. Para 8 participantes son 7!! = 105 combinaciones,
+// perfectamente asumible de generar entero y puntuar cada una (nada de
+// backtracking con riesgo de bucle infinito si algún caso es imposible).
+function generateAllPairings(list) {
+  if (list.length === 0) return [[]];
+  const [first, ...rest] = list;
+  const pairings = [];
+  for (let i = 0; i < rest.length; i++) {
+    const partner = rest[i];
+    const remaining = [...rest.slice(0, i), ...rest.slice(i + 1)];
+    for (const sub of generateAllPairings(remaining)) {
+      pairings.push([[first, partner], ...sub]);
+    }
+  }
+  return pairings;
+}
+
+// Emparejamientos de la ronda que EVITAN revanchas del torneo en curso en
+// la medida de lo posible, respetando lo mejor posible el criterio de
+// clasificación (1º vs 2º, 3º vs 4º...) ya usado. Se prueban las 105
+// combinaciones posibles y se elige la que, en este orden de prioridad:
+// 1) minimiza el número de revanchas (0 si es posible), y 2) entre las
+// que empatan en revanchas, se aleja lo menos posible del emparejamiento
+// "ideal" adyacente por posición (útil tanto para el modo "Aleatorio" como
+// "Por posición": en ambos, cada ronda ya empareja siempre por
+// clasificación actual — `pairMode` solo decide el orden de siembra
+// inicial de la ronda 1 — así que esta mejora aplica igual a los dos, ver
+// respuesta). Si con 8 participantes y varias rondas ya jugadas resulta
+// matemáticamente imposible evitar alguna revancha, se permite con
+// normalidad en vez de bloquear nada: la búsqueda es exhaustiva pero
+// acotada (105 combinaciones fijas), nunca puede quedarse en bucle.
+function buildPairsAvoidingRematches(ordered, playedPairsSet) {
+  const idealIndex = new Map(ordered.map((p, i) => [p.id, i]));
+  const allPairings = generateAllPairings(ordered);
+  let best = null;
+  let bestConflicts = Infinity;
+  let bestDeviation = Infinity;
+  for (const pairing of allPairings) {
+    let conflicts = 0;
+    let deviation = 0;
+    for (const [a, b] of pairing) {
+      if (playedPairsSet.has(pairKey(a.id, b.id))) conflicts++;
+      deviation += Math.abs(idealIndex.get(a.id) - idealIndex.get(b.id)) - 1;
+    }
+    if (conflicts < bestConflicts || (conflicts === bestConflicts && deviation < bestDeviation)) {
+      bestConflicts = conflicts;
+      bestDeviation = deviation;
+      best = pairing;
+    }
+  }
+  return best;
+}
+
 function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
@@ -3894,6 +4087,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // todavía no se ha sorteado ninguno (antes del primer torneo en este
   // modo, o justo después de reset()).
   const [rouletteTeam, setRouletteTeam] = useState(null);
+  // Modo C: equipos aleatorios de los 7 rivales CPU, uno por cada id de
+  // TRAINERS que le toque participar como rival esa partida (sorteados
+  // igual que el del usuario, cada uno con su propio sorteo independiente
+  // de 6 especies distintas del pool): { [trainerId]: [{ slug, moves }] }.
+  // Igual que rouletteTeam, se sortea una vez al iniciar el torneo y dura
+  // toda la partida; vacío/null fuera del modo C.
+  const [rouletteRivalTeams, setRouletteRivalTeams] = useState(null);
   const [difficulty, setDifficulty] = useState("normal");
   const [pairMode, setPairMode] = useState("random");
   const [standings, setStandings] = useState([]);
@@ -3940,9 +4140,22 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // idéntica a TRAINERS salvo que, si el usuario ha elegido jugar con su
   // entrenador propio (modo A) o le ha tocado la Ruleta Pokémon (modo C),
   // el slot de Ash pasa a resolver ese nombre/equipo en su lugar (mismo id,
-  // misma posición, mismo criterio de emparejamiento en ambos casos).
+  // misma posición, mismo criterio de emparejamiento en ambos casos). En
+  // modo C, ADEMÁS, los 7 rivales dejan de resolver su equipo fijo de
+  // entrenador canon: cada uno pasa a resolver su propio equipo aleatorio
+  // sorteado en startTournament (rouletteRivalTeams), con un nombre
+  // genérico ("Rival 1".."Rival 7", en el mismo orden en que se sortearon)
+  // ya que en este modo no representan a ningún personaje real del roster.
   const effectiveTrainers = (mode === "C" && rouletteTeam)
-    ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: "Ruleta Pokémon", team: rouletteTeam.map((e) => e.slug), subtitle: "Equipo aleatorio" } : t)
+    ? TRAINERS.map((t) => {
+        if (t.id === "ash") return { ...t, name: "Ruleta Pokémon", team: rouletteTeam.map((e) => e.slug), subtitle: "Equipo aleatorio" };
+        const rivalTeam = rouletteRivalTeams?.[t.id];
+        if (rivalTeam) {
+          const rivalIdx = Object.keys(rouletteRivalTeams).indexOf(t.id);
+          return { ...t, name: `Rival ${rivalIdx + 1}`, team: rivalTeam.map((e) => e.slug), subtitle: "Equipo aleatorio" };
+        }
+        return t;
+      })
     : (playAsCustom && customTrainer)
       ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador" } : t)
       : TRAINERS;
@@ -3959,6 +4172,27 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // normal (ver clearPrimedMovesets).
       api.clearPrimedMovesets();
       await api.preloadAll();
+      // El torneo sigue siendo de exactamente 8 participantes (el criterio
+      // ya existente de emparejamiento y clasificación asume ese número),
+      // pero con más de 8 entrenadores disponibles en total ya no tiene
+      // sentido que participen siempre los mismos 8: el elegido por el
+      // usuario participa siempre, y los otros 7 se sortean sin repetición
+      // entre el resto de entrenadores disponibles (bloqueados incluidos:
+      // estar bloqueado solo impide que el USUARIO juegue como ellos, no
+      // que existan como rivales de la Liga, igual que ya pasaba con los 4
+      // bloqueados originales). `pairMode` sigue controlando únicamente el
+      // orden de siembra de esos 8 ya elegidos, no a quién le toca jugar.
+      // Se calcula ANTES del bloque de abajo (a diferencia de como estaba
+      // antes) porque en Modo C hace falta saber ya qué 7 ids concretos
+      // son rivales esta partida, para poder sortearles equipo a cada uno.
+      const allIds = TRAINERS.map((t) => t.id);
+      const rivals = allIds.filter((id) => id !== userTrainerId);
+      for (let i = rivals.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rivals[i], rivals[j]] = [rivals[j], rivals[i]];
+      }
+      const chosenRivalIds = rivals.slice(0, 7);
+
       // El entrenador propio no usa TRAINER_MOVESETS/DEFAULT_MOVES_BY_TYPE: se
       // precarga movesetCache con los movimientos que cada Pokémon ya tiene
       // asignados en la colección de gacha (se busca por slug+shiny, ya que
@@ -3967,26 +4201,45 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // con SU moveset real y ya actualizado si se editó el equipo o los
       // movimientos de algún Pokémon desde la última vez.
       if (mode === "C") {
-        // Ruleta Pokémon: 6 especies DISTINTAS sorteadas del pool completo
-        // del gacha (última etapa evolutiva), independientemente de si el
-        // usuario las ha conseguido en su colección real — es un equipo
-        // temporal solo para esta partida, no se guarda en localStorage ni
-        // cuesta nada. Cada una recibe un moveset aleatorio pero aprendible
-        // de verdad, reutilizando exactamente la misma lógica ya usada al
-        // capturar un Pokémon nuevo en el gacha (assignRandomMoveset), y se
-        // precarga bajo "ash" igual que el entrenador propio del modo A.
-        const pool = [...GACHA_POOL];
-        for (let i = pool.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [pool[i], pool[j]] = [pool[j], pool[i]];
+        // Ruleta Pokémon: el usuario Y CADA UNO de los 7 rivales reciben su
+        // propio equipo de 6 especies DISTINTAS sorteadas del pool completo
+        // del gacha (última etapa evolutiva), cada uno con su propio sorteo
+        // independiente (pueden coincidir especies ENTRE participantes
+        // distintos sin problema, solo no se repiten dentro del equipo de
+        // uno mismo) — son equipos temporales solo para esta partida, no se
+        // guardan en localStorage ni cuestan nada. Los 7 rivales ya NO usan
+        // el equipo fijo de su entrenador canon en este modo (ver
+        // effectiveTrainers): no tendría sentido combinarlo con un roster
+        // aleatorio, así que se sustituye entero. Cada Pokémon recibe un
+        // moveset "razonablemente competitivo" (STAB + cobertura, ver
+        // buildCompetitiveMoveset) en vez del aleatorio "cualquier
+        // movimiento aprendible" que sigue usando el gacha real.
+        function drawRandomTeam() {
+          const pool = [...GACHA_POOL];
+          for (let i = pool.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pool[i], pool[j]] = [pool[j], pool[i]];
+          }
+          return pool.slice(0, 6);
         }
-        const chosen = pool.slice(0, 6);
-        const withMoves = await Promise.all(chosen.map(async (p) => {
-          const moves = await api.assignRandomMoveset(p.slug);
+        const userChosen = drawRandomTeam();
+        const userWithMoves = await Promise.all(userChosen.map(async (p) => {
+          const moves = await api.buildCompetitiveMoveset(p.slug);
           await api.primeMoveset("ash", p.slug, moves);
           return { slug: p.slug, moves };
         }));
-        setRouletteTeam(withMoves);
+        setRouletteTeam(userWithMoves);
+
+        const rivalEntries = await Promise.all(chosenRivalIds.map(async (rivalId) => {
+          const rivalChosen = drawRandomTeam();
+          const rivalWithMoves = await Promise.all(rivalChosen.map(async (p) => {
+            const moves = await api.buildCompetitiveMoveset(p.slug);
+            await api.primeMoveset(rivalId, p.slug, moves);
+            return { slug: p.slug, moves };
+          }));
+          return [rivalId, rivalWithMoves];
+        }));
+        setRouletteRivalTeams(Object.fromEntries(rivalEntries));
       } else if (playAsCustom && customTrainer) {
         await Promise.all(customTrainer.team.map(({ slug, shiny }) => {
           const entry = findCollectionEntry(collection, slug, shiny);
@@ -4008,29 +4261,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           }));
         }
       }
-      // El torneo sigue siendo de exactamente 8 participantes (el criterio
-      // ya existente de emparejamiento y clasificación asume ese número),
-      // pero con más de 8 entrenadores disponibles en total ya no tiene
-      // sentido que participen siempre los mismos 8: el elegido por el
-      // usuario participa siempre, y los otros 7 se sortean sin repetición
-      // entre el resto de entrenadores disponibles (bloqueados incluidos:
-      // estar bloqueado solo impide que el USUARIO juegue como ellos, no
-      // que existan como rivales de la Liga, igual que ya pasaba con los 4
-      // bloqueados originales). `pairMode` sigue controlando únicamente el
-      // orden de siembra de esos 8 ya elegidos, no a quién le toca jugar.
-      // Los IDs de los 20 entrenadores nunca cambian con ningún reskin (solo
-      // cambia qué nombre/equipo resuelve "ash"), así que se leen de
-      // TRAINERS directamente en vez de effectiveTrainers: evita depender
-      // de que rouletteTeam ya se haya actualizado en el estado de React
-      // dentro de esta misma función (setRouletteTeam de arriba es
-      // asíncrono de cara al render).
-      const allIds = TRAINERS.map((t) => t.id);
-      const rivals = allIds.filter((id) => id !== userTrainerId);
-      for (let i = rivals.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [rivals[i], rivals[j]] = [rivals[j], rivals[i]];
-      }
-      let order = [userTrainerId, ...rivals.slice(0, 7)];
+      let order = [userTrainerId, ...chosenRivalIds];
       if (pairMode === "random") {
         order = [...order];
         for (let i = order.length - 1; i > 0; i--) {
@@ -4142,8 +4373,14 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   async function simulateRound() {
     setSimulating(true);
     const ordered = sortedStandings(standings);
-    const pairs = [];
-    for (let i = 0; i < ordered.length; i += 2) pairs.push([ordered[i], ordered[i + 1]]);
+    // Emparejamiento por posición de siempre (1º vs 2º, 3º vs 4º...), pero
+    // evitando revanchas de rondas anteriores de este mismo torneo en la
+    // medida de lo posible (ver buildPairsAvoidingRematches): aplica igual
+    // en ambos modos de emparejamiento, ya que los dos usan este mismo
+    // criterio de clasificación en cada ronda — `pairMode` solo decidió el
+    // orden de siembra de la ronda 1, no cómo se emparejan las rondas.
+    const playedPairsSet = buildPlayedPairsSet(history);
+    const pairs = buildPairsAvoidingRematches(ordered, playedPairsSet);
 
     const userPairIdx = pairs.findIndex(([pA, pB]) => pA.id === userTrainerId || pB.id === userTrainerId);
     const results = new Array(pairs.length);
