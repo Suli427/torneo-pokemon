@@ -384,6 +384,55 @@ function getEffectiveSpeed(poke, weather) {
   return spd;
 }
 
+/* ---------------------------------------------------------------
+   DIFICULTAD DE LA CPU
+--------------------------------------------------------------- */
+
+const DIFFICULTY_META = {
+  normal: {
+    label: "Normal",
+    desc: "Ataca con el movimiento de mayor daño esperado. Nunca cambia de Pokémon por voluntad propia.",
+  },
+  hard: {
+    label: "Difícil",
+    desc: "Prioriza rematar, cura por drenaje si está muy tocada, usa Protección con criterio y Viento Afín en el momento oportuno; cambia de Pokémon ante una desventaja de tipo severa.",
+  },
+  master: {
+    label: "Maestro",
+    desc: "Todo lo de Difícil, y además planifica 2 turnos por adelantado (movimientos y cambios incluidos) para elegir su mejor jugada.",
+  },
+};
+
+// Reordena el equipo (mutando el array in-place) para que empiece por un
+// Pokémon aleatorio, conservando el orden relativo del resto para las
+// entradas posteriores tras debilitamientos (es una simple rotación: si el
+// elegido es el de índice r, el equipo pasa a ser [r, r+1, ..., fin, 0, ...,
+// r-1]). No afecta a la lógica de emparejamientos/clasificación del torneo:
+// solo cambia qué Pokémon concreto ocupa cada índice antes de empezar el
+// combate, el resto del motor sigue consumiendo el equipo por índice igual
+// que siempre.
+function rotateTeamRandomStart(team) {
+  if (!team || team.length < 2) return team;
+  const r = Math.floor(Math.random() * team.length);
+  if (r === 0) return team;
+  const rotated = [...team.slice(r), ...team.slice(0, r)];
+  team.splice(0, team.length, ...rotated);
+  return team;
+}
+
+// ¿Quién actúa primero entre dos movimientos ya elegidos? Misma regla que
+// resolveTurn (prioridad, luego Velocidad efectiva, empate 50/50), como
+// función pura reutilizable por la simulación a 2 turnos de Maestro (no
+// necesita acceso al resto del motor de combate).
+function attackerMovesFirst(moveA, moveB, pokeA, pokeB, weather) {
+  const prioA = moveA ? (moveA.priority || 0) : -100;
+  const prioB = moveB ? (moveB.priority || 0) : -100;
+  if (prioA !== prioB) return prioA > prioB;
+  const spA = getEffectiveSpeed(pokeA, weather), spB = getEffectiveSpeed(pokeB, weather);
+  if (spA !== spB) return spA > spB;
+  return Math.random() < 0.5;
+}
+
 function statChangeText(change) {
   const abs = Math.abs(change);
   if (change > 0) return abs >= 2 ? "subió mucho" : "subió";
@@ -1486,11 +1535,148 @@ function useApiCache() {
     return expected;
   }, [typeMultiplier]);
 
+  // Versión "pura" (sin lockedMove, sin marcar usedSetupMove, sin ninguna
+  // mutación) de "elige el movimiento de mayor daño esperado": se usa para
+  // PREDECIR qué movimiento usaría un Pokémon (propio o rival) dentro de la
+  // simulación de Difícil/Maestro, sin afectar al combate real. chooseMove
+  // (más abajo) no sirve para esto porque muta attacker.usedSetupMove como
+  // efecto secundario deliberado de la elección real.
+  const bestMoveAgainstPure = useCallback(async (attacker, defender, weather) => {
+    const usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
+    if (usable.length === 0) return null;
+    const scores = await Promise.all(usable.map((m) => expectedDamage(attacker, defender, m, weather)));
+    let bestIdx = 0;
+    for (let k = 1; k < scores.length; k++) if (scores[k] > scores[bestIdx]) bestIdx = k;
+    return usable[bestIdx];
+  }, [expectedDamage]);
+
+  // Simulación a 2 turnos de Maestro: proyecta (con daño ESPERADO, sin azar
+  // de crítico/precisión/golpes múltiples) el resultado de que `attacker`
+  // realice `startAction` (atacar con un movimiento, o cambiar de Pokémon)
+  // este turno y el siguiente, asumiendo que `defender` responde en ambos
+  // turnos con su mejor movimiento según la misma heurística de daño
+  // esperado ya usada en Normal/Difícil (no se ramifica a más de una
+  // respuesta hipotética del rival, tal y como permite el pedido, para que
+  // el coste sea manejable). No se clona ningún objeto de combate real: los
+  // PS proyectados se llevan como números sueltos y solo se LEEN datos
+  // (stats/tipos/movimientos) de los Pokémon reales, así que el combate en
+  // curso nunca se ve afectado por la simulación, acierte o no la
+  // predicción.
+  //
+  // Simplificación documentada: la proyección no modela cambios de stat
+  // (Danza Espada...), ailments (parálisis, quemadura...) ni el propio
+  // cambio de Pokémon del rival dentro de la ventana de 2 turnos; para
+  // Viento Afín concretamente sí se tiene en cuenta su efecto en el orden
+  // de turno del turno 2 (ver `usedTailwind` más abajo), ya que es el
+  // ejemplo de combo que el propio pedido pide contemplar explícitamente.
+  const scoreTwoTurnPlan = useCallback(async ({ startAction, attacker, attackerTeam, defender, weather }) => {
+    let aPoke = attacker;
+    let aHp = attacker.hp;
+    let dHp = defender.hp;
+    let usedTailwind = false;
+
+    if (startAction.type === "switch") {
+      aPoke = attackerTeam[startAction.targetIdx];
+      aHp = aPoke.hp;
+      const dMove = await bestMoveAgainstPure(defender, aPoke, weather);
+      if (dMove) aHp = Math.max(0, aHp - await expectedDamage(defender, aPoke, dMove, weather));
+    } else {
+      const move = startAction.move;
+      usedTailwind = TAILWIND_MOVES.has(move.name);
+      const dMove = await bestMoveAgainstPure(defender, aPoke, weather);
+      const aDmg = await expectedDamage(aPoke, defender, move, weather);
+      const dDmg = dMove ? await expectedDamage(defender, aPoke, dMove, weather) : 0;
+      if (attackerMovesFirst(move, dMove, aPoke, defender, weather)) {
+        dHp = Math.max(0, dHp - aDmg);
+        if (dHp > 0) aHp = Math.max(0, aHp - dDmg);
+      } else {
+        aHp = Math.max(0, aHp - dDmg);
+        if (aHp > 0) dHp = Math.max(0, dHp - aDmg);
+      }
+    }
+
+    if (aHp > 0 && dHp > 0) {
+      const aMove2 = await bestMoveAgainstPure(aPoke, defender, weather);
+      const dMove2 = await bestMoveAgainstPure(defender, aPoke, weather);
+      const aDmg2 = aMove2 ? await expectedDamage(aPoke, defender, aMove2, weather) : 0;
+      const dDmg2 = dMove2 ? await expectedDamage(defender, aPoke, dMove2, weather) : 0;
+      const aFirst2 = usedTailwind ? true : attackerMovesFirst(aMove2, dMove2, aPoke, defender, weather);
+      if (aFirst2) {
+        dHp = Math.max(0, dHp - aDmg2);
+        if (dHp > 0) aHp = Math.max(0, aHp - dDmg2);
+      } else {
+        aHp = Math.max(0, aHp - dDmg2);
+        if (aHp > 0) dHp = Math.max(0, dHp - aDmg2);
+      }
+    }
+
+    const dHpFracLost = (defender.maxHp - dHp) / defender.maxHp;
+    const aHpFracLost = (aPoke.maxHp - aHp) / aPoke.maxHp;
+    let score = dHpFracLost - aHpFracLost;
+    if (dHp <= 0) score += 2;
+    if (aHp <= 0) score -= 2;
+    if (startAction.type === "switch") score -= 0.05; // pequeño coste para no cambiar "porque sí" en empates
+    return score;
+  }, [expectedDamage, bestMoveAgainstPure]);
+
+  // Genera las acciones candidatas (movimientos con PP + cambios a
+  // compañeros vivos, estos últimos solo si se pasa `aliveTeammates`) y
+  // devuelve la de mejor resultado proyectado a 2 turnos.
+  const pickMasterAction = useCallback(async ({ attacker, attackerTeam, usable, aliveTeammates, defender, weather }) => {
+    const candidates = [
+      ...usable.map((m) => ({ type: "attack", move: m })),
+      ...aliveTeammates.map(({ i }) => ({ type: "switch", targetIdx: i })),
+    ];
+    if (candidates.length === 0) return null;
+    const scored = await Promise.all(candidates.map(async (action) => ({
+      action,
+      score: await scoreTwoTurnPlan({ startAction: action, attacker, attackerTeam, defender, weather }),
+    })));
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].action;
+  }, [scoreTwoTurnPlan]);
+
+  // Cambio voluntario por desventaja de tipo (Difícil/Maestro): mide la
+  // desventaja con el multiplicador de TIPO puro (no daño con stats, tal y
+  // como lo describe el pedido) entre los tipos de cada Pokémon activo, sin
+  // mirar los movimientos concretos elegidos por nadie ese turno (la CPU no
+  // "lee" la elección del usuario, solo compara matchups de tipo, igual que
+  // haría un entrenador razonable sopesando a quién tiene delante).
+  const pickSwitchTarget = useCallback(async ({ attacker, defender, aliveTeammates }) => {
+    const defMultVsAttacker = await typeMultiplier(defender.types, attacker.types);
+    const atkMultVsDefender = await typeMultiplier(attacker.types, defender.types);
+    const severeDisadvantage = defMultVsAttacker >= 2 && atkMultVsDefender < 2;
+    if (!severeDisadvantage) return null;
+
+    let best = null, bestScore = -Infinity;
+    for (const { p, i } of aliveTeammates) {
+      const off = await typeMultiplier(p.types, defender.types);
+      const def = await typeMultiplier(defender.types, p.types);
+      const score = off - def;
+      if (score > bestScore) { bestScore = score; best = i; }
+    }
+    const currentScore = atkMultVsDefender - defMultVsAttacker;
+    return (best != null && bestScore > currentScore) ? best : null;
+  }, [typeMultiplier]);
+
   // Elige el movimiento con mayor daño esperado. Excepción no bloqueante:
   // por debajo del 40% de PS, si el Pokémon tiene un movimiento de estado
   // que sube sus propias stats y no lo ha usado aún este combate, lo
   // prioriza una única vez antes de volver a centrarse en el daño.
-  const chooseMove = useCallback(async (attacker, defender, weather) => {
+  //
+  // `difficulty` ("normal" por defecto | "hard" | "master"): en Difícil y
+  // Maestro añade predicción de KO, Protección razonada contra un objetivo
+  // invulnerable a punto de reaparecer, curación por drenaje por debajo del
+  // 30% de PS (el motor no implementa movimientos de recuperación plana
+  // como Recover/Roost/Rest — ver comentario de TRAINER_MOVESETS —, así que
+  // se usa como proxy un movimiento drenador ya implementado) y Viento Afín
+  // cuando el propio Pokémon es más lento que el rival. Estas mejoras
+  // valen tanto para el combate interactivo como para los combates
+  // CPU-contra-CPU simulados automáticamente (el resto de Difícil —cambios
+  // de Pokémon voluntarios— y la simulación a 2 turnos de Maestro con
+  // cambios incluidos solo se usan en el combate interactivo vía
+  // decideAiTurn, más abajo: ver su comentario para la razón).
+  const chooseMove = useCallback(async (attacker, defender, weather, difficulty = "normal") => {
     // Movimiento de furia en curso: no pasa por la IA, se repite a la
     // fuerza el mismo movimiento contra el objetivo activo actual (si aún
     // le queda PP; si no, se trata como cualquier otro caso sin PP).
@@ -1506,6 +1692,34 @@ function useApiCache() {
     const usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
     if (usable.length === 0) return null;
 
+    const scores = await Promise.all(usable.map((m) => expectedDamage(attacker, defender, m, weather)));
+
+    if (difficulty !== "normal") {
+      // Predicción de KO: por encima de cualquier otra consideración, y
+      // además un atajo de rendimiento (evita la simulación completa de
+      // Maestro cuando la jugada ya es obvia).
+      const koIdx = scores.findIndex((s) => s >= defender.hp);
+      if (koIdx !== -1) return usable[koIdx];
+
+      if (difficulty === "master") {
+        const best = await pickMasterAction({ attacker, attackerTeam: [], usable, aliveTeammates: [], defender, weather });
+        if (best) return best.move; // sin candidatos de cambio, siempre "attack" aquí
+      } else {
+        if (defender.invulnerable) {
+          const protectMove = usable.find((m) => PROTECT_MOVES.has(m.name));
+          if (protectMove && (attacker.protectChain || 0) < 2) return protectMove;
+        }
+        if (attacker.hp / attacker.maxHp < 0.3) {
+          const drainIdx = usable.findIndex((m) => m.drain > 0);
+          if (drainIdx !== -1) return usable[drainIdx];
+        }
+        const tailwindIdx = usable.findIndex((m) => TAILWIND_MOVES.has(m.name));
+        if (tailwindIdx !== -1 && !(weather?.tailwind?.[attacker.trainerId] > 0) && getEffectiveSpeed(attacker, weather) < getEffectiveSpeed(defender, weather)) {
+          return usable[tailwindIdx];
+        }
+      }
+    }
+
     const hpRatio = attacker.hp / attacker.maxHp;
     if (hpRatio < 0.4 && !attacker.usedSetupMove) {
       const setupIdx = usable.findIndex((m) =>
@@ -1517,11 +1731,67 @@ function useApiCache() {
       }
     }
 
-    const scores = await Promise.all(usable.map((m) => expectedDamage(attacker, defender, m, weather)));
     let bestIdx = 0;
     for (let k = 1; k < scores.length; k++) if (scores[k] > scores[bestIdx]) bestIdx = k;
     return usable[bestIdx];
-  }, [expectedDamage]);
+  }, [expectedDamage, pickMasterAction]);
+
+  // Decide la acción de la CPU en el combate INTERACTIVO (contra el
+  // usuario): a diferencia de chooseMove, puede devolver un cambio de
+  // Pokémon voluntario, no solo un movimiento. Esto vive aparte de
+  // chooseMove porque los combates CPU-contra-CPU (simulateDuel) son un
+  // modelo "1 contra 1 hasta debilitarse" sin ningún concepto de banquillo
+  // dentro del propio duelo (ver comentario de simulateDuel): generalizar
+  // el cambio voluntario también ahí implicaría fusionar ese modelo con el
+  // de simulateMatch, un cambio de arquitectura mayor que no encaja en el
+  // alcance de este pedido. Por eso el cambio de Pokémon de Difícil/Maestro
+  // (y la simulación a 2 turnos de Maestro CON cambios) solo se usa aquí,
+  // en el único combate que el usuario juega en persona cada ronda; los
+  // otros 6 combates de la ronda siguen usando chooseMove (con sus propias
+  // mejoras de Difícil/Maestro salvo el cambio de Pokémon).
+  const decideAiTurn = useCallback(async ({ attacker, attackerTeam, attackerIdx, attackerTrainerId, defender, weather, difficulty }) => {
+    if (attacker.lockedMove || difficulty === "normal") {
+      return { type: "attack", move: await chooseMove(attacker, defender, weather, difficulty) };
+    }
+
+    const usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
+    if (usable.length === 0) return { type: "attack", move: null };
+
+    const scores = await Promise.all(usable.map((m) => expectedDamage(attacker, defender, m, weather)));
+    const koIdx = scores.findIndex((s) => s >= defender.hp);
+    if (koIdx !== -1) return { type: "attack", move: usable[koIdx] };
+
+    const aliveTeammates = attackerTeam
+      .map((p, i) => ({ p, i }))
+      .filter(({ p, i }) => i !== attackerIdx && p.hp > 0);
+
+    if (difficulty === "master") {
+      const best = await pickMasterAction({ attacker, attackerTeam, usable, aliveTeammates, defender, weather });
+      if (best) return best;
+    }
+
+    if (aliveTeammates.length > 0) {
+      const target = await pickSwitchTarget({ attacker, defender, aliveTeammates });
+      if (target != null) return { type: "switch", targetIdx: target };
+    }
+
+    const tailwindIdx = usable.findIndex((m) => TAILWIND_MOVES.has(m.name));
+    if (tailwindIdx !== -1 && !(weather?.tailwind?.[attackerTrainerId] > 0) && getEffectiveSpeed(attacker, weather) < getEffectiveSpeed(defender, weather)) {
+      return { type: "attack", move: usable[tailwindIdx] };
+    }
+
+    if (defender.invulnerable) {
+      const protectMove = usable.find((m) => PROTECT_MOVES.has(m.name));
+      if (protectMove && (attacker.protectChain || 0) < 2) return { type: "attack", move: protectMove };
+    }
+
+    if (attacker.hp / attacker.maxHp < 0.3) {
+      const drainIdx = usable.findIndex((m) => m.drain > 0);
+      if (drainIdx !== -1) return { type: "attack", move: usable[drainIdx] };
+    }
+
+    return { type: "attack", move: await chooseMove(attacker, defender, weather, difficulty) };
+  }, [chooseMove, expectedDamage, pickMasterAction, pickSwitchTarget]);
 
   const executeMove = useCallback(async (attacker, defender, move, weather, extra = {}) => {
     // Golpe Fantasma/Golpe Fantasma-like (dos turnos con invulnerabilidad):
@@ -2079,7 +2349,7 @@ function useApiCache() {
 
   // Combate 1 contra 1 por turnos hasta que uno de los dos se quede a 0 PS
   // (IA para ambos lados).
-  const simulateDuel = useCallback(async (pa, pb, trainerAId, trainerBId, weather) => {
+  const simulateDuel = useCallback(async (pa, pb, trainerAId, trainerBId, weather, difficulty = "normal") => {
     const turns = [];
     let guard = 0;
     // switchEffects desactivados aquí a propósito: este modelo es "1 contra
@@ -2087,11 +2357,14 @@ function useApiCache() {
     // gestiona simulateMatch por fuera, solo cuando uno de los dos se
     // debilita), sin ningún concepto de banquillo dentro del propio duelo,
     // así que Cola Dragón/Cambio de Voltios siguen haciendo su daño normal
-    // aquí pero no llegan a forzar/permitir ningún cambio de Pokémon.
+    // aquí pero no llegan a forzar/permitir ningún cambio de Pokémon. Por la
+    // misma razón, el cambio de Pokémon voluntario de Difícil/Maestro
+    // tampoco se usa aquí (ver comentario de decideAiTurn): `difficulty`
+    // solo mejora qué movimiento elige cada lado vía chooseMove.
     let lastDecisiveWinner = null;
     while (pa.hp > 0 && pb.hp > 0 && guard < 100) {
       guard++;
-      const [moveA, moveB] = await Promise.all([chooseMove(pa, pb, weather), chooseMove(pb, pa, weather)]);
+      const [moveA, moveB] = await Promise.all([chooseMove(pa, pb, weather, difficulty), chooseMove(pb, pa, weather, difficulty)]);
       const { turns: stepTurns, decisiveWinnerSide } = await resolveTurn(pa, pb, moveA, moveB, trainerAId, trainerBId, weather, { enableSwitchEffects: false });
       turns.push(...stepTurns);
       if (decisiveWinnerSide) lastDecisiveWinner = decisiveWinnerSide;
@@ -2132,9 +2405,15 @@ function useApiCache() {
     return Promise.all(trainer.team.map((s) => preparePokemonForBattle(trainer.id, s)));
   }, [preparePokemonForBattle]);
 
-  const simulateMatch = useCallback(async (trainerA, trainerB) => {
+  const simulateMatch = useCallback(async (trainerA, trainerB, difficulty = "normal") => {
     const teamA = await prepareTeam(trainerA);
     const teamB = await prepareTeam(trainerB);
+    // Ambos lados son "CPU" desde el punto de vista de este simulador (el
+    // combate del propio usuario nunca pasa por aquí, ver InteractiveBattle):
+    // los dos equipos empiezan por un Pokémon aleatorio, no siempre el
+    // primero de la fila.
+    rotateTeamRandomStart(teamA);
+    rotateTeamRandomStart(teamB);
     // El clima/campo/viento afín es del combate entero (no de cada duelo
     // 1v1 por separado): persiste a través de los cambios de Pokémon por
     // debilitamiento. `terrain*` y `tailwind` viven en el mismo objeto que
@@ -2145,7 +2424,7 @@ function useApiCache() {
     const log = [];
     while (i < teamA.length && j < teamB.length) {
       const pa = teamA[i], pb = teamB[j];
-      const duel = await simulateDuel(pa, pb, trainerA.id, trainerB.id, weather);
+      const duel = await simulateDuel(pa, pb, trainerA.id, trainerB.id, weather, difficulty);
       log.push(duel);
       if (duel.winnerSide === "a") j++; else i++;
     }
@@ -2173,7 +2452,7 @@ function useApiCache() {
     return pokes;
   }, [getPokemon, getType, getMoveset]);
 
-  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, typeMultiplier, assignRandomMoveset, primeMoveset, getLearnableMovesDetailed };
+  return { getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, primeMoveset, getLearnableMovesDetailed };
 }
 
 /* ---------------------------------------------------------------
@@ -2460,7 +2739,7 @@ function BattlerCard({ poke, label }) {
 
 // Pantalla de combate interactiva: el usuario elige el movimiento de su
 // Pokémon activo en cada turno; el rival lo controla la IA (chooseMove).
-function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
+function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish }) {
   const [teamA, setTeamA] = useState(null);
   const [teamB, setTeamB] = useState(null);
   const [idxA, setIdxA] = useState(0);
@@ -2490,10 +2769,15 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     let cancelled = false;
     (async () => {
       const [ta, tb] = await Promise.all([api.prepareTeam(trainerA), api.prepareTeam(trainerB)]);
+      // El lado de la CPU empieza con un Pokémon aleatorio, no siempre el
+      // primero de la fila; el lado del usuario mantiene su equipo tal cual
+      // recibido, ya que él mismo elige con quién empezar más abajo.
+      if (userSide !== "a") rotateTeamRandomStart(ta);
+      if (userSide !== "b") rotateTeamRandomStart(tb);
       if (!cancelled) { setTeamA(ta); setTeamB(tb); }
     })();
     return () => { cancelled = true; };
-  }, [api, trainerA, trainerB]);
+  }, [api, trainerA, trainerB, userSide]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -2688,7 +2972,45 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     if (busy || result) return;
     setBusy(true);
     const weather = weatherRef.current;
-    const aiMove = await api.chooseMove(aiPoke, userPoke, weather);
+    const aiTrainerId = userSide === "a" ? trainerB.id : trainerA.id;
+
+    // La CPU decide su acción (atacar o, en Difícil/Maestro, cambiar de
+    // Pokémon voluntariamente) sin conocer el movimiento que el usuario ya
+    // eligió (mismo criterio "sin espiar" que el resto de la IA, ver
+    // decideAiTurn); el movimiento del usuario solo entra en juego después,
+    // al resolver la acción ya decidida.
+    const aiDecision = await api.decideAiTurn({
+      attacker: aiPoke,
+      attackerTeam: aiTeam,
+      attackerIdx: aiIdx,
+      attackerTrainerId: aiTrainerId,
+      defender: userPoke,
+      weather,
+      difficulty,
+    });
+
+    if (aiDecision.type === "switch") {
+      // La CPU cambia de Pokémon: se reutiliza resolveSwitchTurn tal cual
+      // (la CPU como "outgoing/incoming", y el movimiento que el usuario ya
+      // eligió como el ataque libre del rival), exactamente la misma
+      // función que ya usa el cambio voluntario del propio usuario más
+      // abajo — así Persecución, Golpe Bajo, etc. siguen funcionando igual
+      // sin duplicar ninguna lógica.
+      const incoming = aiTeam[aiDecision.targetIdx];
+      const { turns, decisiveWinnerIsOpponent } = await api.resolveSwitchTurn(aiPoke, incoming, userPoke, move, userTrainer.id, weather);
+      setLog((l) => [...l, ...turns]);
+      const decisiveWinnerSide = decisiveWinnerIsOpponent ? userSide : null;
+      finalizeIndices(
+        userSide === "a" ? idxA : aiDecision.targetIdx,
+        userSide === "a" ? aiDecision.targetIdx : idxB,
+        null,
+        decisiveWinnerSide
+      );
+      setBusy(false);
+      return;
+    }
+
+    const aiMove = aiDecision.move;
     const moveA = userSide === "a" ? move : aiMove;
     const moveB = userSide === "a" ? aiMove : move;
     // Cola Dragón/Cambio de Voltios necesitan saber si cada lado tiene
@@ -2715,7 +3037,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, onFinish }) {
     const opponent = aiTeam[aiIdx];
     const opponentTrainerId = userSide === "a" ? trainerB.id : trainerA.id;
     const weather = weatherRef.current;
-    const aiMove = await api.chooseMove(opponent, outgoing, weather);
+    const aiMove = await api.chooseMove(opponent, outgoing, weather, difficulty);
     const { turns, decisiveWinnerIsOpponent } = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId, weather);
     setLog((l) => [...l, ...turns]);
 
@@ -2974,6 +3296,7 @@ function TournamentHistoryModal({ open, history, onClose }) {
             };
             const modeA = modeStats("A");
             const modeB = modeStats("B");
+            const modeC = modeStats("C");
 
             return (
               <>
@@ -2992,7 +3315,7 @@ function TournamentHistoryModal({ open, history, onClose }) {
                   ))}
                 </div>
 
-                <div className="grid sm:grid-cols-2 gap-2 mb-5">
+                <div className="grid sm:grid-cols-3 gap-2 mb-5">
                   <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
                     <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo A · Solo tu entrenador</div>
                     <div className="text-sm text-white">{modeA.played} jugados · {modeA.wins} victorias ({modeA.pct}%)</div>
@@ -3000,6 +3323,10 @@ function TournamentHistoryModal({ open, history, onClose }) {
                   <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
                     <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo B · Cualquier entrenador</div>
                     <div className="text-sm text-white">{modeB.played} jugados · {modeB.wins} victorias ({modeB.pct}%)</div>
+                  </div>
+                  <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+                    <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo C · Ruleta Pokémon</div>
+                    <div className="text-sm text-white">{modeC.played} jugados · {modeC.wins} victorias ({modeC.pct}%)</div>
                   </div>
                 </div>
 
@@ -3054,6 +3381,14 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // `playAsCustom` nunca llega a activarse y el slot "ash" sigue
   // resolviendo al Ash real de toda la vida.
   const [mode, setMode] = useState("B");
+  // Modo C "Ruleta Pokémon": equipo de 6 Pokémon aleatorios (última etapa
+  // evolutiva, mismo pool que el gacha) con moveset aleatorio pero
+  // aprendible, sorteado UNA vez al iniciar el torneo (ver startTournament)
+  // y mantenido igual durante las 5 rondas: [{ slug, moves }] o null si
+  // todavía no se ha sorteado ninguno (antes del primer torneo en este
+  // modo, o justo después de reset()).
+  const [rouletteTeam, setRouletteTeam] = useState(null);
+  const [difficulty, setDifficulty] = useState("normal");
   const [pairMode, setPairMode] = useState("random");
   const [standings, setStandings] = useState([]);
   const [round, setRound] = useState(0);
@@ -3082,6 +3417,12 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       setPlayAsCustom(true);
     } else if (newMode === "B") {
       setPlayAsCustom(false);
+    } else if (newMode === "C") {
+      // Mismo truco de "reskin" del slot ash que el modo A, pero con su
+      // propio reskin de equipo aleatorio (ver effectiveTrainers): no
+      // reutiliza playAsCustom, que es específico del entrenador propio.
+      setUserTrainerId("ash");
+      setPlayAsCustom(false);
     }
   }
 
@@ -3091,11 +3432,14 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   const unlockedTrainers = TRAINERS.filter((t) => isTrainerUnlocked(t, purchasedTrainerIds));
   // Lista efectiva usada para TODA la simulación/emparejamiento/clasificación:
   // idéntica a TRAINERS salvo que, si el usuario ha elegido jugar con su
-  // entrenador propio, el slot de Ash pasa a resolver su nombre y equipo en
-  // su lugar (mismo id, misma posición, mismo criterio de emparejamiento).
-  const effectiveTrainers = (playAsCustom && customTrainer)
-    ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador" } : t)
-    : TRAINERS;
+  // entrenador propio (modo A) o le ha tocado la Ruleta Pokémon (modo C),
+  // el slot de Ash pasa a resolver ese nombre/equipo en su lugar (mismo id,
+  // misma posición, mismo criterio de emparejamiento en ambos casos).
+  const effectiveTrainers = (mode === "C" && rouletteTeam)
+    ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: "Ruleta Pokémon", team: rouletteTeam.map((e) => e.slug), subtitle: "Equipo aleatorio" } : t)
+    : (playAsCustom && customTrainer)
+      ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador" } : t)
+      : TRAINERS;
 
   async function startTournament() {
     setPhase("loading");
@@ -3109,7 +3453,28 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // bajo el mismo id "ash" que va a usar la simulación, para que combata
       // con SU moveset real y ya actualizado si se editó el equipo o los
       // movimientos de algún Pokémon desde la última vez.
-      if (playAsCustom && customTrainer) {
+      if (mode === "C") {
+        // Ruleta Pokémon: 6 especies DISTINTAS sorteadas del pool completo
+        // del gacha (última etapa evolutiva), independientemente de si el
+        // usuario las ha conseguido en su colección real — es un equipo
+        // temporal solo para esta partida, no se guarda en localStorage ni
+        // cuesta nada. Cada una recibe un moveset aleatorio pero aprendible
+        // de verdad, reutilizando exactamente la misma lógica ya usada al
+        // capturar un Pokémon nuevo en el gacha (assignRandomMoveset), y se
+        // precarga bajo "ash" igual que el entrenador propio del modo A.
+        const pool = [...GACHA_POOL];
+        for (let i = pool.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
+        const chosen = pool.slice(0, 6);
+        const withMoves = await Promise.all(chosen.map(async (p) => {
+          const moves = await api.assignRandomMoveset(p.slug);
+          await api.primeMoveset("ash", p.slug, moves);
+          return { slug: p.slug, moves };
+        }));
+        setRouletteTeam(withMoves);
+      } else if (playAsCustom && customTrainer) {
         await Promise.all(customTrainer.team.map(({ slug, shiny }) => {
           const entry = findCollectionEntry(collection, slug, shiny);
           return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
@@ -3125,7 +3490,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // que existan como rivales de la Liga, igual que ya pasaba con los 4
       // bloqueados originales). `pairMode` sigue controlando únicamente el
       // orden de siembra de esos 8 ya elegidos, no a quién le toca jugar.
-      const allIds = effectiveTrainers.map((t) => t.id);
+      // Los IDs de los 20 entrenadores nunca cambian con ningún reskin (solo
+      // cambia qué nombre/equipo resuelve "ash"), así que se leen de
+      // TRAINERS directamente en vez de effectiveTrainers: evita depender
+      // de que rouletteTeam ya se haya actualizado en el estado de React
+      // dentro de esta misma función (setRouletteTeam de arriba es
+      // asíncrono de cara al render).
+      const allIds = TRAINERS.map((t) => t.id);
       const rivals = allIds.filter((id) => id !== userTrainerId);
       for (let i = rivals.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -3204,7 +3575,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       if (idx === userPairIdx) return;
       const trainerA = effectiveTrainers.find((t) => t.id === pA.id);
       const trainerB = effectiveTrainers.find((t) => t.id === pB.id);
-      const res = await api.simulateMatch(trainerA, trainerB);
+      const res = await api.simulateMatch(trainerA, trainerB, difficulty);
       results[idx] = { a: trainerA, b: trainerB, ...res };
     }));
 
@@ -3271,7 +3642,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
               <Users size={18} color="#f2b705" /> Modo de torneo
             </h3>
-            <div className="grid sm:grid-cols-2 gap-3">
+            <div className="grid sm:grid-cols-3 gap-3">
               <button
                 onClick={() => customTrainer && handleModeChange("A")}
                 disabled={!customTrainer}
@@ -3299,6 +3670,17 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                 <div className="text-white font-semibold text-sm mb-1">Cualquier entrenador excepto el tuyo</div>
                 <div className="text-[11px] text-[#8a8fa3]">Elige entre tus entrenadores desbloqueados. Tu entrenador propio no aparece como opción en este modo.</div>
               </button>
+              <button
+                onClick={() => handleModeChange("C")}
+                className="rounded-xl p-4 text-left transition-all"
+                style={{
+                  background: mode === "C" ? "linear-gradient(160deg, #a75fd933, #14161f)" : "#14161f",
+                  border: mode === "C" ? "1.5px solid #a75fd9" : "1px solid #262a3a",
+                }}
+              >
+                <div className="text-white font-semibold text-sm mb-1">Ruleta Pokémon</div>
+                <div className="text-[11px] text-[#8a8fa3]">Recibes un equipo aleatorio de 6 Pokémon al iniciar el torneo, sorteado del pool completo del gacha.</div>
+              </button>
             </div>
           </div>
 
@@ -3323,17 +3705,52 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                 </button>
               ))}
             </div>
-          ) : customTrainer ? (
-            <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#2ecc7114", border: "1px solid #2ecc7155" }}>
-              <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>
-                {customTrainer.name[0]}
+          ) : mode === "A" ? (
+            customTrainer ? (
+              <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#2ecc7114", border: "1px solid #2ecc7155" }}>
+                <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>
+                  {customTrainer.name[0]}
+                </div>
+                <div>
+                  <div className="text-white font-semibold text-sm">Jugarás con {customTrainer.name}</div>
+                  <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+                </div>
+              </div>
+            ) : null
+          ) : (
+            <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#a75fd914", border: "1px solid #a75fd955" }}>
+              <div className="w-11 h-11 rounded-full flex items-center justify-center text-xl shrink-0" style={{ background: "#a75fd933" }}>
+                🎲
               </div>
               <div>
-                <div className="text-white font-semibold text-sm">Jugarás con {customTrainer.name}</div>
-                <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+                <div className="text-white font-semibold text-sm">Jugarás con un equipo aleatorio de 6 Pokémon</div>
+                <div className="text-[11px] text-[#8a8fa3]">Se sorteará al iniciar el torneo (movesets aprendibles incluidos) y se mantendrá igual durante las {TOURNAMENT_ROUNDS} rondas.</div>
               </div>
             </div>
-          ) : null}
+          )}
+
+          <div>
+            <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
+              <Swords size={18} color="#f2b705" /> Dificultad de la CPU
+            </h3>
+            <div className="flex flex-wrap gap-3">
+              {Object.entries(DIFFICULTY_META).map(([key, meta]) => (
+                <button
+                  key={key}
+                  onClick={() => setDifficulty(key)}
+                  className="text-left px-4 py-2.5 rounded-lg text-sm font-medium max-w-[15rem]"
+                  style={{
+                    background: difficulty === key ? "#e3350d22" : "#14161f",
+                    border: difficulty === key ? "1px solid #e3350d" : "1px solid #262a3a",
+                    color: difficulty === key ? "#ff6b4a" : "#c7cbdb",
+                  }}
+                >
+                  <div className="font-semibold">{meta.label}</div>
+                  <div className="text-[10px] text-[#8a8fa3] font-normal leading-snug mt-0.5">{meta.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div>
             <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
@@ -3389,6 +3806,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             trainerA={interactiveMatch.trainerA}
             trainerB={interactiveMatch.trainerB}
             userSide={interactiveMatch.userSide}
+            difficulty={difficulty}
             onFinish={handleInteractiveFinish}
           />
         </div>
