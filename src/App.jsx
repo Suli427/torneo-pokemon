@@ -53,9 +53,9 @@ const TRAINERS = [
   // --- Entrenadores nuevos (bloqueados, comprables con monedas de torneo) ---
   { id: "lance", name: "Lance", subtitle: "Campeón de Kanto/Johto", locked: true, price: 1050, color: "#8a2e2e",
     team: ["gyarados", "dragonite", "dragonite", "charizard", "aerodactyl", "kingdra"] },
-  { id: "wallace", name: "Wallace", subtitle: "Campeón de Hoenn", locked: true, price: 1150, color: "#1f8a9e",
+  { id: "wallace", name: "Plubio", subtitle: "Campeón de Hoenn", locked: true, price: 1150, color: "#1f8a9e",
     team: ["milotic", "ludicolo", "whiscash", "gyarados", "wailord", "starmie"] },
-  { id: "alder", name: "Alder", subtitle: "Campeón de Teselia", locked: true, price: 950, color: "#6b8e23",
+  { id: "alder", name: "Mirto", subtitle: "Campeón de Teselia", locked: true, price: 950, color: "#6b8e23",
     team: ["volcarona", "bouffalant", "vanilluxe", "druddigon", "escavalier", "accelgor"] },
   { id: "alain", name: "Alain", subtitle: "Rival de Kalos", locked: true, price: 900, color: "#b8452f",
     team: ["charizard", "bisharp", "unfezant", "weavile", "metagross", "tyranitar"] }, // TODO: revisar equipo (6º Pokémon: Tyranitar, elegido por mí)
@@ -67,15 +67,15 @@ const TRAINERS = [
     team: ["serperior", "conkeldurr", "jellicent-male", "vanilluxe", "darmanitan-standard", "boldore"] },
   { id: "cameron", name: "Cameron", subtitle: "Copa Junior de Teselia", locked: true, price: 750, color: "#8e44ad",
     team: ["lucario", "hydreigon", "samurott", "swanna", "flygon", "magnezone"] }, // TODO: revisar equipo (5º y 6º Pokémon)
-  { id: "red", name: "Red", subtitle: "Maestro Pokémon legendario", locked: true, price: 1400, color: "#7a1f1f",
+  { id: "red", name: "Rojo", subtitle: "Maestro Pokémon legendario", locked: true, price: 1400, color: "#7a1f1f",
     team: ["raichu", "charizard", "snorlax", "espeon", "venusaur", "blastoise"] },
-  { id: "cyrus", name: "Cyrus", subtitle: "Líder del Team Galactic", locked: true, price: 1050, color: "#34495e",
+  { id: "cyrus", name: "Helio", subtitle: "Líder del Team Galactic", locked: true, price: 1050, color: "#34495e",
     team: ["weavile", "crobat", "gyarados", "honchkrow", "houndoom", "magnezone"] }, // TODO: revisar equipo (6º Pokémon)
   { id: "n", name: "N", subtitle: "Rey del Equipo Plasma", locked: true, price: 1000, color: "#27ae60",
     team: ["zoroark", "carracosta", "klinklang", "vanilluxe", "archeops", "darmanitan-standard"] }, // TODO: revisar equipo (6º Pokémon)
   { id: "giovanni", name: "Giovanni", subtitle: "Líder del Team Rocket", locked: true, price: 1100, color: "#45484c",
     team: ["nidoking", "nidoqueen", "rhyperior", "persian", "kangaskhan", "crobat"] }, // TODO: revisar equipo (6º Pokémon)
-  { id: "colress", name: "Colress", subtitle: "Científico del Equipo Plasma", locked: true, price: 950, color: "#16a085",
+  { id: "colress", name: "Acromo", subtitle: "Científico del Equipo Plasma", locked: true, price: 950, color: "#16a085",
     team: ["klinklang", "escavalier", "beheeyem", "magnezone", "metang", "porygon-z"] }, // TODO: revisar equipo (6º Pokémon)
 ];
 
@@ -4094,6 +4094,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // Igual que rouletteTeam, se sortea una vez al iniciar el torneo y dura
   // toda la partida; vacío/null fuera del modo C.
   const [rouletteRivalTeams, setRouletteRivalTeams] = useState(null);
+  // Modo C: nombre "prestado" de un entrenador real del roster para cada
+  // uno de los 7 rivales CPU (puramente cosmético, ver effectiveTrainers):
+  // { [rivalId]: borrowedTrainerId }. El EQUIPO de cada rival sigue siendo
+  // el aleatorio de rouletteRivalTeams, nunca el equipo canon del
+  // entrenador cuyo nombre le tocó — solo se pide prestado el nombre (y,
+  // si aplica, color/subtitle) para dar sabor a la clasificación.
+  const [rouletteRivalNames, setRouletteRivalNames] = useState(null);
   const [difficulty, setDifficulty] = useState("normal");
   const [pairMode, setPairMode] = useState("random");
   const [standings, setStandings] = useState([]);
@@ -4143,16 +4150,26 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // misma posición, mismo criterio de emparejamiento en ambos casos). En
   // modo C, ADEMÁS, los 7 rivales dejan de resolver su equipo fijo de
   // entrenador canon: cada uno pasa a resolver su propio equipo aleatorio
-  // sorteado en startTournament (rouletteRivalTeams), con un nombre
-  // genérico ("Rival 1".."Rival 7", en el mismo orden en que se sortearon)
-  // ya que en este modo no representan a ningún personaje real del roster.
+  // sorteado en startTournament (rouletteRivalTeams), tomando prestado
+  // SOLO el nombre/color/subtitle (nunca el equipo) de un entrenador real
+  // del roster sorteado sin repetir entre los 7 (rouletteRivalNames) — es
+  // puramente cosmético, para dar sabor a la clasificación de este modo;
+  // el historial de torneos sigue guardando "Ruleta Pokémon" como modo,
+  // nunca el nombre prestado (ver finalizeRound, no se toca aquí).
   const effectiveTrainers = (mode === "C" && rouletteTeam)
     ? TRAINERS.map((t) => {
         if (t.id === "ash") return { ...t, name: "Ruleta Pokémon", team: rouletteTeam.map((e) => e.slug), subtitle: "Equipo aleatorio" };
         const rivalTeam = rouletteRivalTeams?.[t.id];
         if (rivalTeam) {
-          const rivalIdx = Object.keys(rouletteRivalTeams).indexOf(t.id);
-          return { ...t, name: `Rival ${rivalIdx + 1}`, team: rivalTeam.map((e) => e.slug), subtitle: "Equipo aleatorio" };
+          const borrowedId = rouletteRivalNames?.[t.id];
+          const borrowed = borrowedId ? TRAINERS.find((bt) => bt.id === borrowedId) : null;
+          return {
+            ...t,
+            name: borrowed?.name ?? t.name,
+            color: borrowed?.color ?? t.color,
+            subtitle: borrowed?.subtitle ?? "Equipo aleatorio",
+            team: rivalTeam.map((e) => e.slug),
+          };
         }
         return t;
       })
@@ -4240,6 +4257,20 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           return [rivalId, rivalWithMoves];
         }));
         setRouletteRivalTeams(Object.fromEntries(rivalEntries));
+
+        // Nombre "prestado" (solo cosmético, ver effectiveTrainers) para
+        // cada uno de los 7 rivales: un entrenador real del roster
+        // completo de 20, sorteado sin repetir entre ellos. No hace falta
+        // excluir al entrenador propio del usuario aquí: `customTrainer`
+        // no forma parte de TRAINERS (es una entidad aparte), así que
+        // nunca podría salir sorteado de este pool de todos modos.
+        const namePool = [...TRAINERS.map((t) => t.id)];
+        for (let i = namePool.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [namePool[i], namePool[j]] = [namePool[j], namePool[i]];
+        }
+        const borrowedIds = namePool.slice(0, chosenRivalIds.length);
+        setRouletteRivalNames(Object.fromEntries(chosenRivalIds.map((rivalId, i) => [rivalId, borrowedIds[i]])));
       } else if (playAsCustom && customTrainer) {
         await Promise.all(customTrainer.team.map(({ slug, shiny }) => {
           const entry = findCollectionEntry(collection, slug, shiny);
