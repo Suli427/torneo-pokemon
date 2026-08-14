@@ -340,6 +340,25 @@ const AILMENT_APPLY_TEXT = {
   toxic: "ha sido gravemente envenenado",
 };
 
+// Inmunidades de tipo a estados no volátiles: SIEMPRE se aplican (tanto si
+// el estado viene como efecto principal de un movimiento de estado —Fuego
+// Fatuo, Onda Trueno...— como si es un efecto secundario de uno de daño
+// —Envite Ígneo, Trueno...—), sin importar la probabilidad indicada por la
+// API. Se comprueban en applyMoveEffects, antes de aplicar cualquiera de
+// los tres estados.
+function isAilmentTypeImmune(ailmentName, target) {
+  if (ailmentName === "burn") return target.types.includes("fire");
+  if (ailmentName === "paralysis") return target.types.includes("electric");
+  if (ailmentName === "freeze") return target.types.includes("ice");
+  return false;
+}
+
+const AILMENT_TYPE_IMMUNE_TEXT = {
+  burn: (name) => `¡${name} es de tipo Fuego y no puede quemarse!`,
+  paralysis: (name) => `¡${name} es de tipo Eléctrico y no puede paralizarse!`,
+  freeze: (name) => `¡${name} es de tipo Hielo y no puede congelarse!`,
+};
+
 const AILMENT_VERB = {
   paralysis: "Puede paralizar",
   burn: "Puede quemar",
@@ -561,13 +580,35 @@ const SUPER_FANG_MOVES = new Set(["super-fang"]);
 const YAWN_MOVES = new Set(["yawn"]);
 
 // Movimientos de "dos turnos con invulnerabilidad" (Golpe Fantasma/Phantom
-// Force; Cavar/Fly/Dig comparten la misma mecánica real pero no están en el
-// roster actual, así que no se incluyen aquí todavía — añadir su nombre a
-// este set basta para extenderlo en el futuro sin más cambios). El primer
-// turno el usuario "desaparece" (invulnerable, sin daño); el segundo se
-// repite el mismo movimiento automáticamente (reutilizando lockedMove, el
-// mismo campo que ya usan los movimientos de furia) y golpea con normalidad.
-const TWO_TURN_MOVES = new Set(["phantom-force"]);
+// Force, Cavar/Dig — usado como movimiento por defecto de tipo Tierra en
+// DEFAULT_MOVES_BY_TYPE, así que sí está en uso real pese al comentario
+// anterior; Fly/Dive/Bounce comparten la misma mecánica real pero no están
+// en uso en el roster actual, añadir su nombre a este set basta para
+// extenderlo el día que se necesiten). El primer turno el usuario
+// "desaparece" (invulnerable, sin daño); el segundo se repite el mismo
+// movimiento automáticamente (reutilizando lockedMove, el mismo campo que
+// ya usan los movimientos de furia) y golpea con normalidad. Ver
+// CHARGE_MOVES_VULNERABLE más abajo para el grupo PARALELO de movimientos
+// de carga que NO son invulnerables (Sky Attack y similares).
+const TWO_TURN_MOVES = new Set(["phantom-force", "dig"]);
+
+// Movimientos de carga de dos turnos SIN invulnerabilidad: el primer turno
+// tampoco hace daño, pero a diferencia de TWO_TURN_MOVES el usuario SÍ
+// puede ser golpeado con normalidad ese turno (incluso debilitado antes de
+// completar el ataque). Rayo Solar (solar-beam) es un caso aparte dentro
+// de este mismo grupo: no tenía ningún tratamiento especial en el motor
+// (ni de dos turnos ni de excepción de clima), así que se añade aquí con
+// su propia excepción de Sol (ver executeMove) en vez de dejarlo como un
+// movimiento normal de 1 turno.
+const CHARGE_MOVES_VULNERABLE = new Set([
+  "sky-attack", "razor-wind", "skull-bash", "freeze-shock", "ice-burn", "meteor-beam",
+  "geomancy", "solar-beam",
+]);
+
+// Pulso Terrestre (Terrain Pulse): cambia de tipo Normal a Eléctrico/Planta/
+// Psíquico/Hada según el campo activo y dobla su potencia base cuando hay
+// alguno; sin campo activo se queda en Normal con su potencia base normal.
+const TERRAIN_PULSE_TYPE_BY_TERRAIN = { electric: "electric", grassy: "grass", psychic: "psychic", misty: "fairy" };
 
 // Viento Afín (Tailwind): duplica la Velocidad de TODO el equipo del
 // entrenador que lo usa (no solo el Pokémon activo) durante 4 turnos. Es un
@@ -868,6 +909,7 @@ function resetPokemonOnSwitchOut(poke) {
   poke.lockedMove = null;
   poke.lockedTurnsRemaining = 0;
   poke.invulnerable = false;
+  poke.chargingMove = null;
 }
 
 /* ---------------------------------------------------------------
@@ -936,10 +978,19 @@ function statusPreMoveCheck(poke, turns) {
   }
 
   if (poke.status === "freeze") {
-    if (Math.random() < 0.2) {
+    // 75% de probabilidad de descongelarse cada turno (25% de seguir
+    // congelado); tope de 2 turnos seguidos congelado como máximo — si ya
+    // se quedó congelado 2 veces seguidas, se descongela automáticamente
+    // sin ni siquiera tirar, para no poder quedar congelado indefinidamente
+    // por mala suerte. `freezeTurns` cuenta cuántas veces YA se ha quedado
+    // congelado (no cuántas ha intentado actuar), se reinicia a 0 al
+    // aplicarse el estado (ver applyMoveEffects) y al descongelarse.
+    if ((poke.freezeTurns || 0) >= 2 || Math.random() < 0.75) {
       poke.status = null;
-      turns.push({ type: "statusText", text: `${poke.name} se ha descongelado` });
+      poke.freezeTurns = 0;
+      turns.push({ type: "statusText", text: `¡${poke.name} se ha descongelado!` });
     } else {
+      poke.freezeTurns = (poke.freezeTurns || 0) + 1;
       turns.push({ type: "statusText", text: `${poke.name} está congelado y no puede moverse` });
       return false;
     }
@@ -1095,6 +1146,8 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
           events.push({ type: "statusText", text: `¡El Campo Eléctrico evita que ${target.name} se duerma!`, inline: false });
         } else if (terrainBlocksStatus(weather, target)) {
           events.push({ type: "statusText", text: `¡El Campo de Niebla protege a ${target.name} de los estados alterados!`, inline: false });
+        } else if (isAilmentTypeImmune(move.ailmentName, target)) {
+          events.push({ type: "statusText", text: AILMENT_TYPE_IMMUNE_TEXT[move.ailmentName](target.name), inline: false });
         } else {
           target.status = move.ailmentName;
           if (move.ailmentName === "sleep") {
@@ -1103,6 +1156,9 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
           }
           if (move.ailmentName === "toxic") {
             target.toxicCounter = 1;
+          }
+          if (move.ailmentName === "freeze") {
+            target.freezeTurns = 0;
           }
           events.push({ type: "statusText", text: `${target.name} ${AILMENT_APPLY_TEXT[move.ailmentName]}`, inline: false });
         }
@@ -2081,13 +2137,20 @@ function useApiCache() {
     // propio turno de carga sí lo hacen con normalidad.
     const isTwoTurnMove = TWO_TURN_MOVES.has(move.name);
     const isTwoTurnRelease = isTwoTurnMove && attacker.invulnerable;
+    // Movimientos de carga SIN invulnerabilidad (ver CHARGE_MOVES_VULNERABLE):
+    // mismo criterio de PP que TWO_TURN_MOVES (se gasta en el turno de
+    // carga, el de ejecución es "gratis"). Rayo Solar con Sol activo nunca
+    // llega a cargar (isSolarBeamInstant), así que no cuenta como release.
+    const isVulnerableCharge = CHARGE_MOVES_VULNERABLE.has(move.name);
+    const isSolarBeamInstant = move.name === "solar-beam" && weather?.type === "sun";
+    const isVulnerableChargeRelease = isVulnerableCharge && !isSolarBeamInstant && attacker.chargingMove === move.name;
 
     // El PP se gasta por el mero hecho de seleccionar y ejecutar el
     // movimiento (acierte, falle por precisión o quede bloqueado por
     // Protección); ejecuteMove solo se llama cuando el atacante SÍ pudo
     // actuar (statusPreMoveCheck ya se resolvió antes), así que aquí no
     // hace falta distinguir esos casos.
-    if (move.ppLeft != null && !isTwoTurnRelease) move.ppLeft = Math.max(0, move.ppLeft - 1);
+    if (move.ppLeft != null && !isTwoTurnRelease && !isVulnerableChargeRelease) move.ppLeft = Math.max(0, move.ppLeft - 1);
 
     // La recarga se gasta por haber usado el movimiento, acierte o no
     // (equivalente simplificado a los juegos reales).
@@ -2190,6 +2253,23 @@ function useApiCache() {
       attacker.lockedMove = null;
     }
 
+    // Sky Attack y similares (ver CHARGE_MOVES_VULNERABLE): mismo patrón de
+    // "cargar un turno, ejecutar al siguiente" que Golpe Fantasma arriba,
+    // reutilizando `lockedMove` para el auto-uso del turno de ejecución,
+    // pero SIN marcar `invulnerable`: el rival puede golpear con normalidad
+    // durante el turno de carga, incluso debilitando a quien carga antes de
+    // que llegue a completar el ataque. Rayo Solar con Sol activo se salta
+    // esta fase por completo y ataca en un solo turno, como en los juegos.
+    if (isVulnerableCharge && !isSolarBeamInstant) {
+      if (!isVulnerableChargeRelease) {
+        attacker.chargingMove = move.name;
+        attacker.lockedMove = move.name;
+        return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `${attacker.name} se está cargando de energía`, inline: false }] };
+      }
+      attacker.chargingMove = null;
+      attacker.lockedMove = null;
+    }
+
     // Un objetivo invulnerable (en la fase de carga de un movimiento de dos
     // turnos) esquiva por completo cualquier movimiento rival dirigido a él
     // este turno, salvo que sea uno dirigido a uno mismo (no aplica aquí).
@@ -2219,6 +2299,36 @@ function useApiCache() {
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
       const events = [{ type: "statusText", text: `¡${defender.name} se protegió del ataque!`, inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: 0, crit: false, status: true, events };
+    }
+
+    // Un movimiento de tipo Fuego (o Escaldar/Scald, agua por tipo pero con
+    // esta excepción concreta en los juegos reales) usado CONTRA un
+    // objetivo congelado lo descongela al instante, haga o no daño, ANTES
+    // de resolver el resto del movimiento (precisión/daño incluidos). No
+    // depende de que el golpe llegue a impactar: incluso un fallo de
+    // precisión descongela, igual que en los juegos. Solo se muta el
+    // estado aquí (sin generar el evento de log directamente: executeMove
+    // tiene demasiados puntos de retorno distintos más abajo como para
+    // colar el mensaje en todos ellos); runSlot/attackTarget, que sí tienen
+    // un único punto de salida por llamada, detectan el cambio de estado
+    // del objetivo tras el await y añaden el mensaje al log desde allí.
+    if (!move.selfTargeted && defender.status === "freeze" && (move.type === "fire" || move.name === "scald")) {
+      defender.status = null;
+      defender.freezeTurns = 0;
+    }
+
+    // Rodillo de Acero (Steel Roller): solo funciona si hay un campo de
+    // batalla activo en ese momento; sin campo, falla por completo (sin
+    // tirada de precisión ni daño). Con campo activo, se deja seguir el
+    // flujo normal de abajo (precisión + daño con normalidad) y, tras
+    // resolver el golpe, se elimina el campo (ver más abajo, junto al
+    // resto de efectos tras el daño).
+    if (move.name === "steel-roller" && !weather?.terrainType) {
+      if (isRecharge) attacker.mustRecharge = true;
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
       if (thrashEvent) events.push(thrashEvent);
       return { hit: true, damage: 0, crit: false, status: true, events };
     }
@@ -2333,6 +2443,45 @@ function useApiCache() {
         if (thrashEvent) events.push(thrashEvent);
         return { hit: true, damage: 0, crit: false, status: true, events };
       }
+      // Descanso (Rest): cura por completo y elimina cualquier estado no
+      // volátil, a cambio de dormir SIEMPRE exactamente 2 turnos (nunca
+      // 1-3 al azar como el sueño normal); el "coste" no depende de si
+      // había algo que curar, así que se aplica siempre igual.
+      if (move.name === "rest") {
+        attacker.hp = attacker.maxHp;
+        attacker.status = "sleep";
+        attacker.sleepTurns = 2;
+        attacker.justFellAsleep = true;
+        attacker.freezeTurns = 0;
+        attacker.toxicCounter = 0;
+        const events = [{ type: "statusText", text: `¡${attacker.name} se puso a dormir y restauró sus PS!`, inline: false }];
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Recuperación (Recover/Roost/Slack Off/Soft-Boiled/Milk Drink...,
+      // ver RECOVERY_MOVE_NAMES): curan el 50% de los PS máximos
+      // (redondeado hacia abajo), sin ningún otro efecto ni coste, sin
+      // superar el máximo. PokeAPI no expone ningún dato estructurado de
+      // curación para movimientos de ESTADO (a diferencia del drenaje en
+      // movimientos de DAÑO, vía meta.drain — ver applyDrainOrRecoil, ese
+      // caso ya funcionaba correctamente); sin este caso especial, estos
+      // movimientos no tenían absolutamente ningún efecto.
+      if (RECOVERY_MOVE_NAMES.has(move.name)) {
+        const heal = Math.floor(attacker.maxHp / 2);
+        const before = attacker.hp;
+        attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
+        const events = [{
+          type: "statusText",
+          text: attacker.hp > before ? `¡${attacker.name} restauró PS!` : `¡${attacker.name} ya tenía los PS al máximo!`,
+          inline: false,
+        }];
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
       const events = applyMoveEffects(attacker, defender, move, 1, false, weather);
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
@@ -2352,6 +2501,14 @@ function useApiCache() {
     // Ígneo, Placaje, Golpe Cabeza...): cura o resta al atacante un % del
     // daño infligido según el signo de meta.drain.
     if (mult > 0) applyDrainOrRecoil(attacker, damage, move, events);
+    // Rodillo de Acero: ya se comprobó arriba que había campo activo (si no
+    // lo hubiera, el movimiento ya habría fallado antes de llegar aquí), así
+    // que tras el golpe se elimina el campo activo por completo.
+    if (move.name === "steel-roller" && weather?.terrainType) {
+      events.push({ type: "statusText", text: TERRAIN_END_TEXT[weather.terrainType], inline: false });
+      weather.terrainType = null;
+      weather.terrainTurnsLeft = 0;
+    }
     // Amedrentar (flinch): solo se tira si el golpe conectó de verdad
     // (mult>0) y el objetivo sigue en pie; el efecto real (bloquear el
     // turno) se resuelve en statusPreMoveCheck cuando le toque actuar.
@@ -2368,6 +2525,27 @@ function useApiCache() {
     if (thrashEvent) events.push(thrashEvent);
     return { hit: true, damage, crit: isCrit, status: false, events };
   }, [computeDamage]);
+
+  // Envoltorio de executeMove que resuelve la excepción de Pulso Terrestre
+  // (cambia de tipo y dobla potencia según el campo activo, ver
+  // TERRAIN_PULSE_TYPE_BY_TERRAIN): muta temporalmente move.type/move.power
+  // antes de ejecutar el movimiento y los restaura justo después (en un
+  // finally, para que quede restaurado incluso si algo lanza), mismo
+  // criterio ya usado para Persecución en resolveSwitchTurn — así no se dej
+  // corrompido el objeto de movimiento compartido en caché entre Pokémon.
+  const executeMoveWithTerrainPulse = useCallback(async (attacker, defender, move, weather, extra) => {
+    let restore = null;
+    if (move.name === "terrain-pulse" && weather?.terrainType && TERRAIN_PULSE_TYPE_BY_TERRAIN[weather.terrainType]) {
+      restore = { type: move.type, power: move.power };
+      move.type = TERRAIN_PULSE_TYPE_BY_TERRAIN[weather.terrainType];
+      move.power = (move.power || 50) * 2;
+    }
+    try {
+      return await executeMove(attacker, defender, move, weather, extra);
+    } finally {
+      if (restore) { move.type = restore.type; move.power = restore.power; }
+    }
+  }, [executeMove]);
 
   // Resuelve un único turno: ambos movimientos ya elegidos, orden por
   // prioridad/velocidad (con parálisis afectando la velocidad efectiva),
@@ -2449,7 +2627,11 @@ function useApiCache() {
     // slot gestione sus propios efectos de cambio (que difieren entre el
     // primer y el segundo mover, ver más abajo).
     async function runSlot(attacker, defender, move, atkTrainer, suckerPunchFails) {
-      const result = await executeMove(attacker, defender, move, weather, { suckerPunchFails });
+      // Ver comentario del descongelado instantáneo por Fuego/Escaldar en
+      // executeMove: se detecta aquí (único punto de salida de esta
+      // llamada) comparando el estado del objetivo antes/después.
+      const defenderWasFrozen = defender.status === "freeze";
+      const result = await executeMoveWithTerrainPulse(attacker, defender, move, weather, { suckerPunchFails });
       let inlineEffect = null;
       const extraEvents = [];
       for (const ev of result.events || []) {
@@ -2479,6 +2661,9 @@ function useApiCache() {
         protectSuccess: PROTECT_MOVES.has(move.name) && attacker.protected === true,
         attackerFainted: attacker.hp <= 0,
       });
+      if (defenderWasFrozen && defender.status !== "freeze") {
+        turns.push({ type: "statusText", text: `¡${defender.name} se ha descongelado!` });
+      }
       // El debilitamiento del rival se anota justo después del golpe, antes
       // que cualquier evento adicional (bajada de stat propia, drenaje,
       // retroceso...): en este punto, si el rival se debilitó, los únicos
@@ -2646,7 +2831,7 @@ function useApiCache() {
     activePb.flinched = false;
 
     return { turns, switchSignals, decisiveWinnerSide };
-  }, [executeMove]);
+  }, [executeMove, executeMoveWithTerrainPulse]);
 
   // Resuelve un turno en el que el usuario cambia de Pokémon en vez de
   // atacar. El cambio voluntario SIEMPRE resuelve antes que cualquier
@@ -2700,7 +2885,8 @@ function useApiCache() {
         if (opponent.hp <= 0) pushFaintOnce(opponent, turns);
         return;
       }
-      const result = await executeMove(opponent, target, opponentMove, weather, extra);
+      const targetWasFrozen = target.status === "freeze";
+      const result = await executeMoveWithTerrainPulse(opponent, target, opponentMove, weather, extra);
       opponent.hasActedSinceEntering = true;
       let inlineEffect = null;
       const extraEvents = [];
@@ -2728,6 +2914,9 @@ function useApiCache() {
         protectSuccess: PROTECT_MOVES.has(opponentMove.name) && opponent.protected === true,
         attackerFainted: opponent.hp <= 0,
       });
+      if (targetWasFrozen && target.status !== "freeze") {
+        turns.push({ type: "statusText", text: `¡${target.name} se ha descongelado!` });
+      }
       // Mismo orden que en resolveTurn: el debilitamiento del objetivo se
       // anota antes que los efectos adicionales que le queden al que
       // atacó (bajada de stat propia, retroceso...).
@@ -2801,7 +2990,7 @@ function useApiCache() {
     opponent.flinched = false;
 
     return { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch };
-  }, [executeMove]);
+  }, [executeMove, executeMoveWithTerrainPulse]);
 
   // Combate 1 contra 1 por turnos hasta que uno de los dos se quede a 0 PS
   // (IA para ambos lados).
@@ -2852,7 +3041,7 @@ function useApiCache() {
       ...base, moves, maxHp, hp: maxHp, trainerId,
       status: null, sleepTurns: 0, justFellAsleep: false, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
       lockedMove: null, lockedTurnsRemaining: 0, protected: false, protectChain: 0,
-      flinched: false, toxicCounter: 0, yawnTurns: 0, invulnerable: false,
+      flinched: false, toxicCounter: 0, yawnTurns: 0, invulnerable: false, freezeTurns: 0, chargingMove: null,
       // faintLogged: ver pushFaintOnce. hasActedSinceEntering: ver
       // FIRST_TURN_ONLY_MOVES (Fake Out/Impresión Primeriza) — empieza en
       // `false` porque este Pokémon acaba de entrar al campo (inicio del
