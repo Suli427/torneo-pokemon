@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -8,6 +8,10 @@ import {
   buildDerivedContext, evaluateAchievements, getProgressCounter,
   applyTournamentResult, applyGachaPull, applyCombatMechanics,
 } from "./achievementProgress";
+import {
+  DAILY_REWARDS_STORAGE_KEY, loadDailyRewardsState, getDailyResetDayKey, getPokemonOfTheDay,
+  claimDailyReward, getStreakDayNumberForToday, computePokedleReward, scorePokedleGuess, POKEDLE_MAX_ATTEMPTS,
+} from "./dailyRewards";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -250,6 +254,14 @@ const RARITY_META = {
   epic: { label: "Épico", chance: 8, color: "#a75fd9" },
   "pseudo-legendary": { label: "Pseudolegendario", chance: 5, color: "#e3701e" },
   legendary: { label: "Legendario", chance: 2, color: "#e3b23c" },
+};
+
+// Generación numérica (1-9) a partir del nombre que da PokeAPI en
+// /pokemon-species (generation.name), usada solo por la pista de
+// generación del Pokédle.
+const GENERATION_NUMBER_BY_NAME = {
+  "generation-i": 1, "generation-ii": 2, "generation-iii": 3, "generation-iv": 4,
+  "generation-v": 5, "generation-vi": 6, "generation-vii": 7, "generation-viii": 8, "generation-ix": 9,
 };
 
 // Reembolso en monedas cuando la tirada saca un Pokémon repetido, según la
@@ -1332,6 +1344,7 @@ function useApiCache() {
   const moveCache = useRef({});
   const movesetCache = useRef({});
   const learnableMovesCache = useRef({});
+  const speciesGenCache = useRef({});
 
   const getPokemon = useCallback(async (slug) => {
     if (pokeCache.current[slug]) return pokeCache.current[slug];
@@ -1347,8 +1360,10 @@ function useApiCache() {
         stats,
         // /pokemon/{slug} da el peso en hectogramos; se convierte a kg aquí,
         // una única vez, para que el resto del motor (weightBasedPower) ya
-        // trabaje directamente en kg.
+        // trabaje directamente en kg. La altura (decímetros -> metros) no la
+        // usa el motor de combate, solo la pista de altura del Pokédle.
         weightKg: typeof data.weight === "number" ? data.weight / 10 : null,
+        heightM: typeof data.height === "number" ? data.height / 10 : null,
         sprite: data.sprites?.other?.["official-artwork"]?.front_default || data.sprites?.front_default || null,
         shinySprite: data.sprites?.other?.["official-artwork"]?.front_shiny || data.sprites?.front_shiny || null,
       };
@@ -1358,11 +1373,29 @@ function useApiCache() {
       const fallback = {
         slug, name: displayName(slug), types: ["normal"],
         stats: { hp: 70, attack: 70, defense: 70, "special-attack": 70, "special-defense": 70, speed: 70 },
-        weightKg: null,
+        weightKg: null, heightM: null,
         sprite: null, shinySprite: null,
       };
       pokeCache.current[slug] = fallback;
       return fallback;
+    }
+  }, []);
+
+  // Generación (1-9) de una especie, vía /pokemon-species/{slug} — no la
+  // usa el motor de combate, solo la pista de generación del Pokédle. No se
+  // cachea un fallo de red (mismo criterio ya usado en getLearnableMoveNames)
+  // para poder reintentar en la siguiente llamada en vez de dejar la
+  // especie "sin generación" para siempre en esta sesión.
+  const getGeneration = useCallback(async (slug) => {
+    if (speciesGenCache.current[slug] != null) return speciesGenCache.current[slug];
+    try {
+      const res = await fetch(`https://pokeapi.co/api/v2/pokemon-species/${slug}`);
+      const data = await res.json();
+      const genNumber = GENERATION_NUMBER_BY_NAME[data.generation?.name] || null;
+      if (genNumber != null) speciesGenCache.current[slug] = genNumber;
+      return genNumber;
+    } catch (e) {
+      return null;
     }
   }, []);
 
@@ -3114,8 +3147,8 @@ function useApiCache() {
   // reseteando PS/PP y volviendo a sortear el Pokémon inicial de la CPU a
   // mitad de combate. Memoizar el objeto entero evita esa cascada.
   return useMemo(() => ({
-    getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, buildCompetitiveMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed,
-  }), [getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, buildCompetitiveMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed]);
+    getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, buildCompetitiveMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed, getGeneration,
+  }), [getPokemon, getType, simulateMatch, preloadAll, prepareTeam, resolveTurn, resolveSwitchTurn, chooseMove, decideAiTurn, typeMultiplier, assignRandomMoveset, buildCompetitiveMoveset, primeMoveset, clearPrimedMovesets, getLearnableMovesDetailed, getGeneration]);
 }
 
 /* ---------------------------------------------------------------
@@ -6002,6 +6035,278 @@ function PokemonTab({ api, collection, setCollection, onGoToGatcha }) {
 }
 
 /* ---------------------------------------------------------------
+   TAB: DIARIO (recompensa diaria de 7 días + Pokédle)
+--------------------------------------------------------------- */
+
+// Estilo visual de cada valor de pista del Pokédle, reutilizado tanto para
+// las celdas de tipo (verde/amarillo/negro) como para las de generación/
+// rareza/altura/peso (verde/arriba/abajo).
+// El valor "black" (⬛, tipo que no aparece en absoluto en el objetivo) se
+// distingue con un fondo/borde claramente más visibles que el resto del
+// fondo oscuro de la app y una "✕" explícita — con un simple gris apagado
+// casi indistinguible del fondo general se confundía con una celda sin
+// procesar, tanto al probarlo en vivo como a primera vista en una captura.
+const POKEDLE_CLUE_STYLE = {
+  green: { bg: "#1f6b3a33", border: "#5fae5f", text: "#8fe0a8" },
+  yellow: { bg: "#7a641433", border: "#f2d34d", text: "#f2d34d" },
+  black: { bg: "#3a1414aa", border: "#6b3030", text: "#c78888" },
+  up: { bg: "#1c2a4a55", border: "#5f8ae0", text: "#a8c8ff" },
+  down: { bg: "#4a1c2a55", border: "#e05f8a", text: "#ffb3c6" },
+  unknown: { bg: "#14161f", border: "#2c2f42", text: "#6b7086" },
+};
+const POKEDLE_CLUE_ARROW = { up: " ↑", down: " ↓", black: " ✕" };
+
+function PokedleClueCell({ label, value, clue }) {
+  const style = POKEDLE_CLUE_STYLE[clue] || POKEDLE_CLUE_STYLE.unknown;
+  return (
+    <div className="rounded-lg p-2 text-center min-w-0" style={{ background: style.bg, border: `1px solid ${style.border}` }}>
+      <div className="text-[9px] uppercase tracking-wide mb-0.5 opacity-80 truncate" style={{ color: style.text }}>{label}</div>
+      <div className="text-[11px] font-semibold truncate" style={{ color: style.text }}>
+        {value}{POKEDLE_CLUE_ARROW[clue] || ""}
+      </div>
+    </div>
+  );
+}
+
+// Buscador con sugerencias sobre los 481 Pokémon de última etapa evolutiva
+// de GACHA_POOL (mismo pool que el gacha y Ruleta Pokémon), reutilizado
+// para elegir cada intento del Pokédle — mismo patrón de campo de texto ya
+// usado en el resto de la app (PokemonTab/MoveEditModal), aplicado aquí a
+// una lista de especies en vez de movimientos o de la colección propia.
+function PokemonGuessInput({ onGuess, excludeSlugs, disabled }) {
+  const [query, setQuery] = useState("");
+  const trimmed = query.trim().toLowerCase();
+  const suggestions = trimmed.length > 0
+    ? GACHA_POOL.filter((p) => !excludeSlugs.includes(p.slug) && displayName(p.slug).toLowerCase().includes(trimmed)).slice(0, 8)
+    : [];
+  return (
+    <div className="relative">
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        disabled={disabled}
+        placeholder="Escribe el nombre de un Pokémon..."
+        className="w-full px-3 py-2.5 rounded-lg text-sm text-white outline-none disabled:opacity-50"
+        style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+      />
+      {suggestions.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full rounded-lg overflow-hidden max-h-56 overflow-y-auto" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+          {suggestions.map((p) => (
+            <button
+              key={p.slug}
+              type="button"
+              onClick={() => { onGuess(p.slug); setQuery(""); }}
+              className="w-full text-left px-3 py-2 text-sm text-[#c7cbdb] hover:bg-[#1c1f2c]"
+            >
+              {displayName(p.slug)}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Perfil completo de una especie para comparar en el Pokédle: tipos y
+// rareza salen directos de GACHA_POOL (ya los tiene todo el pool, sin
+// fetch); altura/peso/generación sí hacen falta pedirlos (cacheados por
+// especie en el propio `api`, así que repetir un mismo Pokémon en varias
+// partidas no vuelve a pedirlos).
+async function buildPokedleProfile(slug, api) {
+  const poolEntry = GACHA_POOL.find((p) => p.slug === slug);
+  const [poke, generation] = await Promise.all([api.getPokemon(slug), api.getGeneration(slug)]);
+  return {
+    slug,
+    name: poke.name,
+    sprite: poke.sprite,
+    types: [poolEntry?.types?.[0] ?? null, poolEntry?.types?.[1] ?? null],
+    rarity: poolEntry?.rarity ?? null,
+    rarityIndex: poolEntry ? RARITY_ORDER.indexOf(poolEntry.rarity) : null,
+    generation,
+    heightM: poke.heightM,
+    weightKg: poke.weightKg,
+  };
+}
+
+function PokedleGuessRow({ profile, clues }) {
+  return (
+    <div className="grid grid-cols-6 gap-1.5">
+      <PokedleClueCell label="Tipo 1" value={TYPE_ES[profile.types[0]] || "—"} clue={clues.type1} />
+      <PokedleClueCell label="Tipo 2" value={profile.types[1] ? (TYPE_ES[profile.types[1]] || profile.types[1]) : "Ninguno"} clue={clues.type2} />
+      <PokedleClueCell label="Generación" value={profile.generation ? `Gen ${profile.generation}` : "?"} clue={clues.generation} />
+      <PokedleClueCell label="Rareza" value={RARITY_META[profile.rarity]?.label || "?"} clue={clues.rarity} />
+      <PokedleClueCell label="Altura" value={profile.heightM != null ? `${profile.heightM.toFixed(1)} m` : "?"} clue={clues.height} />
+      <PokedleClueCell label="Peso" value={profile.weightKg != null ? `${profile.weightKg.toFixed(1)} kg` : "?"} clue={clues.weight} />
+    </div>
+  );
+}
+
+function PokedleCard({ api, dailyRewardsState, setDailyRewardsState, onPokedleWin }) {
+  const [todayKey] = useState(getDailyResetDayKey);
+  const targetEntry = useMemo(() => getPokemonOfTheDay(todayKey, GACHA_POOL), [todayKey]);
+  const [targetProfile, setTargetProfile] = useState(null);
+  const [rows, setRows] = useState([]); // [{ profile, clues }], reconstruidas a partir de los slugs ya guardados
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Estado persistido de HOY: si `dailyRewardsState.pokedle.dayKey` no es
+  // el de hoy, es que todavía no se ha jugado nada hoy (el reset de las
+  // 10:00 ya pasó desde la última vez), así que se trata como partida
+  // nueva sin tocar lo que hubiera de un día anterior.
+  const pokedle = dailyRewardsState.pokedle?.dayKey === todayKey
+    ? dailyRewardsState.pokedle
+    : { dayKey: todayKey, guesses: [], status: "playing", winAttempt: null };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const profile = await buildPokedleProfile(targetEntry.slug, api);
+      if (!cancelled) setTargetProfile(profile);
+    })();
+    return () => { cancelled = true; };
+  }, [api, targetEntry.slug]);
+
+  // Reconstruye las filas ya jugadas (perfil + pistas) a partir de los
+  // slugs guardados, cada vez que cambian los slugs guardados o ya se
+  // conoce el perfil del objetivo (hacen falta ambos para poder puntuar).
+  useEffect(() => {
+    let cancelled = false;
+    if (!targetProfile || pokedle.guesses.length === 0) { setRows([]); return; }
+    (async () => {
+      const built = await Promise.all(pokedle.guesses.map((slug) => buildPokedleProfile(slug, api)));
+      if (cancelled) return;
+      setRows(built.map((profile) => ({ profile, clues: scorePokedleGuess(profile, targetProfile) })));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, targetProfile, JSON.stringify(pokedle.guesses)]);
+
+  async function handleGuess(slug) {
+    if (busy || pokedle.status !== "playing" || !targetProfile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const attemptNumber = pokedle.guesses.length + 1;
+      const won = slug === targetEntry.slug;
+      const lost = !won && attemptNumber >= POKEDLE_MAX_ATTEMPTS;
+      const nextPokedle = {
+        dayKey: todayKey,
+        guesses: [...pokedle.guesses, slug],
+        status: won ? "won" : lost ? "lost" : "playing",
+        winAttempt: won ? attemptNumber : null,
+      };
+      setDailyRewardsState((prev) => ({ ...prev, pokedle: nextPokedle }));
+      if (won) onPokedleWin(attemptNumber);
+    } catch (e) {
+      setError("No se pudo comprobar ese Pokémon. Comprueba tu conexión e inténtalo de nuevo.");
+    }
+    setBusy(false);
+  }
+
+  const attemptsUsed = pokedle.guesses.length;
+  const finished = pokedle.status !== "playing";
+
+  return (
+    <div className="rounded-xl p-5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+        <h3 className="font-display text-lg text-white flex items-center gap-2"><Puzzle size={18} color="#e3350d" /> Pokédle</h3>
+        <span className="text-xs text-[#8a8fa3]">Intento {Math.min(attemptsUsed + (finished ? 0 : 1), POKEDLE_MAX_ATTEMPTS)}/{POKEDLE_MAX_ATTEMPTS}</span>
+      </div>
+      <p className="text-xs text-[#8a8fa3] mb-4">Adivina el Pokémon de hoy en {POKEDLE_MAX_ATTEMPTS} intentos. Cambia a las 10:00 (hora de España).</p>
+
+      {!finished && (
+        <div className="mb-4">
+          <PokemonGuessInput onGuess={handleGuess} excludeSlugs={pokedle.guesses} disabled={busy || !targetProfile} />
+          {error && <div className="text-xs text-[#ff8a8a] mt-2">{error}</div>}
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="space-y-2 mb-4">
+          {rows.map((row, i) => <PokedleGuessRow key={`${row.profile.slug}-${i}`} profile={row.profile} clues={row.clues} />)}
+        </div>
+      )}
+
+      {finished && targetProfile && (
+        <div className="rounded-lg p-4 flex items-center gap-3" style={{
+          background: pokedle.status === "won" ? "linear-gradient(135deg,#5fae5f22,#12141c)" : "linear-gradient(135deg,#e3350d22,#12141c)",
+          border: pokedle.status === "won" ? "1px solid #5fae5f55" : "1px solid #e3350d55",
+        }}>
+          {targetProfile.sprite && <img src={targetProfile.sprite} alt={targetProfile.name} className="w-14 h-14 object-contain" />}
+          <div>
+            <div className="text-sm text-white font-semibold">{targetProfile.name}</div>
+            <div className="text-xs text-[#9aa0b4]">
+              {pokedle.status === "won"
+                ? `¡Acertado en el intento ${pokedle.winAttempt}! Recompensa: ${computePokedleReward(pokedle.winAttempt)} monedas.`
+                : "No se ha acertado hoy. Vuelve tras el reset de las 10:00 para un nuevo Pokémon."}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DailyClaimCard({ dailyRewardsState, onClaim }) {
+  const [todayKey] = useState(getDailyResetDayKey);
+  const alreadyClaimed = dailyRewardsState.dailyClaim.lastClaimedDayKey === todayKey;
+  const streakDayNumber = getStreakDayNumberForToday(dailyRewardsState.dailyClaim, todayKey);
+  const previewReward = streakDayNumber >= 7 ? 500 : 50;
+
+  return (
+    <div className="rounded-xl p-5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      <h3 className="font-display text-lg text-white mb-1 flex items-center gap-2"><Gift size={18} color="#e3350d" /> Recompensa diaria</h3>
+      <p className="text-xs text-[#8a8fa3] mb-4">Entra cada día para ganar monedas. El 7º día seguido da una recompensa mucho mayor.</p>
+
+      <div className="flex items-center gap-1.5 mb-4">
+        {Array.from({ length: 7 }, (_, i) => i + 1).map((day) => {
+          const filled = alreadyClaimed ? day <= streakDayNumber : day < streakDayNumber;
+          return (
+            <div
+              key={day}
+              className="flex-1 h-8 rounded-lg flex items-center justify-center text-[11px] font-bold"
+              style={{
+                background: filled ? (day === 7 ? "#f2b70533" : "#5fae5f22") : "#0e1018",
+                border: filled ? `1px solid ${day === 7 ? "#f2b705" : "#5fae5f"}` : "1px solid #262a3a",
+                color: filled ? (day === 7 ? "#f2b705" : "#8fe0a8") : "#4c5066",
+              }}
+            >
+              <Flame size={12} className={filled ? "" : "opacity-30"} />
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs text-[#9aa0b4]">
+          Racha: <span className="text-white font-semibold">{alreadyClaimed ? streakDayNumber : streakDayNumber - 1}/7</span> días
+        </div>
+        <button
+          onClick={onClaim}
+          disabled={alreadyClaimed}
+          className="px-4 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: alreadyClaimed ? "#1c1f2c" : "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          {alreadyClaimed ? "Ya reclamada hoy" : `Reclamar ${previewReward} monedas`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DiarioTab({ api, dailyRewardsState, setDailyRewardsState, onClaimDailyReward, onPokedleWin }) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><CalendarDays size={22} color="#e3350d" /> Diario</h2>
+        <p className="text-sm text-[#9aa0b4]">Vuelve cada día para el Pokédle y tu recompensa diaria.</p>
+      </div>
+      <DailyClaimCard dailyRewardsState={dailyRewardsState} onClaim={onClaimDailyReward} />
+      <PokedleCard api={api} dailyRewardsState={dailyRewardsState} setDailyRewardsState={setDailyRewardsState} onPokedleWin={onPokedleWin} />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------
    TAB: LOGROS
 --------------------------------------------------------------- */
 
@@ -6113,7 +6418,7 @@ function AchievementToast({ toast, onDismiss }) {
         <Icon size={20} color="#f2b705" />
       </div>
       <div className="min-w-0">
-        <div className="text-[11px] font-bold" style={{ color: "#f2b705" }}>🏆 ¡Logro desbloqueado!</div>
+        <div className="text-[11px] font-bold" style={{ color: "#f2b705" }}>{toast.kicker || "🏆 ¡Logro desbloqueado!"}</div>
         <div className="text-sm text-white font-semibold truncate">{toast.title}</div>
         <div className="text-[11px] text-[#c7cbdb]">+{toast.reward} monedas</div>
       </div>
@@ -6171,6 +6476,10 @@ export default function App() {
   // Aviso visible si se llega a bloquear una escritura sospechosa de la
   // colección (ver el efecto de persistencia de `collection` más abajo).
   const [collectionSaveError, setCollectionSaveError] = useState(null);
+  // Recompensa diaria (racha de 7 días) + estado del Pokédle de hoy, ver
+  // src/dailyRewards.js. Comparten una única clave de localStorage y un
+  // único "día actual" (reset a las 10:00 hora de Madrid).
+  const [dailyRewardsState, setDailyRewardsState] = useState(loadDailyRewardsState);
 
   useEffect(() => {
     try { localStorage.setItem(COINS_STORAGE_KEY, String(coins)); } catch (e) { /* localStorage no disponible */ }
@@ -6262,6 +6571,38 @@ export default function App() {
     setAchievementToasts((prev) => prev.filter((t) => t.key !== key));
   }
 
+  useEffect(() => {
+    try { localStorage.setItem(DAILY_REWARDS_STORAGE_KEY, JSON.stringify(dailyRewardsState)); } catch (e) { /* localStorage no disponible */ }
+  }, [dailyRewardsState]);
+
+  // Reutiliza la misma cola/estilo de notificación que ya usan los logros
+  // (AchievementToastStack) para la recompensa diaria y el Pokédle, en vez
+  // de construir un tipo de aviso nuevo — "coherente con el resto de
+  // notificaciones ya implementadas" tal cual pedido.
+  function queueRewardToast(title, reward, icon, kicker) {
+    setAchievementToasts((prev) => [...prev, { key: `${title}-${Date.now()}-${Math.random()}`, title, reward, icon, kicker }]);
+  }
+
+  function handleClaimDailyReward() {
+    const todayKey = getDailyResetDayKey();
+    const result = claimDailyReward(dailyRewardsState, todayKey);
+    if (!result.claimed) return;
+    setDailyRewardsState(result.nextState);
+    setCoins((c) => c + result.reward);
+    queueRewardToast(
+      result.streakDayNumber >= 7 ? "¡Racha de 7 días completada!" : `Recompensa diaria (racha ${result.streakDayNumber}/7)`,
+      result.reward,
+      Gift,
+      "🎁 ¡Recompensa diaria!"
+    );
+  }
+
+  function handlePokedleWin(attemptNumber) {
+    const reward = computePokedleReward(attemptNumber);
+    setCoins((c) => c + reward);
+    queueRewardToast(`¡Pokédle resuelto en el intento ${attemptNumber}!`, reward, Puzzle, "🧩 ¡Pokédle resuelto!");
+  }
+
   // Se añade al terminar cada torneo (fase "finished"); se guarda con el más
   // reciente primero y se recorta a las últimas TOURNAMENT_HISTORY_LIMIT
   // entradas para no acumular datos indefinidamente. También alimenta el
@@ -6347,6 +6688,7 @@ export default function App() {
     { id: "personajes", label: "Personajes", icon: Users },
     { id: "pokemon", label: "Pokémon", icon: Boxes },
     { id: "tienda", label: "Gatcha", icon: Store },
+    { id: "diario", label: "Diario", icon: CalendarDays },
     { id: "logros", label: "Logros", icon: Award },
   ];
 
@@ -6438,6 +6780,15 @@ export default function App() {
         </div>
         <div style={{ display: tab === "tienda" ? "block" : "none" }}>
           <GatchaTab api={api} coins={coins} setCoins={setCoins} collection={collection} setCollection={setCollection} onGachaPull={recordGachaPull} />
+        </div>
+        <div style={{ display: tab === "diario" ? "block" : "none" }}>
+          <DiarioTab
+            api={api}
+            dailyRewardsState={dailyRewardsState}
+            setDailyRewardsState={setDailyRewardsState}
+            onClaimDailyReward={handleClaimDailyReward}
+            onPokedleWin={handlePokedleWin}
+          />
         </div>
         <div style={{ display: tab === "logros" ? "block" : "none" }}>
           <LogrosTab progress={achievementProgress} derived={achievementDerived} />
