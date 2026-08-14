@@ -978,14 +978,14 @@ function statusPreMoveCheck(poke, turns) {
   }
 
   if (poke.status === "freeze") {
-    // 75% de probabilidad de descongelarse cada turno (25% de seguir
+    // 25% de probabilidad de descongelarse cada turno (75% de seguir
     // congelado); tope de 2 turnos seguidos congelado como máximo — si ya
     // se quedó congelado 2 veces seguidas, se descongela automáticamente
     // sin ni siquiera tirar, para no poder quedar congelado indefinidamente
     // por mala suerte. `freezeTurns` cuenta cuántas veces YA se ha quedado
     // congelado (no cuántas ha intentado actuar), se reinicia a 0 al
     // aplicarse el estado (ver applyMoveEffects) y al descongelarse.
-    if ((poke.freezeTurns || 0) >= 2 || Math.random() < 0.75) {
+    if ((poke.freezeTurns || 0) >= 2 || Math.random() < 0.25) {
       poke.status = null;
       poke.freezeTurns = 0;
       turns.push({ type: "statusText", text: `¡${poke.name} se ha descongelado!` });
