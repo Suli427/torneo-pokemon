@@ -6356,8 +6356,8 @@ export default function App() {
         <div className="flex items-center gap-2.5">
           <PokeballIcon size={26} />
           <div>
-            <div className="font-display text-xl text-white leading-none">Liga de Campeones</div>
-            <div className="text-[11px] text-[#6b7086]">Torneo de entrenadores del anime</div>
+            <div className="font-display text-xl text-white leading-none">PokéArena</div>
+            <div className="text-[11px] text-[#6b7086]">Reúne tu equipo, compite en la liga y hazte una leyenda</div>
           </div>
         </div>
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: "#f2b70518", border: "1px solid #f2b70544" }}>
