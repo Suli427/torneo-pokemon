@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -12,6 +12,7 @@ import {
   DAILY_REWARDS_STORAGE_KEY, loadDailyRewardsState, getDailyResetDayKey, getPokemonOfTheDay,
   claimDailyReward, getStreakDayNumberForToday, computePokedleReward, scorePokedleGuess, POKEDLE_MAX_ATTEMPTS,
 } from "./dailyRewards";
+import { getSortedChangelog } from "./changelog";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -3164,6 +3165,86 @@ function PokeballIcon({ size = 20, className = "" }) {
       <circle cx="20" cy="20" r="6" fill="#fff" stroke="#20222c" strokeWidth="2.5" />
       <circle cx="20" cy="20" r="2.4" fill="#20222c" />
     </svg>
+  );
+}
+
+// Formato de fecha legible en español para las tarjetas de Novedades, ej.
+// "14 ago 2026, 12:41". `entry.date` es un ISO string real extraído del
+// commit de git que introdujo ese cambio (ver src/changelog.js); si es
+// `null` (no se encontró una coincidencia clara en el historial), se
+// muestra "Fecha no disponible" en vez de inventar una fecha.
+function formatChangelogDate(isoDate) {
+  if (!isoDate) return "Fecha no disponible";
+  const fmt = new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return fmt.format(new Date(isoDate));
+}
+
+// Tarjeta de una entrada del historial de Novedades: título + resumen de
+// 1-2 líneas siempre visibles, y el detalle completo se expande in-line al
+// pulsarla (sin abrir un sub-modal aparte, para no anidar overlays dentro
+// del propio modal de Novedades).
+function ChangelogCard({ entry, expanded, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="rounded-xl p-4 text-left w-full"
+      style={{ background: "#14161f", border: expanded ? "1px solid #e3350d55" : "1px solid #262a3a" }}
+    >
+      <div className="flex items-start justify-between gap-2 mb-1.5">
+        <h4 className="text-sm font-semibold text-white">{entry.title}</h4>
+        <ChevronDown
+          size={16}
+          color="#6b7086"
+          className="shrink-0"
+          style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+        />
+      </div>
+      <p className="text-xs text-[#9aa0b4] leading-snug mb-2">{entry.summary}</p>
+      <div className="text-[10px] text-[#5c6178] mb-1">{formatChangelogDate(entry.date)}</div>
+      {expanded && (
+        <div className="mt-2.5 pt-2.5 text-xs text-[#c7cbdb] leading-relaxed whitespace-pre-line" style={{ borderTop: "1px solid #262a3a" }}>
+          {entry.detail}
+        </div>
+      )}
+    </button>
+  );
+}
+
+// Modal de "Novedades": historial completo de actualizaciones en tarjetas,
+// ordenadas de más reciente a más antigua (ver getSortedChangelog — las
+// entradas sin fecha real encontrada en git van al final). Mismo patrón
+// visual de overlay ya usado en el resto de la app (fondo oscurecido +
+// tarjeta central), ampliado a una cuadrícula con scroll para las 30
+// entradas.
+function NovedadesModal({ open, onClose }) {
+  const [expandedId, setExpandedId] = useState(null);
+  if (!open) return null;
+  const sorted = getSortedChangelog();
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-4xl w-full max-h-[85vh] rounded-2xl p-6 overflow-y-auto"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-4 right-4 text-[#7c8199] hover:text-white">
+          <X size={20} />
+        </button>
+        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><ScrollText size={22} color="#e3350d" /> Novedades</h2>
+        <p className="text-sm text-[#9aa0b4] mb-5">Historial de actualizaciones de PokéArena, con la fecha real de cada una.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {sorted.map((entry) => (
+            <ChangelogCard
+              key={entry.id}
+              entry={entry}
+              expanded={expandedId === entry.id}
+              onToggle={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -6476,6 +6557,10 @@ export default function App() {
   // Aviso visible si se llega a bloquear una escritura sospechosa de la
   // colección (ver el efecto de persistencia de `collection` más abajo).
   const [collectionSaveError, setCollectionSaveError] = useState(null);
+  // Modal de "Novedades" (historial de actualizaciones, ver
+  // src/changelog.js): no hace falta persistirlo, se abre/cierra en cada
+  // sesión desde cero.
+  const [showNovedades, setShowNovedades] = useState(false);
   // Recompensa diaria (racha de 7 días) + estado del Pokédle de hoy, ver
   // src/dailyRewards.js. Comparten una única clave de localStorage y un
   // único "día actual" (reset a las 10:00 hora de Madrid).
@@ -6702,11 +6787,22 @@ export default function App() {
             <div className="text-[11px] text-[#6b7086]">Reúne tu equipo, compite en la liga y hazte una leyenda</div>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: "#f2b70518", border: "1px solid #f2b70544" }}>
-          <Coins size={15} color="#f2b705" />
-          <span className="text-sm font-display text-[#f2b705]">{coins}</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowNovedades(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
+            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          >
+            <ScrollText size={14} /> Novedades
+          </button>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: "#f2b70518", border: "1px solid #f2b70544" }}>
+            <Coins size={15} color="#f2b705" />
+            <span className="text-sm font-display text-[#f2b705]">{coins}</span>
+          </div>
         </div>
       </header>
+
+      <NovedadesModal open={showNovedades} onClose={() => setShowNovedades(false)} />
 
       {collectionSaveError && (
         <div className="mx-5 mt-4 text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3 flex items-start justify-between gap-3">
