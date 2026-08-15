@@ -6189,10 +6189,10 @@ function PokemonGuessInput({ onGuess, excludeSlugs, disabled }) {
 }
 
 // Perfil completo de una especie para comparar en el Pokédle: tipos y
-// rareza salen directos de GACHA_POOL (ya los tiene todo el pool, sin
-// fetch); altura/peso/generación sí hacen falta pedirlos (cacheados por
-// especie en el propio `api`, así que repetir un mismo Pokémon en varias
-// partidas no vuelve a pedirlos).
+// stats totales (bst) salen directos de GACHA_POOL (ya los tiene todo el
+// pool, sin fetch); altura/peso/generación sí hacen falta pedirlos
+// (cacheados por especie en el propio `api`, así que repetir un mismo
+// Pokémon en varias partidas no vuelve a pedirlos).
 async function buildPokedleProfile(slug, api) {
   const poolEntry = GACHA_POOL.find((p) => p.slug === slug);
   const [poke, generation] = await Promise.all([api.getPokemon(slug), api.getGeneration(slug)]);
@@ -6201,8 +6201,7 @@ async function buildPokedleProfile(slug, api) {
     name: poke.name,
     sprite: poke.sprite,
     types: [poolEntry?.types?.[0] ?? null, poolEntry?.types?.[1] ?? null],
-    rarity: poolEntry?.rarity ?? null,
-    rarityIndex: poolEntry ? RARITY_ORDER.indexOf(poolEntry.rarity) : null,
+    bst: poolEntry?.bst ?? null,
     generation,
     heightM: poke.heightM,
     weightKg: poke.weightKg,
@@ -6215,7 +6214,7 @@ function PokedleGuessRow({ profile, clues }) {
       <PokedleClueCell label="Tipo 1" value={TYPE_ES[profile.types[0]] || "—"} clue={clues.type1} />
       <PokedleClueCell label="Tipo 2" value={profile.types[1] ? (TYPE_ES[profile.types[1]] || profile.types[1]) : "Ninguno"} clue={clues.type2} />
       <PokedleClueCell label="Generación" value={profile.generation ? `Gen ${profile.generation}` : "?"} clue={clues.generation} />
-      <PokedleClueCell label="Rareza" value={RARITY_META[profile.rarity]?.label || "?"} clue={clues.rarity} />
+      <PokedleClueCell label="Stats Totales" value={profile.bst != null ? `BST: ${profile.bst}` : "?"} clue={clues.bst} />
       <PokedleClueCell label="Altura" value={profile.heightM != null ? `${profile.heightM.toFixed(1)} m` : "?"} clue={clues.height} />
       <PokedleClueCell label="Peso" value={profile.weightKg != null ? `${profile.weightKg.toFixed(1)} kg` : "?"} clue={clues.weight} />
     </div>

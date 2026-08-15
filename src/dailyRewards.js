@@ -176,14 +176,16 @@ function scoreTypeSlot(guessTypes, targetTypes, slotIndex) {
 
 // Compara un Pokémon "perfil" (guess) contra el objetivo del día y
 // devuelve la fila de pistas de los 6 atributos. Ambos perfiles deben
-// tener la forma { slug, types: [t1, t2|null], generation, rarity,
-// heightM, weightKg }.
+// tener la forma { slug, types: [t1, t2|null], generation, bst,
+// heightM, weightKg }. La pista de "bst" (stats totales) sustituye a la
+// que antes comparaba rareza: mismo criterio direccional (verde si
+// coincide exacto, arriba/abajo si el objetivo es mayor/menor).
 export function scorePokedleGuess(guess, target) {
   return {
     type1: scoreTypeSlot(guess.types, target.types, 0),
     type2: scoreTypeSlot(guess.types, target.types, 1),
     generation: scoreDirectional(guess.generation, target.generation),
-    rarity: scoreDirectional(guess.rarityIndex, target.rarityIndex),
+    bst: scoreDirectional(guess.bst, target.bst),
     height: scoreDirectional(guess.heightM, target.heightM, MEASUREMENT_TOLERANCE),
     weight: scoreDirectional(guess.weightKg, target.weightKg, MEASUREMENT_TOLERANCE),
   };

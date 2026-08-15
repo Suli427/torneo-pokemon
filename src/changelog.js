@@ -223,6 +223,13 @@ export const CHANGELOG = [
     detail: "Se implementaron las inmunidades de tipo a sus propios estados (Fuego no se quema, Eléctrico no se paraliza, Hielo no se congela), la mecánica completa de congelación, movimientos de carga vulnerables como Ataque Celestial, la dependencia de Rodillo de Acero de un campo activo, y los movimientos de curación/drenaje (Descanso, Recuperación, Gigadrenado).",
     date: "2026-08-14T12:23:47+02:00",
   },
+  {
+    id: 31,
+    title: "Pokédle: stats totales en vez de rareza",
+    summary: "La pista de rareza del Pokédle se sustituyó por una comparación directa de stats totales (BST).",
+    detail: "La pista de Rareza (Común/Poco Común/Raro/Épico/Pseudolegendario/Legendario) del Pokédle se sustituyó por una pista de Stats Totales: compara el BST (suma de las 6 estadísticas base) del Pokémon introducido contra el del Pokémon objetivo del día, mostrando el valor exacto junto al resultado (🟩 Igual, ↑ Mayor si el objetivo tiene más stats, ↓ Menor si tiene menos), dando una pista más concreta que la rareza.",
+    date: "2026-08-15T11:14:04+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
