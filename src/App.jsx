@@ -119,6 +119,38 @@ function loadStoredPurchasedTrainers() {
   return [];
 }
 
+const PLAYER_PROFILE_STORAGE_KEY = "liga-pokemon:player-profile";
+const PLAYER_NICKNAME_MAX_LENGTH = 16;
+
+// Emojis temáticos para el avatar del jugador: mismo círculo de color ya
+// usado para los avatares de entrenador (background: color+"33", color),
+// pero con un emoji en vez de la inicial del nombre — más simple que un
+// selector de color aparte y reutiliza el mismo patrón visual del roster.
+const PLAYER_AVATAR_EMOJIS = ["⚡", "🔥", "💧", "🌿", "🐉", "👾", "🦊", "🐺", "🦁", "🐯", "🐲", "✨", "🌟", "🎯", "🛡️", "🏆"];
+const PLAYER_AVATAR_COLOR = "#e3350d";
+const DEFAULT_PLAYER_PROFILE = { nickname: "Entrenador", avatar: PLAYER_AVATAR_EMOJIS[0] };
+
+// Mismo patrón try/catch que loadStoredCoins/loadStoredPurchasedTrainers. Si
+// el objeto guardado tiene forma inválida (o el emoji ya no está en la
+// lista vigente), cada campo cae a su propio valor por defecto por
+// separado, en vez de descartar el perfil entero.
+function loadStoredPlayerProfile() {
+  try {
+    const raw = localStorage.getItem(PLAYER_PROFILE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const nickname = typeof parsed.nickname === "string" && parsed.nickname.trim()
+          ? parsed.nickname.trim().slice(0, PLAYER_NICKNAME_MAX_LENGTH)
+          : DEFAULT_PLAYER_PROFILE.nickname;
+        const avatar = PLAYER_AVATAR_EMOJIS.includes(parsed.avatar) ? parsed.avatar : DEFAULT_PLAYER_PROFILE.avatar;
+        return { nickname, avatar };
+      }
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return { ...DEFAULT_PLAYER_PROFILE };
+}
+
 const COLLECTION_STORAGE_KEY = "liga-pokemon:collection";
 const CUSTOM_TRAINER_STORAGE_KEY = "liga-pokemon:custom-trainer";
 
@@ -4677,11 +4709,114 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   );
 }
 
+// Círculo de avatar del jugador: mismo patrón visual que los avatares de
+// entrenador del roster (background: color+"33", color de acento), pero con
+// el emoji elegido en vez de una inicial. `size` en píxeles para poder
+// reutilizarlo tanto en la cabecera (más grande) como en badges pequeños
+// (clasificación/historial).
+function PlayerAvatar({ avatar, size = 28 }) {
+  return (
+    <span
+      className="rounded-full flex items-center justify-center shrink-0"
+      style={{ width: size, height: size, fontSize: size * 0.55, background: PLAYER_AVATAR_COLOR + "33" }}
+    >
+      {avatar}
+    </span>
+  );
+}
+
+// Modal de configuración del perfil del jugador (apodo + avatar): campo de
+// texto con límite de longitud y un selector de emoji en cuadrícula, mismo
+// patrón general de modal que TournamentHistoryModal/NovedadesModal (fondo
+// oscuro, click fuera para cerrar, X arriba a la derecha). El estado local
+// (`draftNickname`/`draftAvatar`) se resetea a los valores vigentes cada vez
+// que se abre, para que cerrar sin guardar no deje cambios a medias.
+function PlayerProfileModal({ open, profile, onClose, onSave }) {
+  const [draftNickname, setDraftNickname] = useState(profile.nickname);
+  const [draftAvatar, setDraftAvatar] = useState(profile.avatar);
+
+  useEffect(() => {
+    if (open) {
+      setDraftNickname(profile.nickname);
+      setDraftAvatar(profile.avatar);
+    }
+  }, [open, profile.nickname, profile.avatar]);
+
+  if (!open) return null;
+
+  function handleSave() {
+    const trimmed = draftNickname.trim();
+    onSave({
+      nickname: trimmed ? trimmed.slice(0, PLAYER_NICKNAME_MAX_LENGTH) : DEFAULT_PLAYER_PROFILE.nickname,
+      avatar: draftAvatar,
+    });
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-sm w-full rounded-2xl p-6"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+          <X size={18} />
+        </button>
+        <h3 className="font-display text-xl text-white mb-4 flex items-center gap-2">
+          <PlayerAvatar avatar={draftAvatar} size={28} /> Tu perfil
+        </h3>
+
+        <label className="block text-[11px] uppercase tracking-wide text-[#8a8fa3] font-semibold mb-1.5">Apodo</label>
+        <input
+          type="text"
+          value={draftNickname}
+          onChange={(e) => setDraftNickname(e.target.value.slice(0, PLAYER_NICKNAME_MAX_LENGTH))}
+          placeholder={DEFAULT_PLAYER_PROFILE.nickname}
+          maxLength={PLAYER_NICKNAME_MAX_LENGTH}
+          className="w-full px-3 py-2.5 rounded-lg text-sm text-white outline-none mb-1"
+          style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+        />
+        <div className="text-[11px] text-[#5c6178] mb-4 text-right">{draftNickname.length}/{PLAYER_NICKNAME_MAX_LENGTH}</div>
+
+        <label className="block text-[11px] uppercase tracking-wide text-[#8a8fa3] font-semibold mb-1.5">Avatar</label>
+        <div className="grid grid-cols-4 gap-2 mb-5">
+          {PLAYER_AVATAR_EMOJIS.map((emoji) => {
+            const selected = emoji === draftAvatar;
+            return (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => setDraftAvatar(emoji)}
+                className="rounded-lg flex items-center justify-center text-xl py-2"
+                style={{
+                  background: selected ? PLAYER_AVATAR_COLOR + "33" : "#14161f",
+                  border: selected ? `1px solid ${PLAYER_AVATAR_COLOR}` : "1px solid #262a3a",
+                }}
+              >
+                {emoji}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          onClick={handleSave}
+          className="w-full py-2.5 rounded-lg font-display text-sm text-white"
+          style={{ background: PLAYER_AVATAR_COLOR }}
+        >
+          Guardar
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Panel con las estadísticas agregadas del historial de torneos y la lista
 // completa (más reciente primero). El historial ya se guarda en ese orden,
 // así que la racha actual de victorias consecutivas es simplemente contar
 // desde el principio del array mientras finalPosition sea 1.
-function TournamentHistoryModal({ open, history, onClose }) {
+function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
   if (!open) return null;
 
   const played = history.length;
@@ -4696,9 +4831,18 @@ function TournamentHistoryModal({ open, history, onClose }) {
         <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
           <X size={18} />
         </button>
-        <h3 className="font-display text-xl text-white mb-4 flex items-center gap-2">
+        <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2">
           <Trophy size={20} color="#f2b705" /> Historial de torneos
         </h3>
+        {/* El historial es siempre del mismo jugador local (esta app no tiene
+            multijugador), así que repetir el avatar/apodo en cada fila de la
+            tabla de abajo no distinguiría nada — se muestra una sola vez
+            aquí, junto al título, para dar contexto sin saturar la lista. */}
+        {playerProfile && (
+          <div className="flex items-center gap-1.5 text-xs text-[#8a8fa3] mb-4">
+            <PlayerAvatar avatar={playerProfile.avatar} size={16} /> {playerProfile.nickname}
+          </div>
+        )}
 
         {played === 0 ? (
           <div className="text-center py-8">
@@ -4861,7 +5005,7 @@ function buildPairsAvoidingRematches(ordered, playedPairsSet) {
   return best;
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -5434,7 +5578,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         </div>
       )}
 
-      <TournamentHistoryModal open={showHistory} history={tournamentHistory} onClose={() => setShowHistory(false)} />
+      <TournamentHistoryModal open={showHistory} history={tournamentHistory} playerProfile={playerProfile} onClose={() => setShowHistory(false)} />
 
       {phase === "loading" && (
         <div className="flex flex-col items-center justify-center py-20 text-[#9aa0b4]">
@@ -5501,7 +5645,12 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                   </span>
                   <span className="flex items-center gap-2 text-white font-medium">
                     <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-display" style={{ background: t.color + "33", color: t.color }}>{t.name[0]}</span>
-                    {t.name} {isUser && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#e3350d33] text-[#ff8a6a]">TÚ</span>}
+                    {t.name}
+                    {isUser && (
+                      <span className="flex items-center gap-1 text-[10px] pl-1.5 pr-2 py-0.5 rounded-full bg-[#e3350d33] text-[#ff8a6a]">
+                        <PlayerAvatar avatar={playerProfile.avatar} size={14} /> {playerProfile.nickname}
+                      </span>
+                    )}
                   </span>
                   <span className="text-right font-display text-lg text-[#f2b705]">{s.points}</span>
                 </div>
@@ -7059,6 +7208,12 @@ export default function App() {
   // src/changelog.js): no hace falta persistirlo, se abre/cierra en cada
   // sesión desde cero.
   const [showNovedades, setShowNovedades] = useState(false);
+  // Perfil del jugador (apodo + avatar): visible en cabecera, clasificación
+  // e historial de torneos. El modal de edición tampoco hace falta
+  // persistirlo (se abre/cierra desde cero cada sesión); solo el propio
+  // perfil se guarda en localStorage.
+  const [playerProfile, setPlayerProfile] = useState(loadStoredPlayerProfile);
+  const [showPlayerProfile, setShowPlayerProfile] = useState(false);
   // Recompensa diaria (racha de 7 días) + estado del Pokédle de hoy, ver
   // src/dailyRewards.js. Comparten una única clave de localStorage y un
   // único "día actual" (reset a las 10:00 hora de Madrid).
@@ -7071,6 +7226,10 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem(UNLOCKED_TRAINERS_STORAGE_KEY, JSON.stringify(purchasedTrainerIds)); } catch (e) { /* localStorage no disponible */ }
   }, [purchasedTrainerIds]);
+
+  useEffect(() => {
+    try { localStorage.setItem(PLAYER_PROFILE_STORAGE_KEY, JSON.stringify(playerProfile)); } catch (e) { /* localStorage no disponible */ }
+  }, [playerProfile]);
 
   // Blindaje contra pérdidas de datos de la colección: NINGUNA función de
   // la app borra entradas hoy (solo se añade una nueva tras una tirada de
@@ -7286,6 +7445,17 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Punto de acceso al perfil del jugador (apodo + avatar): píldora
+              con el mismo patrón visual que el resto de la cabecera, a la
+              izquierda de "Novedades". Pulsarla abre PlayerProfileModal. */}
+          <button
+            onClick={() => setShowPlayerProfile(true)}
+            className="flex items-center gap-1.5 pl-1.5 pr-3 py-1 rounded-full text-xs font-semibold"
+            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          >
+            <PlayerAvatar avatar={playerProfile.avatar} size={22} />
+            {playerProfile.nickname}
+          </button>
           <button
             onClick={() => setShowNovedades(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
@@ -7301,6 +7471,12 @@ export default function App() {
       </header>
 
       <NovedadesModal open={showNovedades} onClose={() => setShowNovedades(false)} />
+      <PlayerProfileModal
+        open={showPlayerProfile}
+        profile={playerProfile}
+        onClose={() => setShowPlayerProfile(false)}
+        onSave={setPlayerProfile}
+      />
 
       {collectionSaveError && (
         <div className="mx-5 mt-4 text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3 flex items-start justify-between gap-3">
@@ -7352,6 +7528,7 @@ export default function App() {
             tournamentHistory={tournamentHistory}
             onTournamentFinished={addTournamentHistoryEntry}
             onCombatMechanics={recordCombatMechanics}
+            playerProfile={playerProfile}
           />
         </div>
         <div style={{ display: tab === "personajes" ? "block" : "none" }}>

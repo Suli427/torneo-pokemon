@@ -237,6 +237,13 @@ export const CHANGELOG = [
     detail: "Se auditó el motor genérico (tipo, categoría, ailments, stat_changes y drenaje ya se interpretaban correctamente para cualquier movimiento) y se implementaron las familias de mecánica especial que faltaban: daño fijo (Furia Dragón, Bomba Sónica), daño por % de PS actuales del rival (Desgracia, Castigo de la Naturaleza), potencia según ratio de peso (Bofetazo Pesado, Golpe Vapor), movimientos que usan la stat del rival (Juego Sucio) o la Defensa física en vez de la Especial (Psystrike, Psyshock, Espada Sagrada), Pantallas (Pantalla de Luz/Reflejo/Velo Aurora, con indicador visual propio), hazards de entrada (Trampa Rocas, Púas, Púas Tóxicas, Telaraña), restricción de movimientos rivales (Provocación, Otra Vez, Anulación), Habitación Trampa (con indicador propio) y Relevo (hereda los stat stages al cambiar). Los golpes dobles fijos (Doble Patada, Doble Golpe, Huesoboomerang, Aguijón Doble) ya funcionaban correctamente gracias al motor genérico de golpes múltiples, sin necesitar ningún caso especial. Sustituto queda pendiente para otra sesión: su alcance real (interceptar daño, ailments y debilitamiento en casi todo el motor ya construido) no encajaba con calidad razonable en el tiempo de esta sesión.",
     date: "2026-08-17T13:11:18+02:00",
   },
+  {
+    id: 33,
+    title: "Apodo y avatar del jugador",
+    summary: "Ahora puedes configurar un apodo y un avatar, visibles en la cabecera, la clasificación del torneo y el historial de torneos.",
+    detail: "Nuevo botón de perfil en la cabecera (junto a Novedades y las monedas) que abre un modal para elegir un apodo (hasta 16 caracteres) y un avatar de entre 16 emojis temáticos, con el mismo círculo de color ya usado para los avatares de entrenador del roster. En la clasificación del torneo, la fila del jugador ya no muestra solo el badge genérico 'TÚ': ahora muestra el avatar y el apodo configurados junto al nombre del entrenador con el que se está jugando esa partida. El historial de torneos también muestra el avatar y apodo del jugador junto al título del modal (una sola vez, no en cada fila, ya que todas las partidas del historial son siempre del mismo jugador local). Todo se guarda en localStorage bajo su propia clave, con el mismo patrón try/catch ya usado para monedas y entrenadores desbloqueados.",
+    date: "2026-08-17T22:08:02+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
