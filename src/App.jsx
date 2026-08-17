@@ -482,20 +482,39 @@ function getEffectiveSpeed(poke, weather) {
    DIFICULTAD DE LA CPU
 --------------------------------------------------------------- */
 
+// `rewardMultiplier` escala la tabla de recompensa por posición final de los
+// torneos normales (ver `positionReward` más abajo), para compensar el reto
+// extra de las dificultades más altas: Normal se queda igual que siempre,
+// Difícil da un 50% más de monedas y Maestro las dobla. No aplica a ninguna
+// otra recompensa de la app (Pokédle, recompensa diaria, gacha...), solo a
+// esta tabla por posición.
 const DIFFICULTY_META = {
   normal: {
     label: "Normal",
     desc: "Ataca con el movimiento de mayor daño esperado. Nunca cambia de Pokémon por voluntad propia.",
+    rewardMultiplier: 1,
   },
   hard: {
     label: "Difícil",
     desc: "Prioriza rematar, cura por drenaje si está muy tocada, usa Protección con criterio y Viento Afín en el momento oportuno; cambia de Pokémon ante una desventaja de tipo severa.",
+    rewardMultiplier: 1.5,
   },
   master: {
     label: "Maestro",
     desc: "Todo lo de Difícil, y además planifica 2 turnos por adelantado (movimientos y cambios incluidos) para elegir su mejor jugada.",
+    rewardMultiplier: 2,
   },
 };
+
+// Tabla base de recompensa por posición final (0-indexado: 0 = 1º puesto),
+// ya existente, ahora escalada por el multiplicador de la dificultad
+// elegida (ver DIFFICULTY_META). Math.round por si la tabla base cambia en
+// el futuro a valores que no den un múltiplo entero exacto con x1.5.
+function positionReward(userIdx, difficulty) {
+  const base = Math.max(50, 400 - userIdx * 50);
+  const multiplier = DIFFICULTY_META[difficulty]?.rewardMultiplier ?? 1;
+  return Math.round(base * multiplier);
+}
 
 // Reordena el equipo (mutando el array in-place) para que empiece por un
 // Pokémon aleatorio, conservando el orden relativo del resto para las
@@ -5284,11 +5303,12 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     if (newRound >= TOURNAMENT_ROUNDS) {
       const final = sortedStandings(updated);
       const userIdx = final.findIndex((s) => s.id === userTrainerId);
-      // La recompensa depende solo de la posición final (0-7), no del
-      // número de rondas en sí: con 5 rondas en vez de 4 el torneo separa
-      // mejor a los 8 participantes, pero la tabla de premios por puesto
-      // sigue teniendo el mismo sentido sin cambios.
-      const reward = Math.max(50, 400 - userIdx * 50);
+      // La recompensa depende de la posición final (0-7) y de la dificultad
+      // de la CPU elegida para este torneo (ver positionReward/
+      // DIFFICULTY_META): con 5 rondas en vez de 4 el torneo separa mejor a
+      // los 8 participantes, pero la tabla de premios por puesto sigue
+      // teniendo el mismo sentido sin cambios más allá del multiplicador.
+      const reward = positionReward(userIdx, difficulty);
       const before = coins;
       setTournamentReward({ amount: reward, before, after: before + reward });
       setCoins((c) => c + reward);
@@ -5536,7 +5556,17 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                     color: difficulty === key ? "#ff6b4a" : "#c7cbdb",
                   }}
                 >
-                  <div className="font-semibold">{meta.label}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold">{meta.label}</span>
+                    {meta.rewardMultiplier > 1 && (
+                      <span
+                        className="text-[10px] font-display px-1.5 py-0.5 rounded-full"
+                        style={{ background: "#f2b70522", border: "1px solid #f2b70555", color: "#f2b705" }}
+                      >
+                        Recompensas ×{meta.rewardMultiplier}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-[10px] text-[#8a8fa3] font-normal leading-snug mt-0.5">{meta.desc}</div>
                 </button>
               ))}

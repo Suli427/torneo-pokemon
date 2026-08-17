@@ -244,6 +244,13 @@ export const CHANGELOG = [
     detail: "Nuevo botón de perfil en la cabecera (junto a Novedades y las monedas) que abre un modal para elegir un apodo (hasta 16 caracteres) y un avatar de entre 16 emojis temáticos, con el mismo círculo de color ya usado para los avatares de entrenador del roster. En la clasificación del torneo, la fila del jugador ya no muestra solo el badge genérico 'TÚ': ahora muestra el avatar y el apodo configurados junto al nombre del entrenador con el que se está jugando esa partida. El historial de torneos también muestra el avatar y apodo del jugador junto al título del modal (una sola vez, no en cada fila, ya que todas las partidas del historial son siempre del mismo jugador local). Todo se guarda en localStorage bajo su propia clave, con el mismo patrón try/catch ya usado para monedas y entrenadores desbloqueados.",
     date: "2026-08-17T22:08:02+02:00",
   },
+  {
+    id: 34,
+    title: "Recompensas escaladas por dificultad",
+    summary: "Los torneos normales ahora dan más monedas cuanto mayor es la dificultad de la CPU: Difícil da un 50% más y Maestro las dobla.",
+    detail: "La tabla de recompensa por posición final de los torneos normales (modos A, B y Ruleta Pokémon) se multiplica ahora por ×1 en Normal, ×1.5 en Difícil y ×2 en Maestro, para compensar el reto extra de las dificultades más altas (antes las tres daban exactamente las mismas monedas por la misma posición). Por ejemplo, ganar el torneo (1º puesto) pasa de dar 400 monedas siempre a dar 400/600/800 según la dificultad elegida. El selector de dificultad de la pantalla de configuración del torneo ahora muestra un indicador '×1.5'/'×2' junto a Difícil/Maestro. No afecta a ninguna otra recompensa de la app (Pokédle, recompensa diaria, gacha...).",
+    date: "2026-08-17T22:49:26+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
