@@ -491,8 +491,12 @@ function attackerMovesFirst(moveA, moveB, pokeA, pokeB, weather) {
   const prioB = moveB ? (moveB.priority || 0) : -100;
   if (prioA !== prioB) return prioA > prioB;
   const spA = getEffectiveSpeed(pokeA, weather), spB = getEffectiveSpeed(pokeB, weather);
-  if (spA !== spB) return spA > spB;
-  return Math.random() < 0.5;
+  if (spA === spB) return Math.random() < 0.5;
+  // Habitación Trampa invierte el orden por Velocidad (actúa antes quien es
+  // más LENTO), pero solo por debajo de la prioridad: un movimiento con
+  // prioridad ya se decidió arriba y nunca llega a esta comparación.
+  const trickRoom = weather?.trickRoomTurnsLeft > 0;
+  return trickRoom ? spA < spB : spA > spB;
 }
 
 function statChangeText(change) {
@@ -579,12 +583,43 @@ const SWITCH_OUT_MOVES = new Set(["volt-switch", "u-turn"]);
 // la API.
 const BODY_PRESS_MOVES = new Set(["body-press"]);
 
-// Supercolmillo (Super Fang): daño fijo igual a la mitad de los PS ACTUALES
-// del objetivo (no máximos), redondeado hacia abajo, ignorando la fórmula de
-// daño normal (sin STAB/tipo/crítico salvo la inmunidad de tipo binaria,
-// igual que los movimientos de FIXED_LEVEL_MOVES). Se marca con
+// Juego Sucio (Foul Play): movimiento físico que usa el ATAQUE DEL OBJETIVO
+// (con sus propios stages) en vez del Ataque del atacante para calcular el
+// daño; el resto de la fórmula sigue igual (Defensa del objetivo, STAB según
+// el/los tipo(s) de quien ataca, no del objetivo). Sin forma estructurada de
+// detectarlo vía la API, igual que Placaje de Cuerpo.
+const FOUL_PLAY_MOVES = new Set(["foul-play"]);
+
+// Psystrike, Psyshock y Espada Sagrada (Secret Sword): mecánicamente son
+// movimientos de categoría ESPECIAL (usan el Ataque Especial de quien
+// ataca), pero golpean la DEFENSA FÍSICA del objetivo en vez de su Defensa
+// Especial. No hay forma estructurada de detectarlo vía la API (meta no
+// distingue esta excepción del resto de movimientos especiales).
+const DEFENSE_AS_SPECIAL_MOVES = new Set(["psystrike", "psyshock", "secret-sword"]);
+
+// Bofetazo Pesado (Heavy Slam) y Golpe Vapor (Heat Crash): su potencia
+// depende del RATIO de peso del atacante entre el peso del objetivo (cuanto
+// más pesado es quien ataca respecto al rival, más potencia) — a diferencia
+// de Hierba Lazo/Patada Baja (WEIGHT_BASED_POWER_MOVES), que solo miran el
+// peso del objetivo en términos absolutos. Tabla oficial resuelta por
+// weightRatioPower() en tiempo de combate, ya que necesita el peso de AMBOS
+// combatientes.
+const WEIGHT_RATIO_POWER_MOVES = new Set(["heavy-slam", "heat-crash"]);
+
+// Supercolmillo (Super Fang), Desgracia (Ruination) y Castigo de la
+// Naturaleza (Nature's Madness): daño fijo igual a la mitad de los PS
+// ACTUALES del objetivo (no máximos), redondeado hacia abajo, ignorando la
+// fórmula de daño normal (sin STAB/tipo/crítico salvo la inmunidad de tipo
+// binaria, igual que los movimientos de FIXED_LEVEL_MOVES). Se marca con
 // specialDamage="fixed-half-hp" en resolveVariablePower.
-const SUPER_FANG_MOVES = new Set(["super-fang"]);
+const HALF_CURRENT_HP_MOVES = new Set(["super-fang", "ruination", "natures-madness"]);
+
+// Furia Dragón (Dragon Rage) y Bomba Sónica (Sonic Boom): daño FIJO
+// (independiente del nivel, a diferencia de FIXED_LEVEL_MOVES), sin STAB,
+// sin tipo, sin crítico — solo la tirada de precisión normal y la inmunidad
+// de tipo binaria. Se marca con specialDamage="fixed-flat" en
+// resolveVariablePower.
+const FIXED_DAMAGE_MOVES = { "dragon-rage": 40, "sonic-boom": 20 };
 
 // Bostezo (Yawn): no aplica sueño de inmediato, sino que marca al objetivo
 // con un contador que lo duerme al FINAL DEL TURNO SIGUIENTE (ver tickYawn),
@@ -628,6 +663,55 @@ const TERRAIN_PULSE_TYPE_BY_TERRAIN = { electric: "electric", grassy: "grass", p
 // efecto de "lado del combate" (por trainerId), no por Pokémon individual;
 // se guarda en weather.tailwind = { [trainerId]: turnosRestantes }.
 const TAILWIND_MOVES = new Set(["tailwind"]);
+
+// Pantallas (Light Screen/Reflect/Aurora Veil): efecto de LADO (por
+// trainerId de quien las usa, protege a TODO su equipo, no solo al Pokémon
+// activo), 5 turnos, igual patrón que Viento Afín — weather.screens =
+// { [trainerId]: { light: turnos, reflect: turnos, auroraVeil: turnos } }.
+// Pantalla de Luz reduce a la mitad el daño ESPECIAL recibido, Reflejo el
+// daño FÍSICO, y Velo Aurora reduce AMBOS a la vez pero solo puede activarse
+// con Granizo en curso (si no hay Granizo, falla sin más). No se acumulan
+// entre sí (un equipo puede tener las tres a la vez, cada una cubriendo su
+// parte) pero usar la misma otra vez mientras sigue activa solo reinicia su
+// contador a 5, no lo extiende más allá.
+const SCREEN_MOVES = { "light-screen": "light", reflect: "reflect", "aurora-veil": "auroraVeil" };
+const SCREEN_START_TEXT = {
+  light: "¡Se ha desplegado una Pantalla de Luz que reducirá el daño especial!",
+  reflect: "¡Se ha desplegado un Reflejo que reducirá el daño físico!",
+  auroraVeil: "¡Se ha desplegado un Velo Aurora que reducirá el daño físico y especial!",
+};
+
+// Hazards de entrada (Trampa Rocas/Púas/Púas Tóxicas/Telaraña): se colocan
+// en el lado del RIVAL de quien las usa (por trainerId del equipo que las
+// recibirá) y afectan a cualquier Pokémon que entre en ese lado a partir de
+// ese momento, incluyendo cambios posteriores durante el mismo combate,
+// hasta que el combate termine (no se implementa ningún movimiento que las
+// elimine, ver comentario del pedido). weather.hazards =
+// { [trainerId]: { stealthRock: bool, spikes: 0-3, toxicSpikes: 0-2, stickyWeb: bool } }.
+const HAZARD_MOVES = new Set(["stealth-rock", "spikes", "toxic-spikes", "sticky-web"]);
+
+// Restricción de movimientos del rival: Provocación (no puede usar
+// movimientos de estado), Otra Vez (fuerza a repetir su último movimiento) y
+// Anulación (bloquea su último movimiento concreto). Duraciones razonables
+// de 3-4 turnos, mismo patrón de contador que confusionTurns/yawnTurns.
+const TAUNT_MOVES = new Set(["taunt"]);
+const ENCORE_MOVES = new Set(["encore"]);
+const DISABLE_MOVES = new Set(["disable"]);
+
+// Habitación Trampa (Trick Room): invierte el orden de turno durante 5
+// turnos completos (actúan primero los Pokémon más LENTOS), respetando
+// igualmente la prioridad de movimientos por encima de la Velocidad. Efecto
+// GLOBAL del combate (afecta a ambos lados por igual), no de lado ni de
+// Pokémon — se guarda en weather.trickRoomTurnsLeft, mismo patrón de
+// duración que el clima/campo.
+const TRICK_ROOM_MOVES = new Set(["trick-room"]);
+
+// Relevo (Baton Pass): al forzar el cambio de Pokémon propio (como Cambio de
+// Voltios/U-turn, ver SWITCH_OUT_MOVES), el Pokémon que entra HEREDA los
+// stat stages acumulados del que sale en vez de que se reinicien. A
+// diferencia de SWITCH_OUT_MOVES, Relevo es un movimiento de ESTADO (no hace
+// daño), así que necesita su propio punto de activación en executeMove.
+const BATON_PASS_MOVES = new Set(["baton-pass"]);
 
 // Movimientos "drenadores" (meta.drain > 0, ej. Giga Drain/Absorber) que
 // curan al atacante un % del daño infligido. Come Sueños comparte esa
@@ -879,6 +963,110 @@ function tickTailwindDuration(weather, turns) {
   }
 }
 
+// Pantallas: mismo patrón que Viento Afín (por trainerId), pero con hasta
+// tres sub-efectos independientes por lado (light/reflect/auroraVeil), cada
+// uno con su propio contador de 5 turnos.
+const SCREEN_LABEL = { light: "la Pantalla de Luz", reflect: "el Reflejo", auroraVeil: "el Velo Aurora" };
+function tickScreensDuration(weather, turns) {
+  if (!weather || !weather.screens) return;
+  for (const trainerId of Object.keys(weather.screens)) {
+    const sides = weather.screens[trainerId];
+    for (const key of Object.keys(sides)) {
+      sides[key] -= 1;
+      if (sides[key] <= 0) {
+        delete sides[key];
+        const t = TRAINERS.find((tr) => tr.id === trainerId);
+        turns.push({ type: "statusText", text: `${SCREEN_LABEL[key]} ha dejado de proteger al equipo de ${t ? t.name : trainerId}` });
+      }
+    }
+    if (Object.keys(sides).length === 0) delete weather.screens[trainerId];
+  }
+}
+
+// Multiplicador de daño por Pantallas: x0.5 si el defensor tiene la pantalla
+// correspondiente a la categoría del movimiento activa en SU lado (por
+// trainerId del propio defensor, no del atacante). Velo Aurora cubre ambas
+// categorías a la vez, así que basta con comprobarlo aparte de light/reflect.
+function screensDamageMultiplier(weather, move, defender) {
+  const sides = weather?.screens?.[defender.trainerId];
+  if (!sides || move.damageClass === "status") return 1;
+  if (sides.auroraVeil > 0) return 0.5;
+  if (move.damageClass === "special" && sides.light > 0) return 0.5;
+  if (move.damageClass === "physical" && sides.reflect > 0) return 0.5;
+  return 1;
+}
+
+// Habitación Trampa: mismo patrón que el clima/campo (turno de activación no
+// descuenta), pero global (no por lado ni por trainerId).
+function tickTrickRoomDuration(weather, turns) {
+  if (!weather || !weather.trickRoomTurnsLeft) return;
+  if (weather.trickRoomJustSet) {
+    weather.trickRoomJustSet = false;
+    return;
+  }
+  weather.trickRoomTurnsLeft -= 1;
+  if (weather.trickRoomTurnsLeft <= 0) {
+    turns.push({ type: "statusText", text: "La Habitación Trampa ha desaparecido" });
+    weather.trickRoomTurnsLeft = 0;
+  } else {
+    turns.push({ type: "statusText", text: "La Habitación Trampa sigue distorsionando el campo" });
+  }
+}
+
+// Tabla oficial y fija de efectividad de tipo ROCA atacando (no cambia
+// nunca, así que se hardcodea aquí en vez de depender de typeMultiplier):
+// necesaria para Trampa Rocas, que es el único hazard cuyo daño depende del
+// tipo de quien entra. Se deja como tabla síncrona (en vez de consultar
+// /type/rock vía la API, como hace typeMultiplier para el resto del motor)
+// para que applyEntryHazards pueda llamarse desde CUALQUIER punto de entrada
+// al campo, incluidos los de InteractiveBattle que no son async (el
+// reemplazo automático tras un debilitamiento).
+const ROCK_TYPE_EFFECTIVENESS = { bug: 2, fire: 2, flying: 2, ice: 2, fighting: 0.5, ground: 0.5, steel: 0.5 };
+function rockEffectivenessAgainst(types) {
+  return types.reduce((mult, t) => mult * (ROCK_TYPE_EFFECTIVENESS[t] ?? 1), 1);
+}
+
+// Hazards de entrada: aplica el efecto correspondiente a `poke` justo al
+// entrar en el campo, según lo que tenga acumulado su propio lado
+// (weather.hazards[poke.trainerId] — el lado que "recibe" son los hazards
+// colocados contra el trainerId del propio Pokémon que entra, sin importar
+// quién los puso). No hace nada si `poke` ya está debilitado (un cambio
+// forzado que lo dejó a 0 PS antes de llegar aquí) ni si no hay hazards en su
+// lado.
+function applyEntryHazards(poke, weather, turns) {
+  const hazards = weather?.hazards?.[poke.trainerId];
+  if (!hazards || poke.hp <= 0) return;
+  const grounded = isGrounded(poke);
+  if (hazards.stealthRock) {
+    const effMult = rockEffectivenessAgainst(poke.types);
+    const dmg = Math.max(1, Math.floor(poke.maxHp * 0.125 * effMult));
+    poke.hp = Math.max(0, poke.hp - dmg);
+    turns.push({ type: "statusText", text: `${poke.name} sufre daño por la Trampa Rocas` });
+    if (poke.hp <= 0) pushFaintOnce(poke, turns);
+  }
+  if (poke.hp > 0 && hazards.spikes > 0 && grounded) {
+    const frac = hazards.spikes === 1 ? 1 / 8 : hazards.spikes === 2 ? 1 / 6 : 1 / 4;
+    const dmg = Math.max(1, Math.floor(poke.maxHp * frac));
+    poke.hp = Math.max(0, poke.hp - dmg);
+    turns.push({ type: "statusText", text: `${poke.name} sufre daño por las Púas` });
+    if (poke.hp <= 0) pushFaintOnce(poke, turns);
+  }
+  if (poke.hp > 0 && hazards.toxicSpikes > 0 && grounded && !poke.status) {
+    if (poke.types.includes("poison")) {
+      hazards.toxicSpikes = 0; // absorbidas: el tipo Veneno las elimina de su lado al entrar
+      turns.push({ type: "statusText", text: `¡${poke.name} absorbe las Púas Tóxicas de su lado!` });
+    } else if (!poke.types.includes("flying")) {
+      poke.status = hazards.toxicSpikes >= 2 ? "toxic" : "poison";
+      if (poke.status === "toxic") poke.toxicCounter = 1;
+      turns.push({ type: "statusText", text: `${poke.name} ha sido envenenado por las Púas Tóxicas` });
+    }
+  }
+  if (poke.hp > 0 && hazards.stickyWeb && grounded) {
+    poke.statStages.speed = Math.max(-6, poke.statStages.speed - 1);
+    turns.push({ type: "statusText", text: `¡La Telaraña reduce la Velocidad de ${poke.name}!` });
+  }
+}
+
 // Bostezo (Yawn): al final del turno SIGUIENTE al que se aplicó (no el
 // mismo turno), si el objetivo sigue en combate y no tiene ya otro estado no
 // volátil, se queda dormido (respetando las mismas protecciones de campo que
@@ -923,11 +1111,43 @@ function resetPokemonOnSwitchOut(poke) {
   poke.lockedTurnsRemaining = 0;
   poke.invulnerable = false;
   poke.chargingMove = null;
+  // Provocación/Otra Vez/Anulación tampoco persisten al salir del campo,
+  // igual que el resto de bloqueos temporales de arriba.
+  poke.tauntTurns = 0;
+  poke.encoreMove = null;
+  poke.encoreTurns = 0;
+  poke.disabledMove = null;
+  poke.disableTurns = 0;
 }
 
 /* ---------------------------------------------------------------
    FIN CAMPOS DE BATALLA
 --------------------------------------------------------------- */
+
+// Descuenta los contadores de Provocación/Otra Vez/Anulación al final de
+// cada turno completo, mismo patrón que tickYawn/confusionTurns: se avisa
+// solo cuando el efecto realmente termina, no en cada tick intermedio.
+function tickMoveRestrictions(poke, turns) {
+  if (poke.hp <= 0) return;
+  if (poke.tauntTurns > 0) {
+    poke.tauntTurns -= 1;
+    if (poke.tauntTurns <= 0) turns.push({ type: "statusText", text: `${poke.name} ya no está bajo el efecto de Provocación` });
+  }
+  if (poke.encoreTurns > 0) {
+    poke.encoreTurns -= 1;
+    if (poke.encoreTurns <= 0) {
+      poke.encoreMove = null;
+      turns.push({ type: "statusText", text: `El efecto de Otra Vez sobre ${poke.name} ha terminado` });
+    }
+  }
+  if (poke.disableTurns > 0) {
+    poke.disableTurns -= 1;
+    if (poke.disableTurns <= 0) {
+      poke.disabledMove = null;
+      turns.push({ type: "statusText", text: `${poke.name} ya puede volver a usar su movimiento anulado` });
+    }
+  }
+}
 
 // PokeAPI no expone ningún campo que marque a Persecución como especial: su
 // mecánica real (golpea primero y a doble potencia contra un objetivo que
@@ -1266,10 +1486,12 @@ const WEIGHT_BASED_POWER_MOVES = new Set(["grass-knot", "low-kick"]);
 
 function resolveVariablePower(entry) {
   if (WEIGHT_BASED_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "weight-based" };
+  if (WEIGHT_RATIO_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "weight-ratio" };
   if (entry.power != null || entry.damageClass === "status") return entry;
   if (SPEED_RATIO_MOVES.has(entry.name)) return { ...entry, specialDamage: "speed-ratio" };
   if (FIXED_LEVEL_MOVES.has(entry.name)) return { ...entry, specialDamage: "fixed-level" };
-  if (SUPER_FANG_MOVES.has(entry.name)) return { ...entry, specialDamage: "fixed-half-hp" };
+  if (HALF_CURRENT_HP_MOVES.has(entry.name)) return { ...entry, specialDamage: "fixed-half-hp" };
+  if (FIXED_DAMAGE_MOVES[entry.name] != null) return { ...entry, specialDamage: "fixed-flat", fixedDamageAmount: FIXED_DAMAGE_MOVES[entry.name] };
   if (FIXED_POWER_OVERRIDES[entry.name] != null) return { ...entry, power: FIXED_POWER_OVERRIDES[entry.name] };
   return entry;
 }
@@ -1286,6 +1508,21 @@ function weightBasedPower(weightKg) {
   if (w < 100) return 80;
   if (w < 200) return 100;
   return 120;
+}
+
+// Tabla oficial de potencia de Bofetazo Pesado/Golpe Vapor según el RATIO de
+// peso propio entre el peso del objetivo (atacante/objetivo, no al revés).
+// Si falta el peso de cualquiera de los dos (fallback de red, ver getPokemon)
+// se asume un ratio neutro de 1 (potencia media, 40) para no penalizar ni
+// beneficiar el golpe en ese caso raro.
+function weightRatioPower(attackerWeightKg, defenderWeightKg) {
+  if (!attackerWeightKg || !defenderWeightKg) return 40;
+  const ratio = attackerWeightKg / defenderWeightKg;
+  if (ratio >= 5) return 120;
+  if (ratio >= 4) return 100;
+  if (ratio >= 3) return 80;
+  if (ratio >= 2) return 60;
+  return 40;
 }
 
 function moveEffectSummary(move) {
@@ -1798,13 +2035,21 @@ function useApiCache() {
       const mult = await typeMultiplier([move.type], defender.types, move.name);
       return { damage: mult > 0 ? 50 : 0, isCrit: false, mult };
     }
-    // Supercolmillo: daño fijo igual a la mitad de los PS ACTUALES del
-    // objetivo (no máximos), redondeado hacia abajo, mínimo 1. Sin STAB, sin
-    // multiplicador de clima/campo, sin crítico; solo respeta la inmunidad
-    // de tipo binaria, igual que Night Shade/Seismic Toss arriba.
+    // Supercolmillo/Desgracia/Castigo de la Naturaleza: daño fijo igual a la
+    // mitad de los PS ACTUALES del objetivo (no máximos), redondeado hacia
+    // abajo, mínimo 1. Sin STAB, sin multiplicador de clima/campo, sin
+    // crítico; solo respeta la inmunidad de tipo binaria, igual que Night
+    // Shade/Seismic Toss arriba.
     if (move.specialDamage === "fixed-half-hp") {
       const mult = await typeMultiplier([move.type], defender.types, move.name);
       return { damage: mult > 0 ? Math.max(1, Math.floor(defender.hp / 2)) : 0, isCrit: false, mult };
+    }
+    // Furia Dragón/Bomba Sónica: daño fijo (siempre el mismo valor,
+    // independiente del nivel/stats), sin STAB, sin crítico, solo respeta la
+    // inmunidad de tipo binaria.
+    if (move.specialDamage === "fixed-flat") {
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
+      return { damage: mult > 0 ? move.fixedDamageAmount : 0, isCrit: false, mult };
     }
     let power = move.power;
     if (move.specialDamage === "speed-ratio") {
@@ -1817,6 +2062,10 @@ function useApiCache() {
       // sigue la fórmula de daño estándar sin ninguna otra excepción (STAB,
       // tipo, crítico, aleatoriedad...).
       power = weightBasedPower(defender.weightKg);
+    } else if (move.specialDamage === "weight-ratio") {
+      // Bofetazo Pesado/Golpe Vapor: potencia según el RATIO de peso propio
+      // entre el del objetivo (ver WEIGHT_RATIO_POWER_MOVES/weightRatioPower).
+      power = weightRatioPower(attacker.weightKg, defender.weightKg);
     }
 
     // El crítico se decide antes de leer los stages: ignora bajadas propias
@@ -1831,13 +2080,20 @@ function useApiCache() {
     // Placaje de Cuerpo (Body Press): usa la propia Defensa del atacante (con
     // sus stages) en vez de su Ataque, aunque sigue siendo un movimiento
     // físico a todos los demás efectos (quemadura incluida, más abajo).
+    // Juego Sucio (Foul Play): usa el ATAQUE DEL OBJETIVO (con sus propios
+    // stages) en vez del Ataque del atacante — ver FOUL_PLAY_MOVES.
     let atkStat = move.damageClass === "special"
       ? getEffectiveStat(attacker, "special-attack", atkStageClamp)
       : BODY_PRESS_MOVES.has(move.name)
         ? getEffectiveStat(attacker, "defense", atkStageClamp)
-        : getEffectiveStat(attacker, "attack", atkStageClamp);
+        : FOUL_PLAY_MOVES.has(move.name)
+          ? getEffectiveStat(defender, "attack", atkStageClamp)
+          : getEffectiveStat(attacker, "attack", atkStageClamp);
     if (move.damageClass === "physical" && attacker.status === "burn") atkStat *= 0.5;
-    const defStat = move.damageClass === "special"
+    // Psystrike/Psyshock/Espada Sagrada: especiales que golpean la Defensa
+    // FÍSICA del objetivo en vez de su Defensa Especial (ver
+    // DEFENSE_AS_SPECIAL_MOVES).
+    const defStat = (move.damageClass === "special" && !DEFENSE_AS_SPECIAL_MOVES.has(move.name))
       ? getEffectiveStat(defender, "special-defense", defStageClamp)
       : getEffectiveStat(defender, "defense", defStageClamp);
     const levelFactor = Math.floor((2 * 50) / 5 + 2);
@@ -1846,10 +2102,14 @@ function useApiCache() {
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
     const weatherMult = weatherDamageMultiplier(weather, move.type);
     const terrainMult = terrainPowerMultiplier(weather, move, attacker) * terrainDamageReductionMultiplier(weather, move, defender);
+    // Pantallas: reducen el daño a la mitad salvo con golpe crítico (los
+    // críticos ignoran Pantalla de Luz/Reflejo/Velo Aurora, igual que en los
+    // juegos reales).
+    const screenMult = isCrit ? 1 : screensDamageMultiplier(weather, move, defender);
     const mult = await typeMultiplier([move.type], defender.types, move.name);
     const critMult = isCrit ? 1.5 : 1;
     const rand = 0.85 + Math.random() * 0.15;
-    let damage = Math.floor(base * stab * weatherMult * terrainMult * mult * critMult * rand);
+    let damage = Math.floor(base * stab * weatherMult * terrainMult * screenMult * mult * critMult * rand);
     damage = mult > 0 ? Math.max(1, damage) : 0;
     return { damage, isCrit, mult };
   }, [typeMultiplier]);
@@ -1875,25 +2135,38 @@ function useApiCache() {
       const mult = await typeMultiplier([move.type], defender.types, move.name);
       return mult > 0 ? (defender.hp / 2) * (acc / 100) : 0;
     }
+    if (move.specialDamage === "fixed-flat") {
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
+      return mult > 0 ? move.fixedDamageAmount * (acc / 100) : 0;
+    }
     let power = move.power;
     if (move.specialDamage === "speed-ratio") {
       const ratio = getEffectiveSpeed(attacker, weather) / Math.max(1, getEffectiveSpeed(defender, weather));
       power = ratio >= 4 ? 150 : ratio >= 3 ? 120 : ratio >= 2 ? 80 : ratio >= 1 ? 60 : 40;
     } else if (move.specialDamage === "weight-based") {
       power = weightBasedPower(defender.weightKg);
+    } else if (move.specialDamage === "weight-ratio") {
+      power = weightRatioPower(attacker.weightKg, defender.weightKg);
     }
     let atkStat = move.damageClass === "special"
       ? getEffectiveStat(attacker, "special-attack")
-      : BODY_PRESS_MOVES.has(move.name) ? getEffectiveStat(attacker, "defense") : getEffectiveStat(attacker, "attack");
+      : BODY_PRESS_MOVES.has(move.name)
+        ? getEffectiveStat(attacker, "defense")
+        : FOUL_PLAY_MOVES.has(move.name)
+          ? getEffectiveStat(defender, "attack")
+          : getEffectiveStat(attacker, "attack");
     if (move.damageClass === "physical" && attacker.status === "burn") atkStat *= 0.5;
-    const defStat = move.damageClass === "special" ? getEffectiveStat(defender, "special-defense") : getEffectiveStat(defender, "defense");
+    const defStat = (move.damageClass === "special" && !DEFENSE_AS_SPECIAL_MOVES.has(move.name))
+      ? getEffectiveStat(defender, "special-defense")
+      : getEffectiveStat(defender, "defense");
     const levelFactor = Math.floor((2 * 50) / 5 + 2);
     const base = Math.floor((levelFactor * power * atkStat) / defStat / 50) + 2;
     const stab = attacker.types.includes(move.type) ? 1.5 : 1;
     const weatherMult = weatherDamageMultiplier(weather, move.type);
     const terrainMult = terrainPowerMultiplier(weather, move, attacker) * terrainDamageReductionMultiplier(weather, move, defender);
+    const screenMult = screensDamageMultiplier(weather, move, defender);
     const mult = await typeMultiplier([move.type], defender.types, move.name);
-    let expected = base * stab * weatherMult * terrainMult * mult * (acc / 100);
+    let expected = base * stab * weatherMult * terrainMult * screenMult * mult * (acc / 100);
     // Golpes múltiples: la IA debe valorar el total esperado de golpes, no
     // solo uno (si no, infravalora movimientos como Lanzarrocas frente a
     // uno de un único golpe con potencia similar).
@@ -2048,6 +2321,18 @@ function useApiCache() {
   // cambios incluidos solo se usan en el combate interactivo vía
   // decideAiTurn, más abajo: ver su comentario para la razón).
   const chooseMove = useCallback(async (attacker, defender, weather, difficulty = "normal") => {
+    // Otra Vez en curso: fuerza el mismo movimiento que Enfado/furia (misma
+    // prioridad que lockedMove, comprobada primero porque Otra Vez es una
+    // restricción impuesta por el RIVAL, no una elección propia como la
+    // furia). Si el movimiento forzado se queda sin PP a mitad del efecto,
+    // se trata como cualquier otro caso sin PP (el resto de esta función).
+    if (attacker.encoreTurns > 0 && attacker.encoreMove) {
+      const encored = attacker.moves.find((m) => m.name === attacker.encoreMove);
+      if (encored && (encored.ppLeft == null || encored.ppLeft > 0)) return encored;
+      attacker.encoreMove = null;
+      attacker.encoreTurns = 0;
+    }
+
     // Movimiento de furia en curso: no pasa por la IA, se repite a la
     // fuerza el mismo movimiento contra el objetivo activo actual (si aún
     // le queda PP; si no, se trata como cualquier otro caso sin PP).
@@ -2059,8 +2344,13 @@ function useApiCache() {
 
     // Sin PP en ningún movimiento: no hay Struggle implementado, así que se
     // avisa a quien llama (resolveTurn/resolveSwitchTurn) devolviendo null
-    // para que ese turno se pierda sin más, sin romper la app.
-    const usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
+    // para que ese turno se pierda sin más, sin romper la app. Provocación
+    // (excluye movimientos de estado) y Anulación (excluye el movimiento
+    // anulado) recortan las opciones ANTES de que la IA elija, para que no
+    // "malgaste" su mejor jugada en un movimiento que sabe que va a fallar.
+    let usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
+    if (attacker.tauntTurns > 0) usable = usable.filter((m) => m.damageClass !== "status");
+    if (attacker.disabledMove) usable = usable.filter((m) => m.name !== attacker.disabledMove);
     if (usable.length === 0) return null;
 
     const scores = await Promise.all(usable.map((m) => expectedDamage(attacker, defender, m, weather)));
@@ -2121,11 +2411,15 @@ function useApiCache() {
   // otros 6 combates de la ronda siguen usando chooseMove (con sus propias
   // mejoras de Difícil/Maestro salvo el cambio de Pokémon).
   const decideAiTurn = useCallback(async ({ attacker, attackerTeam, attackerIdx, attackerTrainerId, defender, weather, difficulty }) => {
-    if (attacker.lockedMove || difficulty === "normal") {
+    // Ver comentario equivalente en chooseMove: Otra Vez/furia se resuelven
+    // ahí, sin pasar por la lógica de cambio voluntario de más abajo.
+    if (attacker.lockedMove || (attacker.encoreTurns > 0 && attacker.encoreMove) || difficulty === "normal") {
       return { type: "attack", move: await chooseMove(attacker, defender, weather, difficulty) };
     }
 
-    const usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
+    let usable = attacker.moves.filter((m) => m.ppLeft == null || m.ppLeft > 0);
+    if (attacker.tauntTurns > 0) usable = usable.filter((m) => m.damageClass !== "status");
+    if (attacker.disabledMove) usable = usable.filter((m) => m.name !== attacker.disabledMove);
     if (usable.length === 0) return { type: "attack", move: null };
 
     const scores = await Promise.all(usable.map((m) => expectedDamage(attacker, defender, m, weather)));
@@ -2185,6 +2479,10 @@ function useApiCache() {
     // actuar (statusPreMoveCheck ya se resolvió antes), así que aquí no
     // hace falta distinguir esos casos.
     if (move.ppLeft != null && !isTwoTurnRelease && !isVulnerableChargeRelease) move.ppLeft = Math.max(0, move.ppLeft - 1);
+
+    // Último movimiento usado: necesario para Otra Vez (fuerza a repetirlo)
+    // y Anulación (lo bloquea) — ver ENCORE_MOVES/DISABLE_MOVES más abajo.
+    attacker.lastMoveUsed = move.name;
 
     // La recarga se gasta por haber usado el movimiento, acierte o no
     // (equivalente simplificado a los juegos reales).
@@ -2246,6 +2544,70 @@ function useApiCache() {
       weather.tailwind = weather.tailwind || {};
       weather.tailwind[attacker.trainerId] = 4;
       return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡Un fuerte viento empieza a soplar a favor del equipo de ${attacker.name}!`, inline: false }] };
+    }
+
+    // Habitación Trampa: efecto GLOBAL del combate (no de lado), 5 turnos,
+    // se reinicia a 5 si ya estaba activa.
+    if (TRICK_ROOM_MOVES.has(move.name) && weather) {
+      weather.trickRoomTurnsLeft = 5;
+      weather.trickRoomJustSet = true;
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Se ha creado una Habitación Trampa que invierte el orden de turno!", inline: false }] };
+    }
+
+    // Pantallas: efecto de LADO (por trainerId de quien las usa). Velo
+    // Aurora solo puede activarse con Granizo en curso; sin Granizo, falla
+    // por completo (sin tirada de precisión, igual que Rodillo de Acero sin
+    // campo activo).
+    if (SCREEN_MOVES[move.name] && weather) {
+      const key = SCREEN_MOVES[move.name];
+      if (key === "auroraVeil" && weather.type !== "hail") {
+        return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
+      }
+      weather.screens = weather.screens || {};
+      weather.screens[attacker.trainerId] = weather.screens[attacker.trainerId] || {};
+      weather.screens[attacker.trainerId][key] = 5;
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: SCREEN_START_TEXT[key], inline: false }] };
+    }
+
+    // Hazards de entrada: se colocan en el lado del RIVAL (weather.hazards
+    // se indexa por el trainerId de quien los RECIBIRÁ, no de quien los usa).
+    // No los bloquea la Protección del rival (no le hacen daño ahora mismo,
+    // solo preparan el terreno).
+    if (HAZARD_MOVES.has(move.name) && weather) {
+      weather.hazards = weather.hazards || {};
+      const side = weather.hazards[defender.trainerId] = weather.hazards[defender.trainerId] || { stealthRock: false, spikes: 0, toxicSpikes: 0, stickyWeb: false };
+      let text;
+      if (move.name === "stealth-rock") {
+        if (side.stealthRock) return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
+        side.stealthRock = true;
+        text = `¡Han aparecido rocas puntiagudas flotando alrededor del equipo de ${defender.name}!`;
+      } else if (move.name === "spikes") {
+        if (side.spikes >= 3) return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
+        side.spikes += 1;
+        text = `¡Han aparecido púas alrededor del equipo de ${defender.name}!`;
+      } else if (move.name === "toxic-spikes") {
+        if (side.toxicSpikes >= 2) return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
+        side.toxicSpikes += 1;
+        text = `¡Han aparecido púas tóxicas alrededor del equipo de ${defender.name}!`;
+      } else {
+        if (side.stickyWeb) return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
+        side.stickyWeb = true;
+        text = `¡Ha aparecido una telaraña pegajosa alrededor del equipo de ${defender.name}!`;
+      }
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text, inline: false }] };
+    }
+
+    // Provocación: si el atacante está bajo su efecto, no puede usar NINGÚN
+    // movimiento de categoría estado (ni siquiera otra Provocación), falla
+    // por completo sin tirada de precisión.
+    if (attacker.tauntTurns > 0 && move.damageClass === "status") {
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡${attacker.name} no puede usar movimientos de estado por la Provocación!`, inline: false }] };
+    }
+
+    // Anulación: si el movimiento elegido es justo el que tiene anulado,
+    // falla por completo sin tirada de precisión.
+    if (attacker.disabledMove === move.name) {
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡${displayMoveName(move.name)} está anulado!`, inline: false }] };
     }
 
     // Movimientos de furia (Enfado/Danza Pétalo/Golpes Furia): obligan a
@@ -2477,6 +2839,67 @@ function useApiCache() {
         if (thrashEvent) events.push(thrashEvent);
         return { hit: true, damage: 0, crit: false, status: true, events };
       }
+      // Provocación: el objetivo no puede usar movimientos de estado durante
+      // 4 turnos (ver el chequeo al inicio de executeMove). Reaplicarla
+      // sobre un objetivo ya provocado simplemente reinicia el contador.
+      if (TAUNT_MOVES.has(move.name)) {
+        defender.tauntTurns = 4;
+        const events = [{ type: "statusText", text: `¡${defender.name} no podrá usar movimientos de estado!`, inline: false }];
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Otra Vez: fuerza al objetivo a repetir su último movimiento usado
+      // durante 3 turnos (reutiliza el mecanismo de `lockedMove` de
+      // chooseMove, vía encoreMove/encoreTurns aparte para no chocar con
+      // Enfado/Danza Pétalo). Falla si el objetivo no ha usado ningún
+      // movimiento todavía o si a ese movimiento ya no le queda PP.
+      if (ENCORE_MOVES.has(move.name)) {
+        const targetMove = defender.lastMoveUsed ? defender.moves.find((m) => m.name === defender.lastMoveUsed) : null;
+        const events = [];
+        if (!targetMove || (targetMove.ppLeft != null && targetMove.ppLeft <= 0)) {
+          events.push({ type: "statusText", text: "¡Pero falló!", inline: false });
+        } else {
+          defender.encoreMove = targetMove.name;
+          defender.encoreTurns = 3;
+          events.push({ type: "statusText", text: `¡${defender.name} quedó forzado a repetir ${displayMoveName(targetMove.name)}!`, inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Anulación: bloquea el último movimiento usado por el objetivo
+      // durante 4 turnos (ver el chequeo al inicio de executeMove). Falla si
+      // el objetivo no ha usado ningún movimiento todavía o si a ese
+      // movimiento ya no le queda PP.
+      if (DISABLE_MOVES.has(move.name)) {
+        const targetMove = defender.lastMoveUsed ? defender.moves.find((m) => m.name === defender.lastMoveUsed) : null;
+        const events = [];
+        if (!targetMove || (targetMove.ppLeft != null && targetMove.ppLeft <= 0)) {
+          events.push({ type: "statusText", text: "¡Pero falló!", inline: false });
+        } else {
+          defender.disabledMove = targetMove.name;
+          defender.disableTurns = 4;
+          events.push({ type: "statusText", text: `¡${displayMoveName(targetMove.name)} de ${defender.name} ha sido anulado!`, inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Relevo: no hace nada por sí mismo aquí (el cambio de Pokémon y la
+      // herencia de stat stages se resuelven en resolveTurn/resolveSwitchTurn,
+      // que detectan BATON_PASS_MOVES igual que SWITCH_OUT_MOVES); este
+      // return solo evita que caiga en el flujo genérico de movimientos de
+      // estado sin efecto de más abajo.
+      if (BATON_PASS_MOVES.has(move.name)) {
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        const events = thrashEvent ? [thrashEvent] : [];
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
       // Descanso (Rest): cura por completo y elimina cualquier estado no
       // volátil, a cambio de dormir SIEMPRE exactamente 2 turnos (nunca
       // 1-3 al azar como el sueño normal); el "coste" no depende de si
@@ -2639,14 +3062,12 @@ function useApiCache() {
     // intactos como referencia a quién empezó el turno.
     let activePa = pa, activePb = pb;
 
-    const prioA = moveA ? (moveA.priority || 0) : -100;
-    const prioB = moveB ? (moveB.priority || 0) : -100;
-    let aFirst;
-    if (prioA !== prioB) aFirst = prioA > prioB;
-    else {
-      const spA = getEffectiveSpeed(pa, weather), spB = getEffectiveSpeed(pb, weather);
-      aFirst = spA !== spB ? spA > spB : Math.random() < 0.5;
-    }
+    // Misma lógica de orden que attackerMovesFirst (prioridad, luego
+    // Velocidad efectiva con la inversión de Habitación Trampa si está
+    // activa, empate 50/50) — reutilizada aquí en vez de duplicada para que
+    // Trick Room afecte también al combate real, no solo a la simulación a
+    // 2 turnos de Maestro.
+    const aFirst = attackerMovesFirst(moveA, moveB, pa, pb, weather);
 
     const firstSide = aFirst ? "a" : "b";
     const secondSide = aFirst ? "b" : "a";
@@ -2748,6 +3169,7 @@ function useApiCache() {
                   replacement.poke.hasActedSinceEntering = false;
                   if (secondSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
                   turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
+                  applyEntryHazards(replacement.poke, weather, turns);
                   // El Pokémon forzado a salir no llega a actuar este mismo
                   // turno (igual que en los juegos reales): el segundo slot
                   // se salta por completo.
@@ -2767,12 +3189,32 @@ function useApiCache() {
                   replacement.poke.hasActedSinceEntering = false;
                   if (firstSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
                   turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
+                  applyEntryHazards(replacement.poke, weather, turns);
                 } else {
                   switchSignals[firstSide] = "self";
                 }
               } else {
                 switchSignals[firstSide] = "self";
               }
+            }
+          }
+          // Relevo: movimiento de ESTADO (result.damage siempre 0), así que
+          // vive fuera del bloque de arriba (gateado por damage>0). Solo se
+          // resuelve el cambio inmediato vía resolveMidTurnSwitch (el único
+          // combate con acceso real a un banquillo elegible, ver comentario
+          // de decideAiTurn); a diferencia de Cambio de Voltios/U-turn, el
+          // Pokémon que entra HEREDA los stat stages acumulados del que sale
+          // en vez de que resetPokemonOnSwitchOut los ponga a 0.
+          if (attacker.hp > 0 && result.hit && BATON_PASS_MOVES.has(move.name) && benchAlive[firstSide] && resolveMidTurnSwitch) {
+            const replacement = await resolveMidTurnSwitch(firstSide, "self");
+            if (replacement) {
+              const passedStages = { ...attacker.statStages };
+              resetPokemonOnSwitchOut(attacker);
+              replacement.poke.statStages = passedStages;
+              replacement.poke.hasActedSinceEntering = false;
+              if (firstSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
+              turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
+              applyEntryHazards(replacement.poke, weather, turns);
             }
           }
         }
@@ -2821,6 +3263,21 @@ function useApiCache() {
               switchSignals[secondSide] = "self";
             }
           }
+          // Relevo del segundo mover: ver comentario equivalente en el
+          // primer mover — solo se resuelve si hay un banquillo real
+          // disponible vía resolveMidTurnSwitch (el combate interactivo).
+          if (attacker.hp > 0 && result.hit && BATON_PASS_MOVES.has(move.name) && benchAlive[secondSide] && resolveMidTurnSwitch) {
+            const replacement = await resolveMidTurnSwitch(secondSide, "self");
+            if (replacement) {
+              const passedStages = { ...attacker.statStages };
+              resetPokemonOnSwitchOut(attacker);
+              replacement.poke.statStages = passedStages;
+              replacement.poke.hasActedSinceEntering = false;
+              if (secondSide === "a") activePa = replacement.poke; else activePb = replacement.poke;
+              turns.push({ type: "statusText", text: `¡Adelante, ${replacement.poke.name}!` });
+              applyEntryHazards(replacement.poke, weather, turns);
+            }
+          }
         }
       } else if (attacker.hp <= 0) {
         // Este "attacker" del segundo slot puede ser EL MISMO Pokémon que
@@ -2841,9 +3298,13 @@ function useApiCache() {
     applyGrassyTerrainHeal(activePb, weather, turns);
     tickYawn(activePa, turns, weather);
     tickYawn(activePb, turns, weather);
+    tickMoveRestrictions(activePa, turns);
+    tickMoveRestrictions(activePb, turns);
     tickWeatherDuration(weather, turns);
     tickTerrainDuration(weather, turns);
     tickTailwindDuration(weather, turns);
+    tickScreensDuration(weather, turns);
+    tickTrickRoomDuration(weather, turns);
 
     // La exención de "me acabo de dormir" solo vale para un posible chequeo
     // dentro de este mismo turno (si el Pokémon actúa en segundo lugar);
@@ -3000,6 +3461,7 @@ function useApiCache() {
     // confusión, furia/carga en curso) se pierde al salir del campo.
     resetPokemonOnSwitchOut(outgoing);
     turns.push({ type: "statusText", text: `¡Adelante, ${incoming.name}!` });
+    applyEntryHazards(incoming, weather, turns);
 
     // Salvo la excepción de Persecución de arriba, el rival actúa siempre
     // DESPUÉS de completarse el cambio, contra el Pokémon recién entrado,
@@ -3014,9 +3476,13 @@ function useApiCache() {
     applyGrassyTerrainHeal(opponent, weather, turns);
     tickYawn(incoming, turns, weather);
     tickYawn(opponent, turns, weather);
+    tickMoveRestrictions(incoming, turns);
+    tickMoveRestrictions(opponent, turns);
     tickWeatherDuration(weather, turns);
     tickTerrainDuration(weather, turns);
     tickTailwindDuration(weather, turns);
+    tickScreensDuration(weather, turns);
+    tickTrickRoomDuration(weather, turns);
 
     incoming.justFellAsleep = false;
     opponent.justFellAsleep = false;
@@ -3076,6 +3542,10 @@ function useApiCache() {
       status: null, sleepTurns: 0, justFellAsleep: false, confusionTurns: 0, usedSetupMove: false, mustRecharge: false,
       lockedMove: null, lockedTurnsRemaining: 0, protected: false, protectChain: 0,
       flinched: false, toxicCounter: 0, yawnTurns: 0, invulnerable: false, freezeTurns: 0, chargingMove: null,
+      // Provocación/Otra Vez/Anulación (ver TAUNT_MOVES/ENCORE_MOVES/
+      // DISABLE_MOVES) y el último movimiento usado (necesario para saber
+      // qué forzar/bloquear con Otra Vez/Anulación).
+      tauntTurns: 0, encoreMove: null, encoreTurns: 0, disabledMove: null, disableTurns: 0, lastMoveUsed: null,
       // faintLogged: ver pushFaintOnce. hasActedSinceEntering: ver
       // FIRST_TURN_ONLY_MOVES (Fake Out/Impresión Primeriza) — empieza en
       // `false` porque este Pokémon acaba de entrar al campo (inicio del
@@ -3104,7 +3574,7 @@ function useApiCache() {
     // debilitamiento. `terrain*` y `tailwind` viven en el mismo objeto que
     // el clima para no tener que enhebrar un segundo parámetro por todo el
     // motor (ver comentario de getEffectiveSpeed).
-    const weather = { type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {} };
+    const weather = { type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {}, screens: {}, hazards: {}, trickRoomTurnsLeft: 0, trickRoomJustSet: false };
     let i = 0, j = 0;
     const log = [];
     while (i < teamA.length && j < teamB.length) {
@@ -3336,6 +3806,29 @@ function BattleFieldIndicators({ weather, trainerA, trainerB }) {
     const trainerName = trainerId === trainerA?.id ? trainerA.name : trainerId === trainerB?.id ? trainerB.name : trainerId;
     badges.push(pill(`tailwind-${trainerId}`, "🌀", `Viento Afín (${trainerName})`, turnsLeft, "#5fae5f"));
   }
+  if (weather?.trickRoomTurnsLeft > 0) {
+    badges.push(pill("trick-room", "🌀", "Habitación Trampa", weather.trickRoomTurnsLeft, "#b070d0"));
+  }
+  const screenLabelIcon = { light: ["🔆", "Pantalla de Luz"], reflect: ["🛡️", "Reflejo"], auroraVeil: ["❄️", "Velo Aurora"] };
+  if (weather?.screens) {
+    for (const [trainerId, sides] of Object.entries(weather.screens)) {
+      const trainerName = trainerId === trainerA?.id ? trainerA.name : trainerId === trainerB?.id ? trainerB.name : trainerId;
+      for (const [key, turnsLeft] of Object.entries(sides)) {
+        if (turnsLeft <= 0) continue;
+        const [icon, label] = screenLabelIcon[key];
+        badges.push(pill(`screen-${trainerId}-${key}`, icon, `${label} (${trainerName})`, turnsLeft, "#4a90d9"));
+      }
+    }
+  }
+  if (weather?.hazards) {
+    for (const [trainerId, side] of Object.entries(weather.hazards)) {
+      const trainerName = trainerId === trainerA?.id ? trainerA.name : trainerId === trainerB?.id ? trainerB.name : trainerId;
+      if (side.stealthRock) badges.push(<span key={`sr-${trainerId}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold" style={{ background: "#B8A03822", border: "1px solid #B8A03866", color: "#B8A038" }}>🪨 Trampa Rocas ({trainerName})</span>);
+      if (side.spikes > 0) badges.push(<span key={`sp-${trainerId}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold" style={{ background: "#A8A87822", border: "1px solid #A8A87866", color: "#A8A878" }}>📌 Púas ×{side.spikes} ({trainerName})</span>);
+      if (side.toxicSpikes > 0) badges.push(<span key={`tsp-${trainerId}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold" style={{ background: "#A0409022", border: "1px solid #A0409066", color: "#A04090" }}>☠️ Púas Tóxicas ×{side.toxicSpikes} ({trainerName})</span>);
+      if (side.stickyWeb) badges.push(<span key={`sw-${trainerId}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold" style={{ background: "#70589822", border: "1px solid #70589866", color: "#705898" }}>🕸️ Telaraña ({trainerName})</span>);
+    }
+  }
 
   if (!badges.length) return <div className="text-[11px] text-[#5c6178]">Campo despejado</div>;
   return <div className="flex flex-wrap justify-center gap-2">{badges}</div>;
@@ -3538,7 +4031,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   // se guarda en un ref mutable (igual que en simulateMatch) para que
   // persista a través de cambios de Pokémon y renders sin formar parte del
   // estado de React.
-  const weatherRef = useRef({ type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {} });
+  const weatherRef = useRef({ type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {}, screens: {}, hazards: {}, trickRoomTurnsLeft: 0, trickRoomJustSet: false });
 
   // Acumulado a lo largo de TODO el combate, solo para el sistema de
   // logros (ver analyzeInteractiveBattleMechanics/handleInteractiveFinish
@@ -3695,6 +4188,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
         teamA[next].hasActedSinceEntering = false;
         setIdxA(next);
         pendingChoiceLines.push({ type: "statusText", text: `¡Adelante, ${teamA[next].name}!` });
+        applyEntryHazards(teamA[next], weatherRef.current, pendingChoiceLines);
       } else {
         setIdxA(candidateIdxA);
       }
@@ -3705,6 +4199,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       const next = nextAliveIndex(teamA, candidateIdxA);
       teamA[next].hasActedSinceEntering = false;
       setIdxA(next);
+      applyEntryHazards(teamA[next], weatherRef.current, pendingChoiceLines);
     }
 
     if (teamB[candidateIdxB].hp > 0) {
@@ -3719,6 +4214,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
         teamB[next].hasActedSinceEntering = false;
         setIdxB(next);
         pendingChoiceLines.push({ type: "statusText", text: `¡Adelante, ${teamB[next].name}!` });
+        applyEntryHazards(teamB[next], weatherRef.current, pendingChoiceLines);
       } else {
         setIdxB(candidateIdxB);
       }
@@ -3729,6 +4225,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       const next = nextAliveIndex(teamB, candidateIdxB);
       teamB[next].hasActedSinceEntering = false;
       setIdxB(next);
+      applyEntryHazards(teamB[next], weatherRef.current, pendingChoiceLines);
     }
 
     setMustSwitchSide(nextMustSwitch);
@@ -3760,7 +4257,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     const outgoing = userTeam[userIdx];
     if (outgoing && outgoing.hp > 0) resetPokemonOnSwitchOut(outgoing);
     incoming.hasActedSinceEntering = false;
-    setLog((l) => [...l, { type: "statusText", text: `¡Adelante, ${incoming.name}!` }]);
+    const hazardLines = [];
+    applyEntryHazards(incoming, weatherRef.current, hazardLines);
+    setLog((l) => [...l, { type: "statusText", text: `¡Adelante, ${incoming.name}!` }, ...hazardLines]);
     if (userSide === "a") setIdxA(idx); else setIdxB(idx);
     setMustSwitchSide(null);
   }

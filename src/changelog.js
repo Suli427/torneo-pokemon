@@ -230,6 +230,13 @@ export const CHANGELOG = [
     detail: "La pista de Rareza (Común/Poco Común/Raro/Épico/Pseudolegendario/Legendario) del Pokédle se sustituyó por una pista de Stats Totales: compara el BST (suma de las 6 estadísticas base) del Pokémon introducido contra el del Pokémon objetivo del día, mostrando el valor exacto junto al resultado (🟩 Igual, ↑ Mayor si el objetivo tiene más stats, ↓ Menor si tiene menos), dando una pista más concreta que la rareza.",
     date: "2026-08-15T11:14:04+02:00",
   },
+  {
+    id: 32,
+    title: "Motor de combate: nuevas familias de mecánica especial",
+    summary: "El motor de combate ahora cubre muchas más mecánicas especiales, para que cualquier movimiento elegido libremente en el editor funcione correctamente, no solo los de los movesets fijos.",
+    detail: "Se auditó el motor genérico (tipo, categoría, ailments, stat_changes y drenaje ya se interpretaban correctamente para cualquier movimiento) y se implementaron las familias de mecánica especial que faltaban: daño fijo (Furia Dragón, Bomba Sónica), daño por % de PS actuales del rival (Desgracia, Castigo de la Naturaleza), potencia según ratio de peso (Bofetazo Pesado, Golpe Vapor), movimientos que usan la stat del rival (Juego Sucio) o la Defensa física en vez de la Especial (Psystrike, Psyshock, Espada Sagrada), Pantallas (Pantalla de Luz/Reflejo/Velo Aurora, con indicador visual propio), hazards de entrada (Trampa Rocas, Púas, Púas Tóxicas, Telaraña), restricción de movimientos rivales (Provocación, Otra Vez, Anulación), Habitación Trampa (con indicador propio) y Relevo (hereda los stat stages al cambiar). Los golpes dobles fijos (Doble Patada, Doble Golpe, Huesoboomerang, Aguijón Doble) ya funcionaban correctamente gracias al motor genérico de golpes múltiples, sin necesitar ningún caso especial. Sustituto queda pendiente para otra sesión: su alcance real (interceptar daño, ailments y debilitamiento en casi todo el motor ya construido) no encajaba con calidad razonable en el tiempo de esta sesión.",
+    date: "2026-08-17T13:11:18+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
