@@ -13,6 +13,11 @@ import {
   claimDailyReward, getStreakDayNumberForToday, computePokedleReward, scorePokedleGuess, POKEDLE_MAX_ATTEMPTS,
 } from "./dailyRewards";
 import { getSortedChangelog } from "./changelog";
+import {
+  WEEKLY_TOURNAMENT_STORAGE_KEY, WEEKLY_TOURNAMENT_REWARD, WEEKLY_TEAM_SIZE,
+  getActiveWeekKey, getNextWeeklyResetDate, selectWeeklyTheme, speciesMatchesTheme,
+  loadWeeklyTournamentState, recordActiveWeekTheme, isWeeklyTournamentCompleted, markWeeklyTournamentCompleted,
+} from "./weeklyTournaments";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -3700,6 +3705,22 @@ function formatChangelogDate(isoDate) {
   return fmt.format(new Date(isoDate));
 }
 
+// Cuenta atrás legible ("en 3 días 5 h" / "en 45 min") para el reset del
+// Torneo Semanal (ver getNextWeeklyResetDate). `ms` ya viene como la
+// diferencia (fecha objetivo - ahora); si por lo que sea es negativo (reloj
+// del sistema raro, o justo en el instante del reset), se trata como "ya
+// mismo" en vez de mostrar un número negativo sin sentido.
+function formatCountdown(ms) {
+  if (ms <= 0) return "muy pronto";
+  const totalMinutes = Math.ceil(ms / 60000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `en ${days} día${days === 1 ? "" : "s"} ${hours} h`;
+  if (hours > 0) return `en ${hours} h ${minutes} min`;
+  return `en ${minutes} min`;
+}
+
 // Tarjeta de una entrada del historial de Novedades: título + resumen de
 // 1-2 líneas siempre visibles, y el detalle completo se expande in-line al
 // pulsarla (sin abrir un sub-modal aparte, para no anidar overlays dentro
@@ -4888,6 +4909,7 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
             const modeA = modeStats("A");
             const modeB = modeStats("B");
             const modeC = modeStats("C");
+            const modeWeekly = modeStats("weekly");
 
             return (
               <>
@@ -4906,7 +4928,7 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
                   ))}
                 </div>
 
-                <div className="grid sm:grid-cols-3 gap-2 mb-5">
+                <div className="grid sm:grid-cols-4 gap-2 mb-5">
                   <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
                     <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo A · Solo tu entrenador</div>
                     <div className="text-sm text-white">{modeA.played} jugados · {modeA.wins} victorias ({modeA.pct}%)</div>
@@ -4918,6 +4940,10 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
                   <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
                     <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo C · Ruleta Pokémon</div>
                     <div className="text-sm text-white">{modeC.played} jugados · {modeC.wins} victorias ({modeC.pct}%)</div>
+                  </div>
+                  <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+                    <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Torneo Semanal</div>
+                    <div className="text-sm text-white">{modeWeekly.played} jugados · {modeWeekly.wins} victorias ({modeWeekly.pct}%)</div>
                   </div>
                 </div>
 
@@ -4933,7 +4959,7 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
                         style={{ background: i % 2 ? "#14161f" : "#12141c", borderTop: "1px solid #1e2130" }}
                       >
                         <span className="text-[#9aa0b4]">{new Date(h.date).toLocaleDateString()}</span>
-                        <span className="text-[#c7cbdb]">{h.mode}</span>
+                        <span className="text-[#c7cbdb]" title={h.mode === "weekly" ? "Torneo Semanal" : undefined}>{h.mode === "weekly" ? "S" : h.mode}</span>
                         <span className="text-white truncate" title={h.trainerName}>{h.trainerName}</span>
                         <span className="text-[#c7cbdb]">{h.finalPosition}º</span>
                         <span className="text-[#c7cbdb]">{h.points}</span>
@@ -5024,7 +5050,7 @@ function buildPairsAvoidingRematches(ordered, playedPairsSet) {
   return best;
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -5066,6 +5092,15 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // entrenador cuyo nombre le tocó — solo se pide prestado el nombre (y,
   // si aplica, color/subtitle) para dar sabor a la clasificación.
   const [rouletteRivalNames, setRouletteRivalNames] = useState(null);
+  // Modo "weekly" (Torneo Semanal, ver src/weeklyTournaments.js): equipo de
+  // 6 Pokémon elegidos A MANO por el usuario entre los de su colección que
+  // cumplen la temática activa (a diferencia de la Ruleta, que sortea al
+  // azar): [{ slug, shiny }] o null si aún no ha elegido ninguno. Mismo
+  // "reskin" del slot ash que los modos A/C (ver effectiveTrainers), pero
+  // primando el moveset REAL de la colección (como el modo A), no uno
+  // competitivo genérico como el modo C.
+  const [weeklyTeam, setWeeklyTeam] = useState(null);
+  const [showWeeklyTeamSelector, setShowWeeklyTeamSelector] = useState(false);
   const [difficulty, setDifficulty] = useState("normal");
   const [pairMode, setPairMode] = useState("random");
   const [standings, setStandings] = useState([]);
@@ -5078,6 +5113,35 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   const [pendingRoundResults, setPendingRoundResults] = useState(null);
   const [tournamentReward, setTournamentReward] = useState(null); // { amount, before, after }
   const [showHistory, setShowHistory] = useState(false);
+
+  // Semana activa y su temática determinista (ver selectWeeklyTheme):
+  // recalculado en cada render, es barato (un hash + recorrido de 10
+  // elementos) y depende solo de la hora actual y de weeklyTournamentState,
+  // así que no hace falta memoizarlo con más cuidado que esto.
+  const weeklyWeekKey = getActiveWeekKey();
+  const weeklyTheme = selectWeeklyTheme(weeklyWeekKey, weeklyTournamentState.recentWeeks);
+  const weeklyCompleted = isWeeklyTournamentCompleted(weeklyTournamentState, weeklyWeekKey);
+  const weeklyEligibleCollection = collection.filter((c) => speciesMatchesTheme(weeklyTheme, c.slug));
+  const weeklyTeamValid = !!weeklyTeam && weeklyTeam.length === WEEKLY_TEAM_SIZE;
+
+  // Tick cada 60s solo para refrescar la cuenta atrás del reset semanal en
+  // pantalla (getNextWeeklyResetDate en sí no necesita ningún estado, se
+  // recalcula fresco en cada render; esto solo fuerza que ese render vuelva
+  // a ocurrir sin que el usuario tenga que recargar la página).
+  const [, setWeeklyCountdownTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setWeeklyCountdownTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Anota la temática de la semana activa la primera vez que se resuelve
+  // (para que selectWeeklyTheme pueda evitar repetirla la semana que viene).
+  // recordActiveWeekTheme devuelve la MISMA referencia si ya estaba
+  // anotada, así que este efecto es un no-op en cualquier render posterior
+  // dentro de la misma semana (no dispara un re-render de más).
+  useEffect(() => {
+    setWeeklyTournamentState((prev) => recordActiveWeekTheme(prev, weeklyWeekKey, weeklyTheme.id));
+  }, [weeklyWeekKey, weeklyTheme.id, setWeeklyTournamentState]);
 
   function toggleMatch(key) {
     setExpandedMatches((e) => ({ ...e, [key]: !e[key] }));
@@ -5101,6 +5165,17 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // reutiliza playAsCustom, que es específico del entrenador propio.
       setUserTrainerId("ash");
       setPlayAsCustom(false);
+    } else if (newMode === "weekly") {
+      // Torneo Semanal: mismo truco de reskin del slot ash, y además fuerza
+      // SIEMPRE dificultad Maestro y emparejamiento aleatorio (reglas fijas
+      // de este modo, ver el pedido) — se fuerzan aquí sobre el mismo
+      // estado que ya usan los selectores normales, así que la interfaz
+      // simplemente los oculta en este modo en vez de necesitar una rama
+      // aparte en startTournament/finalizeRound para la dificultad.
+      setUserTrainerId("ash");
+      setPlayAsCustom(false);
+      setDifficulty("master");
+      setPairMode("random");
     }
   }
 
@@ -5138,9 +5213,11 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         }
         return t;
       })
-    : (playAsCustom && customTrainer)
-      ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador" } : t)
-      : TRAINERS;
+    : (mode === "weekly" && weeklyTeam)
+      ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: `${weeklyTheme.title} (Semanal)`, team: weeklyTeam.map((e) => e.slug), subtitle: "Torneo Semanal" } : t)
+      : (playAsCustom && customTrainer)
+        ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador" } : t)
+        : TRAINERS;
 
   async function startTournament() {
     setPhase("loading");
@@ -5236,6 +5313,15 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         }
         const borrowedIds = namePool.slice(0, chosenRivalIds.length);
         setRouletteRivalNames(Object.fromEntries(chosenRivalIds.map((rivalId, i) => [rivalId, borrowedIds[i]])));
+      } else if (mode === "weekly" && weeklyTeam) {
+        // Torneo Semanal: usa el moveset REAL ya guardado en la colección
+        // para cada Pokémon elegido (igual que el entrenador propio),
+        // nunca uno genérico — el jugador construyó/editó ese equipo con
+        // su propio criterio, así que combate con él tal cual.
+        await Promise.all(weeklyTeam.map(({ slug, shiny }) => {
+          const entry = findCollectionEntry(collection, slug, shiny);
+          return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
+        }));
       } else if (playAsCustom && customTrainer) {
         await Promise.all(customTrainer.team.map(({ slug, shiny }) => {
           const entry = findCollectionEntry(collection, slug, shiny);
@@ -5308,7 +5394,25 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // DIFFICULTY_META): con 5 rondas en vez de 4 el torneo separa mejor a
       // los 8 participantes, pero la tabla de premios por puesto sigue
       // teniendo el mismo sentido sin cambios más allá del multiplicador.
-      const reward = positionReward(userIdx, difficulty);
+      //
+      // Torneo Semanal: NO usa esta tabla. Es un pago único de 1000 monedas,
+      // solo la primera vez que el usuario queda 1º esa semana concreta —
+      // perder no penaliza nada (reward=0, se puede reintentar sin límite) y
+      // ganar una segunda vez la misma semana tampoco vuelve a pagar (el
+      // botón de iniciar ya se deshabilita en cuanto se completa, pero esta
+      // comprobación es la que de verdad lo garantiza).
+      let reward;
+      if (mode === "weekly") {
+        const alreadyCompleted = isWeeklyTournamentCompleted(weeklyTournamentState, weeklyWeekKey);
+        if (userIdx === 0 && !alreadyCompleted) {
+          reward = WEEKLY_TOURNAMENT_REWARD;
+          setWeeklyTournamentState((prev) => markWeeklyTournamentCompleted(prev, weeklyWeekKey));
+        } else {
+          reward = 0;
+        }
+      } else {
+        reward = positionReward(userIdx, difficulty);
+      }
       const before = coins;
       setTournamentReward({ amount: reward, before, after: before + reward });
       setCoins((c) => c + reward);
@@ -5319,8 +5423,9 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // src/achievementProgress.js): no afectan en nada a la clasificación
       // ni al emparejamiento, que siguen calculándose exactamente igual
       // que antes más arriba (standings/points/reward).
-      const trainerIdentity = mode === "C" ? "roulette" : (playAsCustom ? "custom" : userTrainerId);
+      const trainerIdentity = mode === "C" ? "roulette" : mode === "weekly" ? "weekly" : (playAsCustom ? "custom" : userTrainerId);
       const teamSlugs = (mode === "C" && rouletteTeam) ? rouletteTeam.map((e) => e.slug)
+        : (mode === "weekly" && weeklyTeam) ? weeklyTeam.map((e) => e.slug)
         : (playAsCustom && customTrainer) ? customTrainer.team.map((t) => t.slug)
         : (trainer?.team || []);
       // Rareza/tipos del equipo usado, mirando el pool del gacha (única
@@ -5352,7 +5457,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         date: Date.now(),
         mode,
         trainerId: userTrainerId,
-        trainerName: trainer?.name ?? userTrainerId,
+        trainerName: mode === "weekly" ? `${weeklyTheme.title} (Semanal)` : (trainer?.name ?? userTrainerId),
         finalPosition: userIdx + 1,
         points: final[userIdx]?.points ?? 0,
         coinsEarned: reward,
@@ -5361,6 +5466,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         teamRarity,
         teamTypeDiversity3Plus,
         teamSharedType,
+        weeklyThemeId: mode === "weekly" ? weeklyTheme.id : undefined,
         perfectTournament,
         perfectRoundWins,
       });
@@ -5453,7 +5559,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
               <Users size={18} color="#f2b705" /> Modo de torneo
             </h3>
-            <div className="grid sm:grid-cols-3 gap-3">
+            <div className="grid sm:grid-cols-4 gap-3">
               <button
                 onClick={() => customTrainer && handleModeChange("A")}
                 disabled={!customTrainer}
@@ -5492,6 +5598,20 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                 <div className="text-white font-semibold text-sm mb-1">Ruleta Pokémon</div>
                 <div className="text-[11px] text-[#8a8fa3]">Recibes un equipo aleatorio de 6 Pokémon al iniciar el torneo, sorteado del pool completo del gacha.</div>
               </button>
+              <button
+                onClick={() => handleModeChange("weekly")}
+                className="rounded-xl p-4 text-left transition-all"
+                style={{
+                  background: mode === "weekly" ? "linear-gradient(160deg, #f2b70533, #14161f)" : "#14161f",
+                  border: mode === "weekly" ? "1.5px solid #f2b705" : "1px solid #262a3a",
+                }}
+              >
+                <div className="text-white font-semibold text-sm mb-1 flex items-center gap-1.5">
+                  Torneo Semanal
+                  {weeklyCompleted && <Check size={13} color="#5fae5f" />}
+                </div>
+                <div className="text-[11px] text-[#8a8fa3]">Dificultad Maestro fija y una temática distinta cada semana. Recompensa única de {WEEKLY_TOURNAMENT_REWARD} monedas la primera vez que ganes.</div>
+              </button>
             </div>
           </div>
 
@@ -5528,6 +5648,62 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                 </div>
               </div>
             ) : null
+          ) : mode === "weekly" ? (
+            <div className="rounded-xl p-4" style={{ background: "#f2b70514", border: "1px solid #f2b70555" }}>
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <div className="text-white font-semibold text-sm mb-0.5">{weeklyTheme.title}</div>
+                  <div className="text-[11px] text-[#8a8fa3]">{weeklyTheme.description}</div>
+                </div>
+                {weeklyCompleted ? (
+                  <span className="shrink-0 flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full" style={{ background: "#5fae5f22", border: "1px solid #5fae5f66", color: "#5fae5f" }}>
+                    <Check size={12} /> Completado, +{WEEKLY_TOURNAMENT_REWARD} monedas
+                  </span>
+                ) : (
+                  <span className="shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-full" style={{ background: "#f2b70522", border: "1px solid #f2b70555", color: "#f2b705" }}>
+                    +{WEEKLY_TOURNAMENT_REWARD} monedas al ganar
+                  </span>
+                )}
+              </div>
+
+              <div className="text-[11px] text-[#8a8fa3] mb-3">
+                Dificultad Maestro fija y emparejamiento aleatorio fijo. Nueva temática {formatCountdown(getNextWeeklyResetDate() - Date.now())}.
+              </div>
+
+              {weeklyCompleted ? (
+                <div className="text-[11px] text-[#5fae5f]">Ya has ganado el torneo semanal de esta temática. Vuelve la semana que viene para una nueva.</div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-[#8a8fa3]">Tu equipo semanal</span>
+                    <span className="text-xs font-semibold" style={{ color: weeklyTeamValid ? "#5fae5f" : "#8a8fa3" }}>
+                      {weeklyEligibleCollection.length} / {WEEKLY_TEAM_SIZE} Pokémon válidos en tu colección
+                    </span>
+                  </div>
+                  {weeklyTeam ? (
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {weeklyTeam.map((e, i) => (
+                        <span key={i} className="text-[11px] px-2 py-1 rounded-full" style={{ background: "#14161f", border: "1px solid #262a3a", color: "#c7cbdb" }}>
+                          {displayName(e.slug)}{e.shiny ? " ✨" : ""}
+                        </span>
+                      ))}
+                    </div>
+                  ) : weeklyEligibleCollection.length < WEEKLY_TEAM_SIZE ? (
+                    <div className="text-[11px] text-[#ff8a8a] mb-3">
+                      Todavía no puedes participar esta semana: necesitas {WEEKLY_TEAM_SIZE} Pokémon de tu colección que cumplan "{weeklyTheme.title}" y solo tienes {weeklyEligibleCollection.length}.
+                    </div>
+                  ) : null}
+                  <button
+                    onClick={() => setShowWeeklyTeamSelector(true)}
+                    disabled={weeklyEligibleCollection.length < WEEKLY_TEAM_SIZE}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ background: "#f2b70522", border: "1px solid #f2b70566", color: "#f2b705" }}
+                  >
+                    {weeklyTeam ? "Cambiar equipo semanal" : "Elegir equipo semanal"}
+                  </button>
+                </>
+              )}
+            </div>
           ) : (
             <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#a75fd914", border: "1px solid #a75fd955" }}>
               <div className="w-11 h-11 rounded-full flex items-center justify-center text-xl shrink-0" style={{ background: "#a75fd933" }}>
@@ -5540,66 +5716,70 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             </div>
           )}
 
-          <div>
-            <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
-              <Swords size={18} color="#f2b705" /> Dificultad de la CPU
-            </h3>
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(DIFFICULTY_META).map(([key, meta]) => (
-                <button
-                  key={key}
-                  onClick={() => setDifficulty(key)}
-                  className="text-left px-4 py-2.5 rounded-lg text-sm font-medium max-w-[15rem]"
-                  style={{
-                    background: difficulty === key ? "#e3350d22" : "#14161f",
-                    border: difficulty === key ? "1px solid #e3350d" : "1px solid #262a3a",
-                    color: difficulty === key ? "#ff6b4a" : "#c7cbdb",
-                  }}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-semibold">{meta.label}</span>
-                    {meta.rewardMultiplier > 1 && (
-                      <span
-                        className="text-[10px] font-display px-1.5 py-0.5 rounded-full"
-                        style={{ background: "#f2b70522", border: "1px solid #f2b70555", color: "#f2b705" }}
-                      >
-                        Recompensas ×{meta.rewardMultiplier}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-[#8a8fa3] font-normal leading-snug mt-0.5">{meta.desc}</div>
-                </button>
-              ))}
+          {mode !== "weekly" && (
+            <div>
+              <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
+                <Swords size={18} color="#f2b705" /> Dificultad de la CPU
+              </h3>
+              <div className="flex flex-wrap gap-3">
+                {Object.entries(DIFFICULTY_META).map(([key, meta]) => (
+                  <button
+                    key={key}
+                    onClick={() => setDifficulty(key)}
+                    className="text-left px-4 py-2.5 rounded-lg text-sm font-medium max-w-[15rem]"
+                    style={{
+                      background: difficulty === key ? "#e3350d22" : "#14161f",
+                      border: difficulty === key ? "1px solid #e3350d" : "1px solid #262a3a",
+                      color: difficulty === key ? "#ff6b4a" : "#c7cbdb",
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-semibold">{meta.label}</span>
+                      {meta.rewardMultiplier > 1 && (
+                        <span
+                          className="text-[10px] font-display px-1.5 py-0.5 rounded-full"
+                          style={{ background: "#f2b70522", border: "1px solid #f2b70555", color: "#f2b705" }}
+                        >
+                          Recompensas ×{meta.rewardMultiplier}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-[#8a8fa3] font-normal leading-snug mt-0.5">{meta.desc}</div>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
-          <div>
-            <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
-              <ListOrdered size={18} color="#f2b705" /> Modo de enfrentamientos
-            </h3>
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={() => setPairMode("position")}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium"
-                style={{ background: pairMode === "position" ? "#e3350d22" : "#14161f", border: pairMode === "position" ? "1px solid #e3350d" : "1px solid #262a3a", color: pairMode === "position" ? "#ff6b4a" : "#c7cbdb" }}
-              >
-                <ListOrdered size={15} /> Por posición (1º vs 2º, 3º vs 4º...)
-              </button>
-              <button
-                onClick={() => setPairMode("random")}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium"
-                style={{ background: pairMode === "random" ? "#e3350d22" : "#14161f", border: pairMode === "random" ? "1px solid #e3350d" : "1px solid #262a3a", color: pairMode === "random" ? "#ff6b4a" : "#c7cbdb" }}
-              >
-                <Shuffle size={15} /> Aleatorio
-              </button>
+          {mode !== "weekly" && (
+            <div>
+              <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
+                <ListOrdered size={18} color="#f2b705" /> Modo de enfrentamientos
+              </h3>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  onClick={() => setPairMode("position")}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium"
+                  style={{ background: pairMode === "position" ? "#e3350d22" : "#14161f", border: pairMode === "position" ? "1px solid #e3350d" : "1px solid #262a3a", color: pairMode === "position" ? "#ff6b4a" : "#c7cbdb" }}
+                >
+                  <ListOrdered size={15} /> Por posición (1º vs 2º, 3º vs 4º...)
+                </button>
+                <button
+                  onClick={() => setPairMode("random")}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium"
+                  style={{ background: pairMode === "random" ? "#e3350d22" : "#14161f", border: pairMode === "random" ? "1px solid #e3350d" : "1px solid #262a3a", color: pairMode === "random" ? "#ff6b4a" : "#c7cbdb" }}
+                >
+                  <Shuffle size={15} /> Aleatorio
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
 
           <button
             onClick={startTournament}
-            disabled={mode === "A" && !customTrainer}
+            disabled={(mode === "A" && !customTrainer) || (mode === "weekly" && (weeklyCompleted || !weeklyTeamValid))}
             className="flex items-center gap-2 px-6 py-3 rounded-xl font-display text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
           >
@@ -5609,6 +5789,17 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       )}
 
       <TournamentHistoryModal open={showHistory} history={tournamentHistory} playerProfile={playerProfile} onClose={() => setShowHistory(false)} />
+
+      <TeamSelectorModal
+        open={showWeeklyTeamSelector}
+        mode="weekly"
+        collection={collection}
+        api={api}
+        initialSelectedKeys={weeklyTeam ? weeklyTeam.map((e) => collectionEntryKey(e)) : []}
+        filterFn={(c) => speciesMatchesTheme(weeklyTheme, c.slug)}
+        onConfirm={(team) => { setWeeklyTeam(team); setShowWeeklyTeamSelector(false); }}
+        onClose={() => setShowWeeklyTeamSelector(false)}
+      />
 
       {phase === "loading" && (
         <div className="flex flex-col items-center justify-center py-20 text-[#9aa0b4]">
@@ -5821,21 +6012,40 @@ const CUSTOM_TRAINER_MIN_POKEMON = 6;
 // solo el equipo, mismo selector). La identidad de cada Pokémon elegible es
 // slug+shiny (collectionEntryKey), ya que normal y shiny de una misma
 // especie pueden coexistir como entradas distintas de la colección.
-function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, onConfirm, onClose }) {
+function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, filterFn, filterUnmetLabel, onConfirm, onClose }) {
   const [name, setName] = useState("");
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [sprites, setSprites] = useState({});
 
+  // Torneo Semanal (mode="weekly"): solo se puede elegir entre los Pokémon
+  // de la colección que cumplen la temática activa (ver filterFn, pasado
+  // desde TorneoTab vía speciesMatchesTheme). El resto de modos no filtran
+  // nada (filterFn ausente = toda la colección, comportamiento de siempre).
+  const filteredCollection = filterFn ? collection.filter(filterFn) : collection;
+
+  // Ojo: `initialSelectedKeys`/`collection` llegan como arrays nuevos en
+  // cada render del padre (TorneoTab crea `weeklyTeam.map(...)` al vuelo, y
+  // `filteredCollection` de abajo se deriva de un `filterFn` igual de
+  // inestable) — por eso este efecto depende SOLO de `open` (se re-sincroniza
+  // al abrir el modal, no en cada re-render mientras ya está abierto). Meter
+  // esas referencias inestables en el array de dependencias dispararía el
+  // efecto en bucle (set state -> re-render -> nueva referencia -> efecto
+  // otra vez), que es justo lo que pasaba antes de este comentario.
   useEffect(() => {
     if (!open) return;
     setName("");
-    if (mode === "edit") {
+    if (mode === "edit" || mode === "weekly") {
       setSelectedKeys(initialSelectedKeys || []);
     } else {
       setSelectedKeys(collection.length === CUSTOM_TRAINER_MIN_POKEMON ? collection.map(collectionEntryKey) : []);
     }
-  }, [open, mode, collection, initialSelectedKeys]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
+  // Mismo motivo que arriba: depende de `collection` (estable, viene del
+  // estado de App) en vez de `filteredCollection` (nueva referencia en cada
+  // render). Se piden sprites de toda la colección, no solo la filtrada —
+  // es barato (getPokemon ya cachea) y evita depender de un array inestable.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -5859,7 +6069,7 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, o
   }
 
   const trimmedName = name.trim();
-  const canConfirm = mode === "edit"
+  const canConfirm = (mode === "edit" || mode === "weekly")
     ? selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON
     : trimmedName.length > 0 && trimmedName.length <= 20 && selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON;
 
@@ -5869,7 +6079,7 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, o
       const entry = collection.find((c) => collectionEntryKey(c) === key);
       return { slug: entry.slug, shiny: !!entry.shiny };
     });
-    if (mode === "edit") onConfirm(team);
+    if (mode === "edit" || mode === "weekly") onConfirm(team);
     else onConfirm(trimmedName, team);
   }
 
@@ -5884,12 +6094,14 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, o
           <X size={18} />
         </button>
         <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2">
-          <Sparkles size={20} color="#e3350d" /> {mode === "edit" ? "Edita el equipo de tu entrenador" : "Crea tu propio entrenador"}
+          <Sparkles size={20} color="#e3350d" /> {mode === "edit" ? "Edita el equipo de tu entrenador" : mode === "weekly" ? "Elige tu equipo semanal" : "Crea tu propio entrenador"}
         </h3>
         <p className="text-sm text-[#9aa0b4] mb-4">
           {mode === "edit"
             ? "Elige un nuevo equipo de exactamente 6 Pokémon de tu colección. El nombre de tu entrenador no cambia."
-            : "Elige tu nombre y exactamente 6 Pokémon de tu colección. El equipo se podrá editar más adelante."}
+            : mode === "weekly"
+              ? `Elige exactamente 6 Pokémon de tu colección que cumplan la temática de esta semana. ${filterUnmetLabel || ""}`
+              : "Elige tu nombre y exactamente 6 Pokémon de tu colección. El equipo se podrá editar más adelante."}
         </p>
 
         {mode === "create" && (
@@ -5913,7 +6125,7 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, o
           </span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
-          {collection.map((c) => {
+          {filteredCollection.map((c) => {
             const key = collectionEntryKey(c);
             const p = sprites[c.slug];
             const sprite = c.shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
@@ -5947,7 +6159,7 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, o
           className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
         >
-          {mode === "edit" ? "Guardar equipo" : "Crear entrenador"}
+          {mode === "edit" ? "Guardar equipo" : mode === "weekly" ? "Confirmar equipo semanal" : "Crear entrenador"}
         </button>
       </div>
     </div>
@@ -7248,6 +7460,10 @@ export default function App() {
   // src/dailyRewards.js. Comparten una única clave de localStorage y un
   // único "día actual" (reset a las 10:00 hora de Madrid).
   const [dailyRewardsState, setDailyRewardsState] = useState(loadDailyRewardsState);
+  // Torneo Semanal (ver src/weeklyTournaments.js): temáticas ya vistas
+  // (para no repetir la de la semana anterior) y semanas ya completadas
+  // (cobradas), ambas indexadas por weekKey.
+  const [weeklyTournamentState, setWeeklyTournamentState] = useState(loadWeeklyTournamentState);
 
   useEffect(() => {
     try { localStorage.setItem(COINS_STORAGE_KEY, String(coins)); } catch (e) { /* localStorage no disponible */ }
@@ -7260,6 +7476,10 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem(PLAYER_PROFILE_STORAGE_KEY, JSON.stringify(playerProfile)); } catch (e) { /* localStorage no disponible */ }
   }, [playerProfile]);
+
+  useEffect(() => {
+    try { localStorage.setItem(WEEKLY_TOURNAMENT_STORAGE_KEY, JSON.stringify(weeklyTournamentState)); } catch (e) { /* localStorage no disponible */ }
+  }, [weeklyTournamentState]);
 
   // Blindaje contra pérdidas de datos de la colección: NINGUNA función de
   // la app borra entradas hoy (solo se añade una nueva tras una tirada de
@@ -7559,6 +7779,8 @@ export default function App() {
             onTournamentFinished={addTournamentHistoryEntry}
             onCombatMechanics={recordCombatMechanics}
             playerProfile={playerProfile}
+            weeklyTournamentState={weeklyTournamentState}
+            setWeeklyTournamentState={setWeeklyTournamentState}
           />
         </div>
         <div style={{ display: tab === "personajes" ? "block" : "none" }}>

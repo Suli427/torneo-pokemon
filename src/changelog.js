@@ -251,6 +251,13 @@ export const CHANGELOG = [
     detail: "La tabla de recompensa por posición final de los torneos normales (modos A, B y Ruleta Pokémon) se multiplica ahora por ×1 en Normal, ×1.5 en Difícil y ×2 en Maestro, para compensar el reto extra de las dificultades más altas (antes las tres daban exactamente las mismas monedas por la misma posición). Por ejemplo, ganar el torneo (1º puesto) pasa de dar 400 monedas siempre a dar 400/600/800 según la dificultad elegida. El selector de dificultad de la pantalla de configuración del torneo ahora muestra un indicador '×1.5'/'×2' junto a Difícil/Maestro. No afecta a ninguna otra recompensa de la app (Pokédle, recompensa diaria, gacha...).",
     date: "2026-08-17T22:49:26+02:00",
   },
+  {
+    id: 35,
+    title: "Torneos semanales con temática",
+    summary: "Nuevo modo de torneo semanal: una temática distinta cada semana (10 en total), dificultad Maestro fija, y una recompensa única de 1000 monedas la primera vez que lo ganas.",
+    detail: "Nuevo 'Torneo Semanal' como cuarto modo de torneo (junto a Solo tu entrenador/Cualquier entrenador/Ruleta Pokémon): cada semana (lunes 10:00 hora de España hasta el siguiente) toca una de 10 temáticas fijas —9 de tipo (Fuego, Eléctrico, Agua, Planta, Dragón, Siniestro, Hada, Volador, Acero) y una de rareza Común— elegida de forma determinista a partir de la fecha, igual que el Pokémon del día del Pokédle, con una regla para no repetir la temática de la semana anterior. El jugador elige 6 Pokémon de su colección del gacha que cumplan la temática (filtrado en tiempo real en el selector; si no llega a 6 válidos, se indica cuántos le faltan) y combate con dificultad Maestro y emparejamiento aleatorio, ambos fijos. Se puede reintentar sin límite ni penalización mientras no se gane, pero la recompensa de 1000 monedas solo se paga la primera vez que se queda 1º esa semana; tras cobrarla, el torneo de esa semana queda bloqueado hasta la siguiente. Se integra con el historial de torneos existente (nueva categoría 'Torneo Semanal' en las estadísticas por modo) y con la clasificación, sin tocar el motor de combate.",
+    date: "2026-08-18T13:21:21+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
