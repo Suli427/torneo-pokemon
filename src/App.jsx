@@ -5193,6 +5193,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // competitivo genérico como el modo C.
   const [weeklyTeam, setWeeklyTeam] = useState(null);
   const [showWeeklyTeamSelector, setShowWeeklyTeamSelector] = useState(false);
+  // Modo "draft": true en cuanto DraftMode pasa de elegir equipo/confirmar
+  // el aviso a tener una partida realmente en marcha (ver su propio
+  // useEffect con onActiveChange) — usado SOLO para ocultar la cabecera y
+  // el selector de "Modo de torneo" de más abajo mientras tanto, ya que
+  // `phase` (el estado de fase del torneo Swiss normal) nunca cambia
+  // durante un Draft.
+  const [draftInProgress, setDraftInProgress] = useState(false);
   const [difficulty, setDifficulty] = useState("normal");
   const [pairMode, setPairMode] = useState("random");
   const [standings, setStandings] = useState([]);
@@ -5630,6 +5637,19 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     <div className="space-y-6">
       {phase === "setup" && (
         <div className="space-y-6">
+          {/* BUG corregido: esta cabecera y el selector de "Modo de torneo"
+              de más abajo se seguían mostrando encima de la pantalla de
+              combate/progreso del Draft, porque `phase` (el estado de fase
+              del torneo Swiss normal) nunca cambia durante una partida de
+              Draft — se queda en "setup" a propósito, ya que Draft no usa
+              standings/finalizeRound. Se ocultan aparte, vía
+              `draftInProgress` (ver su declaración: lo reporta DraftMode
+              en cuanto pasa de elegir equipo/confirmar el aviso a tener
+              una partida en marcha), dejando SOLO la pantalla del Draft
+              visible en ese caso — igual que ya ocurre en los demás modos
+              al arrancar de verdad (fase "loading"/"ready"/"finished"). */}
+          {!draftInProgress && (
+          <>
           <div className="flex items-start justify-between flex-wrap gap-3">
             <div>
               <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2">
@@ -5717,6 +5737,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               </button>
             </div>
           </div>
+          </>
+          )}
 
           {mode === "draft" ? (
             <DraftMode
@@ -5728,6 +5750,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               onCombatMechanics={onCombatMechanics}
               onDraftResult={onDraftResult}
               playerProfile={playerProfile}
+              onActiveChange={setDraftInProgress}
             />
           ) : (
           <>
@@ -6105,8 +6128,22 @@ const DRAFT_RIVAL_ID = "draft-rival";
 // bucle de estado independiente y solo toma prestado lo genérico del motor
 // (api.simulateMatch vía InteractiveBattle, api.primeMoveset,
 // api.buildCompetitiveMoveset).
-function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile }) {
+function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile, onActiveChange }) {
   const [phase, setPhase] = useState("team-select"); // team-select, confirm, loading, battle, swap, post-swap, summary
+
+  // BUG corregido: la cabecera "Elige tu entrenador" y la cuadrícula de
+  // "Modo de torneo" (definidas en TorneoTab, no aquí) se seguían
+  // mostrando encima del Draft en cuanto empezaba una partida, porque
+  // TorneoTab las envuelve en `phase === "setup"` (su PROPIO estado de
+  // fase, el del torneo Swiss normal) y el modo Draft nunca toca ese
+  // estado — se queda en "setup" durante TODO el Draft, a propósito, ya
+  // que Draft no usa standings/finalizeRound. TorneoTab necesita saber,
+  // aparte, si el Draft está "activo de verdad" (más allá de elegir
+  // equipo/confirmar el aviso) para ocultar esa cabecera+selector solo
+  // en ese caso, sin tocar el resto del flujo de los modos A/B/C/weekly.
+  useEffect(() => {
+    if (onActiveChange) onActiveChange(phase !== "team-select" && phase !== "confirm");
+  }, [phase, onActiveChange]);
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [confirmChecked, setConfirmChecked] = useState(false);
   const [draftTeam, setDraftTeam] = useState(null); // [{ slug, shiny, moves, origin: "collection"|"draft", originalKey? }]
@@ -6122,6 +6159,32 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
   const [summaryAdditions, setSummaryAdditions] = useState([]);
   const [summaryRemovals, setSummaryRemovals] = useState([]);
   const [sprites, setSprites] = useState({});
+
+  // BUG corregido: trainerA/trainerB se construían como objetos literales
+  // nuevos en cada render de DraftMode (dentro del bloque `if (phase ===
+  // "battle")`, ver más abajo). Como TorneoTab (y por tanto DraftMode, que
+  // sigue montado incluso mientras el usuario está en otra pestaña — ver el
+  // patrón display:none de App) se vuelve a renderizar por motivos
+  // totalmente ajenos al Draft (el tick de 60s de la cuenta atrás del
+  // Torneo Semanal, cualquier cambio de `coins`/`collection`/etc.),
+  // InteractiveBattle recibía un trainerA/trainerB con una referencia
+  // NUEVA cada vez aunque los datos fueran idénticos; su useEffect de
+  // preparación de equipo depende de esas referencias (`[api, trainerA,
+  // trainerB, userSide, difficulty]`) y se disparaba de nuevo en cada uno
+  // de esos renders ajenos, volviendo a llamar a api.prepareTeam a mitad de
+  // combate — eso es lo que se veía como "revive y cura a todo el equipo
+  // de la nada". Memoizar aquí, dependiendo solo de los datos que de
+  // verdad deben regenerar el objeto (el equipo actual y el rival de esta
+  // ronda), mantiene la misma referencia estable entre renders mientras el
+  // combate sigue en curso, así que ese efecto ya no se re-dispara solo.
+  const trainerA = useMemo(() => {
+    if (!draftTeam) return null;
+    return { id: DRAFT_USER_ID, name: playerProfile?.nickname || "Tu equipo", color: "#4a90d9", subtitle: "Draft", team: draftTeam.map((p) => p.slug) };
+  }, [draftTeam, playerProfile]);
+  const trainerB = useMemo(() => {
+    if (!opponentMeta) return null;
+    return { id: DRAFT_RIVAL_ID, name: opponentMeta.name, color: opponentMeta.color, subtitle: opponentMeta.subtitle, team: opponentMeta.team.map((p) => p.slug) };
+  }, [opponentMeta]);
 
   // Sprites para el selector de equipo inicial (colección completa) y,
   // según la fase, también los del equipo actual/del rival — se piden todos
@@ -6388,9 +6451,7 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
     </div>
   );
 
-  if (phase === "battle" && opponentMeta) {
-    const trainerA = { id: DRAFT_USER_ID, name: playerProfile?.nickname || "Tu equipo", color: "#4a90d9", subtitle: "Draft", team: draftTeam.map((p) => p.slug) };
-    const trainerB = { id: DRAFT_RIVAL_ID, name: opponentMeta.name, color: opponentMeta.color, subtitle: opponentMeta.subtitle, team: opponentMeta.team.map((p) => p.slug) };
+  if (phase === "battle" && opponentMeta && trainerA && trainerB) {
     return (
       <div className="space-y-4">
         {draftStatusBar}
