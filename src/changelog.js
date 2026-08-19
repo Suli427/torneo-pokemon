@@ -300,6 +300,13 @@ export const CHANGELOG = [
     detail: "Se elimina la pantalla de selección libre de 6 Pokémon: el Draft ahora usa siempre el equipo actual del entrenador propio (deshabilitado si aún no tienes uno creado). Al terminar, el equipo del entrenador se sustituye por el equipo final del Draft en la misma operación que actualiza la colección, así que un Pokémon perdido en el Draft nunca puede quedar como referencia rota en el equipo guardado; los intercambios marcados como duplicado (excludedFromReward) apuntan a la entrada ya existente de esa especie en vez de duplicarla.",
     date: "2026-08-19T13:36:22+02:00",
   },
+  {
+    id: 42,
+    title: "Botón para vaciar el equipo del entrenador propio",
+    summary: "Nuevo botón \"Borrar equipo\" en Personajes que vacía los 6 Pokémon del entrenador propio sin borrar al entrenador ni tocar tu colección.",
+    detail: "Se añade un botón destructivo \"Borrar equipo\" junto a \"Editar equipo\", con confirmación explícita antes de aplicarse. Al confirmar, el entrenador propio mantiene su nombre pero se queda sin equipo asignado hasta volver a elegir 6 Pokémon con el mismo editor ya existente; la colección del usuario no se ve afectada en ningún caso. Mientras el equipo esté vacío, el entrenador propio queda inseleccionable en Modo A y en Draft, mostrando un aviso claro en ambos sitios en vez de romperse.",
+    date: "2026-08-19T13:45:41+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
