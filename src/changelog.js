@@ -335,6 +335,13 @@ export const CHANGELOG = [
     detail: "Se sustituye la URL del campo `sprite` de Giovanni por giovanni-lgpe.png (confirmado que carga correctamente), visible en Personajes, el selector de Torneo y cualquier otro sitio donde ya se mostraba su sprite anterior.",
     date: "2026-08-19T18:42:22+02:00",
   },
+  {
+    id: 47,
+    title: "Avatar del entrenador propio sincronizado con tu perfil",
+    summary: "El entrenador propio ya muestra el mismo avatar configurado en tu perfil de jugador (emoji o sprite de Showdown), en vez de un círculo con su inicial, y se actualiza solo si cambias el avatar más adelante.",
+    detail: "Se sustituye el círculo de iniciales del entrenador propio por el avatar VIGENTE del perfil del jugador en Personajes, el selector de Torneo (modo A) y la clasificación del torneo, leyéndolo en cada render en vez de guardar una copia aparte: si más adelante cambias tu avatar de perfil, el entrenador propio lo refleja automáticamente en todos esos sitios sin tocar nada más. Los 20 entrenadores del roster no se ven afectados, siguen usando su propio sprite ya asignado con normalidad.",
+    date: "2026-08-19T18:49:15+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

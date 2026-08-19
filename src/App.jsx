@@ -5027,7 +5027,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
 // onError>` que TrainerAvatar. `key={avatar.url}` reinicia ese estado de
 // error al cambiar de sprite (si no, un error previo se quedaría pegado
 // aunque el usuario eligiera una URL distinta que sí funciona).
-function PlayerAvatar({ avatar, size = 28 }) {
+function PlayerAvatar({ avatar, size = 28, color = PLAYER_AVATAR_COLOR }) {
   const [imgError, setImgError] = useState(false);
   const isSprite = avatar?.type === "sprite" && !!avatar.url;
   // Reinicia el estado de error al cambiar de URL (si no, un fallo previo
@@ -5038,7 +5038,7 @@ function PlayerAvatar({ avatar, size = 28 }) {
     return (
       <span
         className="rounded-full flex items-center justify-center shrink-0 overflow-hidden"
-        style={{ width: size, height: size, background: PLAYER_AVATAR_COLOR + "33" }}
+        style={{ width: size, height: size, background: color + "33" }}
       >
         <img src={avatar.url} alt="avatar" className="w-full h-full object-contain" onError={() => setImgError(true)} />
       </span>
@@ -5048,7 +5048,7 @@ function PlayerAvatar({ avatar, size = 28 }) {
   return (
     <span
       className="rounded-full flex items-center justify-center shrink-0"
-      style={{ width: size, height: size, fontSize: size * 0.55, background: PLAYER_AVATAR_COLOR + "33" }}
+      style={{ width: size, height: size, fontSize: size * 0.55, background: color + "33" }}
     >
       {emojiValue}
     </span>
@@ -5063,9 +5063,21 @@ function PlayerAvatar({ avatar, size = 28 }) {
 // una URL que exista pero falle al cargar (imagen rota/red caída) — este
 // segundo caso se detecta en el propio `<img onError>`, igual que ya se
 // hace para los sprites de Pokémon en el resto de la app.
-function TrainerAvatar({ trainer, size = 44, className = "" }) {
+//
+// `playerAvatar` (opcional): avatar ACTUAL del perfil del jugador
+// ({type:"emoji",value} o {type:"sprite",url}, ver normalizePlayerAvatar).
+// Cuando se pasa, tiene prioridad sobre `trainer.sprite`/iniciales — se usa
+// SOLO para el slot que representa al entrenador propio del usuario (ver
+// `isCustomTrainer` en el reskin de effectiveTrainers), para que su avatar
+// esté siempre sincronizado con el del perfil sin guardar ninguna copia
+// aparte: se lee el valor vigente en cada render, así que un cambio de
+// avatar de perfil se refleja aquí automáticamente.
+function TrainerAvatar({ trainer, size = 44, className = "", playerAvatar = null }) {
   const [imgError, setImgError] = useState(false);
-  const showSprite = !!trainer.sprite && !imgError;
+  const spriteUrl = playerAvatar?.type === "sprite" ? playerAvatar.url : trainer.sprite;
+  useEffect(() => { setImgError(false); }, [spriteUrl]);
+  const showSprite = !!spriteUrl && !imgError;
+  const emojiOverride = playerAvatar?.type === "emoji" ? playerAvatar.value : null;
   return (
     <div
       className={`rounded-full flex items-center justify-center font-display shrink-0 overflow-hidden ${className}`}
@@ -5073,13 +5085,13 @@ function TrainerAvatar({ trainer, size = 44, className = "" }) {
     >
       {showSprite ? (
         <img
-          src={trainer.sprite}
+          src={spriteUrl}
           alt={trainer.name}
           className="w-full h-full object-contain"
           onError={() => setImgError(true)}
         />
       ) : (
-        trainer.name[0]
+        emojiOverride || trainer.name[0]
       )}
     </div>
   );
@@ -5681,7 +5693,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
     : (mode === "weekly" && weeklyTeam)
       ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: `${weeklyTheme.title} (Semanal)`, team: weeklyTeam.map((e) => e.slug), subtitle: "Torneo Semanal", sprite: null } : t)
       : (playAsCustom && customTrainer)
-        ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador", sprite: null } : t)
+        // `isCustomTrainer: true` es la marca que usan los sitios que
+        // renderizan este slot (selector de modo B, clasificación) para
+        // pasarle el avatar VIGENTE del perfil del jugador a TrainerAvatar
+        // en vez de su `sprite` (que se deja en null): así el avatar del
+        // entrenador propio queda sincronizado con el del perfil sin
+        // guardar ninguna copia aparte (ver TrainerAvatar/PlayerAvatar).
+        ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador", sprite: null, isCustomTrainer: true } : t)
         : TRAINERS;
 
   async function startTournament() {
@@ -6151,9 +6169,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           ) : mode === "A" ? (
             hasCustomTrainerTeam(customTrainer) ? (
               <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#2ecc7114", border: "1px solid #2ecc7155" }}>
-                <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>
-                  {customTrainer.name[0]}
-                </div>
+                <PlayerAvatar avatar={playerProfile.avatar} size={44} color="#2ecc71" />
                 <div>
                   <div className="text-white font-semibold text-sm">Jugarás con {customTrainer.name}</div>
                   <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
@@ -6383,7 +6399,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                     {phase === "finished" && idx === 0 ? <Trophy size={15} color="#f2b705" /> : idx + 1}
                   </span>
                   <span className="flex items-center gap-2 text-white font-medium">
-                    <TrainerAvatar trainer={t} size={24} className="text-[11px]" />
+                    <TrainerAvatar trainer={t} size={24} className="text-[11px]" playerAvatar={t.isCustomTrainer ? playerProfile.avatar : null} />
                     {t.name}
                     {isUser && (
                       <span className="flex items-center gap-1 text-[10px] pl-1.5 pr-2 py-0.5 rounded-full bg-[#e3350d33] text-[#ff8a6a]">
@@ -7279,7 +7295,7 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, f
   );
 }
 
-function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, onClearCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves, onEnsureTrainerMovesetsInitialized }) {
+function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, onClearCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves, onEnsureTrainerMovesetsInitialized, playerProfile }) {
   const [sprites, setSprites] = useState({});
   const [confirmTrainer, setConfirmTrainer] = useState(null);
   const [successName, setSuccessName] = useState(null);
@@ -7420,7 +7436,7 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
         <div className="w-full rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
           <div className="flex items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg" style={{ background: "#2ecc7133", color: "#2ecc71" }}>{customTrainer.name[0]}</div>
+              <PlayerAvatar avatar={playerProfile.avatar} size={44} color="#2ecc71" />
               <div>
                 <div className="text-white font-semibold flex items-center gap-2">
                   {customTrainer.name}
@@ -9083,6 +9099,7 @@ export default function App() {
             ownedTrainerMovesets={ownedTrainerMovesets}
             onUpdateOwnedTrainerMoves={updateOwnedTrainerMoves}
             onEnsureTrainerMovesetsInitialized={ensureOwnedTrainerMovesetsInitialized}
+            playerProfile={playerProfile}
           />
         </div>
         <div style={{ display: tab === "pokemon" ? "block" : "none" }}>
