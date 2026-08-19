@@ -187,7 +187,33 @@ const PLAYER_NICKNAME_MAX_LENGTH = 16;
 // selector de color aparte y reutiliza el mismo patrón visual del roster.
 const PLAYER_AVATAR_EMOJIS = ["⚡", "🔥", "💧", "🌿", "🐉", "👾", "🦊", "🐺", "🦁", "🐯", "🐲", "✨", "🌟", "🎯", "🛡️", "🏆"];
 const PLAYER_AVATAR_COLOR = "#e3350d";
-const DEFAULT_PLAYER_PROFILE = { nickname: "Entrenador", avatar: PLAYER_AVATAR_EMOJIS[0] };
+const TRAINER_SPRITE_BASE_URL = "https://play.pokemonshowdown.com/sprites/trainers/";
+// El avatar del jugador es { type: "emoji", value } o { type: "sprite", url
+// } (ver PlayerAvatar/PlayerProfileModal): antes era directamente el string
+// del emoji, sin distinguir tipo — ver normalizePlayerAvatar para la
+// compatibilidad con perfiles guardados en ese formato antiguo.
+const DEFAULT_PLAYER_PROFILE = { nickname: "Entrenador", avatar: { type: "emoji", value: PLAYER_AVATAR_EMOJIS[0] } };
+
+// Acepta tanto el formato antiguo (avatar = string de emoji suelto) como el
+// nuevo ({type,value}/{type,url}), y descarta cualquier otra cosa cayendo al
+// avatar por defecto — mismo criterio de "cada campo cae a su valor por
+// defecto por separado" que el resto de loadStoredPlayerProfile. La URL de
+// un avatar de tipo sprite se restringe a TRAINER_SPRITE_BASE_URL (nunca se
+// guarda ni se confía en una URL arbitraria, aunque venga de localStorage).
+function normalizePlayerAvatar(raw) {
+  if (typeof raw === "string") {
+    return PLAYER_AVATAR_EMOJIS.includes(raw) ? { type: "emoji", value: raw } : { ...DEFAULT_PLAYER_PROFILE.avatar };
+  }
+  if (raw && typeof raw === "object") {
+    if (raw.type === "emoji" && PLAYER_AVATAR_EMOJIS.includes(raw.value)) {
+      return { type: "emoji", value: raw.value };
+    }
+    if (raw.type === "sprite" && typeof raw.url === "string" && raw.url.startsWith(TRAINER_SPRITE_BASE_URL)) {
+      return { type: "sprite", url: raw.url };
+    }
+  }
+  return { ...DEFAULT_PLAYER_PROFILE.avatar };
+}
 
 // Mismo patrón try/catch que loadStoredCoins/loadStoredPurchasedTrainers. Si
 // el objeto guardado tiene forma inválida (o el emoji ya no está en la
@@ -202,7 +228,7 @@ function loadStoredPlayerProfile() {
         const nickname = typeof parsed.nickname === "string" && parsed.nickname.trim()
           ? parsed.nickname.trim().slice(0, PLAYER_NICKNAME_MAX_LENGTH)
           : DEFAULT_PLAYER_PROFILE.nickname;
-        const avatar = PLAYER_AVATAR_EMOJIS.includes(parsed.avatar) ? parsed.avatar : DEFAULT_PLAYER_PROFILE.avatar;
+        const avatar = normalizePlayerAvatar(parsed.avatar);
         return { nickname, avatar };
       }
     }
@@ -4981,14 +5007,38 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
 // entrenador del roster (background: color+"33", color de acento), pero con
 // el emoji elegido en vez de una inicial. `size` en píxeles para poder
 // reutilizarlo tanto en la cabecera (más grande) como en badges pequeños
-// (clasificación/historial).
+// (clasificación/historial). `avatar` es { type: "emoji", value } o
+// { type: "sprite", url } (ver normalizePlayerAvatar). Para tipo sprite, si
+// la URL falla al cargar (guardada de una partida anterior y ya no
+// disponible, o cualquier otro fallo de red) cae al emoji por defecto en
+// vez de dejar un hueco roto — se detecta con el mismo patrón de `<img
+// onError>` que TrainerAvatar. `key={avatar.url}` reinicia ese estado de
+// error al cambiar de sprite (si no, un error previo se quedaría pegado
+// aunque el usuario eligiera una URL distinta que sí funciona).
 function PlayerAvatar({ avatar, size = 28 }) {
+  const [imgError, setImgError] = useState(false);
+  const isSprite = avatar?.type === "sprite" && !!avatar.url;
+  // Reinicia el estado de error al cambiar de URL (si no, un fallo previo
+  // se quedaría "pegado" aunque el usuario eligiera después un sprite
+  // distinto que sí carga).
+  useEffect(() => { setImgError(false); }, [avatar?.url]);
+  if (isSprite && !imgError) {
+    return (
+      <span
+        className="rounded-full flex items-center justify-center shrink-0 overflow-hidden"
+        style={{ width: size, height: size, background: PLAYER_AVATAR_COLOR + "33" }}
+      >
+        <img src={avatar.url} alt="avatar" className="w-full h-full object-contain" onError={() => setImgError(true)} />
+      </span>
+    );
+  }
+  const emojiValue = avatar?.type === "emoji" ? avatar.value : PLAYER_AVATAR_EMOJIS[0];
   return (
     <span
       className="rounded-full flex items-center justify-center shrink-0"
       style={{ width: size, height: size, fontSize: size * 0.55, background: PLAYER_AVATAR_COLOR + "33" }}
     >
-      {avatar}
+      {emojiValue}
     </span>
   );
 }
@@ -5023,20 +5073,41 @@ function TrainerAvatar({ trainer, size = 44, className = "" }) {
   );
 }
 
+// Entrenadores del roster con sprite real ya validado (ver TRAINERS): se
+// reutilizan tal cual como accesos rápidos en la pestaña "Sprite de
+// entrenador" de abajo, para que el jugador pueda elegir uno de un vistazo
+// sin tener que escribir ningún nombre.
+const PLAYER_SPRITE_QUICK_PICKS = TRAINERS.filter((t) => t.sprite);
+
 // Modal de configuración del perfil del jugador (apodo + avatar): campo de
-// texto con límite de longitud y un selector de emoji en cuadrícula, mismo
-// patrón general de modal que TournamentHistoryModal/NovedadesModal (fondo
-// oscuro, click fuera para cerrar, X arriba a la derecha). El estado local
-// (`draftNickname`/`draftAvatar`) se resetea a los valores vigentes cada vez
-// que se abre, para que cerrar sin guardar no deje cambios a medias.
+// texto con límite de longitud, y un selector de avatar con DOS pestañas —
+// "Emoji" (cuadrícula de siempre) y "Sprite de entrenador" (accesos rápidos
+// a los sprites ya validados del roster, más un buscador libre por nombre
+// de Showdown con vista previa) — mismo patrón general de modal que
+// TournamentHistoryModal/NovedadesModal (fondo oscuro, click fuera para
+// cerrar, X arriba a la derecha). El estado local (`draftNickname`/
+// `draftAvatar`/`avatarTab`) se resetea a los valores vigentes cada vez que
+// se abre, para que cerrar sin guardar no deje cambios a medias.
 function PlayerProfileModal({ open, profile, onClose, onSave }) {
   const [draftNickname, setDraftNickname] = useState(profile.nickname);
   const [draftAvatar, setDraftAvatar] = useState(profile.avatar);
+  const [avatarTab, setAvatarTab] = useState(profile.avatar?.type || "emoji");
+  // Búsqueda libre de sprite: texto tal cual lo escribe el usuario (nombre
+  // de Showdown en inglés). Se normaliza a minúsculas/sin espacios sobrantes
+  // para construir la URL de vista previa, pero NO se fuerza ningún otro
+  // formato (el propio usuario es responsable de escribir el nombre real de
+  // la web, ver el enunciado del pedido) — así sigue funcionando para
+  // slugs con guiones como "darmanitan-standard".
+  const [spriteQuery, setSpriteQuery] = useState("");
+  const [previewStatus, setPreviewStatus] = useState("idle"); // idle | loading | ok | error
 
   useEffect(() => {
     if (open) {
       setDraftNickname(profile.nickname);
       setDraftAvatar(profile.avatar);
+      setAvatarTab(profile.avatar?.type || "emoji");
+      setSpriteQuery(profile.avatar?.type === "sprite" ? (profile.avatar.url.slice(TRAINER_SPRITE_BASE_URL.length, -4)) : "");
+      setPreviewStatus("idle");
     }
   }, [open, profile.nickname, profile.avatar]);
 
@@ -5049,6 +5120,13 @@ function PlayerProfileModal({ open, profile, onClose, onSave }) {
       avatar: draftAvatar,
     });
     onClose();
+  }
+
+  const spriteQueryTrimmed = spriteQuery.trim().toLowerCase();
+  const previewUrl = spriteQueryTrimmed ? `${TRAINER_SPRITE_BASE_URL}${spriteQueryTrimmed}.png` : null;
+
+  function selectSprite(url) {
+    setDraftAvatar({ type: "sprite", url });
   }
 
   return (
@@ -5078,25 +5156,110 @@ function PlayerProfileModal({ open, profile, onClose, onSave }) {
         <div className="text-[11px] text-[#5c6178] mb-4 text-right">{draftNickname.length}/{PLAYER_NICKNAME_MAX_LENGTH}</div>
 
         <label className="block text-[11px] uppercase tracking-wide text-[#8a8fa3] font-semibold mb-1.5">Avatar</label>
-        <div className="grid grid-cols-4 gap-2 mb-5">
-          {PLAYER_AVATAR_EMOJIS.map((emoji) => {
-            const selected = emoji === draftAvatar;
-            return (
+        <div className="flex gap-2 mb-3">
+          {[["emoji", "Emoji"], ["sprite", "Sprite de entrenador"]].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setAvatarTab(key)}
+              className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold"
+              style={{
+                background: avatarTab === key ? PLAYER_AVATAR_COLOR + "22" : "#14161f",
+                border: avatarTab === key ? `1px solid ${PLAYER_AVATAR_COLOR}` : "1px solid #262a3a",
+                color: avatarTab === key ? "#ff8a6a" : "#c7cbdb",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {avatarTab === "emoji" ? (
+          <div className="grid grid-cols-4 gap-2 mb-5">
+            {PLAYER_AVATAR_EMOJIS.map((emoji) => {
+              const selected = draftAvatar?.type === "emoji" && draftAvatar.value === emoji;
+              return (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => setDraftAvatar({ type: "emoji", value: emoji })}
+                  className="rounded-lg flex items-center justify-center text-xl py-2"
+                  style={{
+                    background: selected ? PLAYER_AVATAR_COLOR + "33" : "#14161f",
+                    border: selected ? `1px solid ${PLAYER_AVATAR_COLOR}` : "1px solid #262a3a",
+                  }}
+                >
+                  {emoji}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="mb-5">
+            <div className="text-[10px] text-[#6b7086] mb-1.5">Accesos rápidos (entrenadores del roster)</div>
+            <div className="grid grid-cols-6 gap-1.5 mb-3">
+              {PLAYER_SPRITE_QUICK_PICKS.map((t) => {
+                const selected = draftAvatar?.type === "sprite" && draftAvatar.url === t.sprite;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => selectSprite(t.sprite)}
+                    title={t.name}
+                    className="rounded-lg flex items-center justify-center p-1"
+                    style={{
+                      background: selected ? PLAYER_AVATAR_COLOR + "33" : "#14161f",
+                      border: selected ? `1px solid ${PLAYER_AVATAR_COLOR}` : "1px solid #262a3a",
+                    }}
+                  >
+                    <img src={t.sprite} alt={t.name} className="w-8 h-8 object-contain" />
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="text-[10px] text-[#6b7086] mb-1.5">O busca cualquier otro nombre de Showdown (en inglés)</div>
+            <div className="flex items-center gap-2 mb-2">
+              <input
+                type="text"
+                value={spriteQuery}
+                onChange={(e) => { setSpriteQuery(e.target.value); setPreviewStatus("loading"); }}
+                placeholder="ej. cynthia, red, lucas..."
+                className="flex-1 px-3 py-2 rounded-lg text-sm text-white outline-none"
+                style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+              />
+              {previewUrl && (
+                <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style={{ background: "#0e1018", border: "1px solid #262a3a" }}>
+                  <img
+                    key={previewUrl}
+                    src={previewUrl}
+                    alt="vista previa"
+                    className="w-8 h-8 object-contain"
+                    onLoad={() => setPreviewStatus("ok")}
+                    onError={() => setPreviewStatus("error")}
+                  />
+                </div>
+              )}
+            </div>
+            {previewUrl && previewStatus === "error" && (
+              <div className="text-[11px] text-[#ff8a8a] mb-2">No se ha encontrado ningún sprite con ese nombre.</div>
+            )}
+            {previewUrl && previewStatus === "ok" && (
               <button
-                key={emoji}
                 type="button"
-                onClick={() => setDraftAvatar(emoji)}
-                className="rounded-lg flex items-center justify-center text-xl py-2"
+                onClick={() => selectSprite(previewUrl)}
+                className="w-full py-2 rounded-lg text-xs font-semibold mb-2"
                 style={{
-                  background: selected ? PLAYER_AVATAR_COLOR + "33" : "#14161f",
-                  border: selected ? `1px solid ${PLAYER_AVATAR_COLOR}` : "1px solid #262a3a",
+                  background: draftAvatar?.type === "sprite" && draftAvatar.url === previewUrl ? PLAYER_AVATAR_COLOR + "33" : "#14161f",
+                  border: `1px solid ${PLAYER_AVATAR_COLOR}`,
+                  color: "#ff8a6a",
                 }}
               >
-                {emoji}
+                {draftAvatar?.type === "sprite" && draftAvatar.url === previewUrl ? "✓ Sprite seleccionado" : "Usar este sprite"}
               </button>
-            );
-          })}
-        </div>
+            )}
+          </div>
+        )}
 
         <button
           onClick={handleSave}

@@ -314,6 +314,13 @@ export const CHANGELOG = [
     detail: "Se añade un campo `sprite` a cada entrada de TRAINERS con la URL verificada una a una contra el índice real de play.pokemonshowdown.com/sprites/trainers/ (nunca asumida por intuición), usando siempre la variante base sin sufijo de generación cuando existe. Con sprite real: Cintia (cynthia), Máximo (steven), Dianta (diantha), Lionel (leon), Gary (blue, su nombre de juego), Iris, Ash, Lance, Plubio (wallace), Mirto (alder), Alain, Benito (barry, su nombre en el anime en inglés), Rojo (red), Helio (cyrus), N, Giovanni y Acromo (colress). Sin sprite disponible en Showdown bajo ningún nombre probado, con fallback automático al círculo de iniciales de siempre (también si la imagen llega a fallar al cargar): Paul, Sabino (Sawyer), Trip y Cameron, los cuatro exclusivos del anime sin contrapartida jugable en los juegos. Cuando un entrenador se juega con un nombre \"prestado\" (Ruleta Pokémon) o reskinado (equipo propio/semanal bajo el slot de Ash), el sprite se resuelve o se limpia junto con el nombre para no mostrar una cara que no corresponde.",
     date: "2026-08-19T18:20:34+02:00",
   },
+  {
+    id: 44,
+    title: "Avatar de jugador con sprite de Showdown",
+    summary: "Se corrige el sprite de Paul (mostraba por error a Hop) y ahora puedes usar cualquier sprite de entrenador de Pokémon Showdown como tu avatar, no solo emojis.",
+    detail: "Revisado de nuevo el sprite de Paul: no existe ningún archivo \"paul.png\" ni ninguna variante con sufijo en el índice de Showdown (es un personaje exclusivo del anime sin contrapartida jugable), así que se confirma el fallback al círculo de iniciales ya implementado, sin sustituirlo por el de otro personaje. Además, el modal de perfil del jugador (apodo + avatar) gana una segunda pestaña \"Sprite de entrenador\" junto a la de \"Emoji\" de siempre: incluye accesos rápidos con los 20 sprites del roster ya validados, y un buscador libre por nombre de Showdown con vista previa en vivo (aviso claro si el nombre no existe, en vez de una imagen rota). El avatar se guarda ahora como `{ type: \"emoji\"|\"sprite\", ... }` en el mismo perfil persistido de siempre, con compatibilidad automática para perfiles guardados en el formato antiguo; se muestra correctamente (con su propio fallback si la URL deja de cargar) en la cabecera, la clasificación del torneo y el historial.",
+    date: "2026-08-19T18:35:08+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
