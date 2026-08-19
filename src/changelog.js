@@ -321,6 +321,13 @@ export const CHANGELOG = [
     detail: "Revisado de nuevo el sprite de Paul: no existe ningún archivo \"paul.png\" ni ninguna variante con sufijo en el índice de Showdown (es un personaje exclusivo del anime sin contrapartida jugable), así que se confirma el fallback al círculo de iniciales ya implementado, sin sustituirlo por el de otro personaje. Además, el modal de perfil del jugador (apodo + avatar) gana una segunda pestaña \"Sprite de entrenador\" junto a la de \"Emoji\" de siempre: incluye accesos rápidos con los 20 sprites del roster ya validados, y un buscador libre por nombre de Showdown con vista previa en vivo (aviso claro si el nombre no existe, en vez de una imagen rota). El avatar se guarda ahora como `{ type: \"emoji\"|\"sprite\", ... }` en el mismo perfil persistido de siempre, con compatibilidad automática para perfiles guardados en el formato antiguo; se muestra correctamente (con su propio fallback si la URL deja de cargar) en la cabecera, la clasificación del torneo y el historial.",
     date: "2026-08-19T18:35:08+02:00",
   },
+  {
+    id: 45,
+    title: "Sprite de Hop para Paul, y \"unknown\" como fallback genérico",
+    summary: "Paul ya muestra un sprite real (el de Hop, sustituto elegido a mano) y los entrenadores sin sprite propio encontrado usan el sprite genérico \"unknown\" de Showdown en vez del círculo de iniciales.",
+    detail: "El sprite de Paul se asigna directamente a hop.png (confirmado que carga), como sustituto visual deliberado y no un match real por nombre, ya que Showdown no tiene sprite de Paul bajo ningún nombre. Sabino (Sawyer), Trip y Cameron —los otros entrenadores del roster sin sprite propio encontrado— pasan de sprite: null (fallback a iniciales) a usar unknown.png, el sprite genérico de silueta que Showdown reserva para personajes sin sprite propio, verificado que existe y carga antes de usarlo. El círculo de iniciales se mantiene como último recurso vía el mismo onError ya implementado, por si alguna de estas URLs dejara de estar disponible en el futuro.",
+    date: "2026-08-19T18:39:17+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

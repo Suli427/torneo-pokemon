@@ -44,12 +44,15 @@ const TYPE_ES = {
 // verificado uno a uno con peticiones HTTP directas contra ese índice antes
 // de asignarlo (no se ha asumido ningún nombre de archivo por intuición).
 // Se ha preferido siempre la variante base sin sufijo de generación/juego
-// (ej. "ash.png" en vez de una posible "ash-kalos.png"). `null` cuando NO
-// existe ningún sprite razonable bajo ese nombre en el índice (Paul, Sabino/
-// Sawyer, Trip y Cameron son personajes exclusivos del anime sin
-// contrapartida jugable en los juegos, así que Showdown no tiene sprite
-// para ellos bajo ningún nombre probado): en ese caso la interfaz cae al
-// círculo de iniciales ya existente (ver TrainerAvatar).
+// (ej. "ash.png" en vez de una posible "ash-kalos.png"). Sabino/Sawyer,
+// Trip y Cameron son personajes exclusivos del anime sin contrapartida
+// jugable en los juegos, así que Showdown no tiene sprite para ellos bajo
+// ningún nombre probado: usan el sprite genérico "unknown.png" en su
+// lugar. Paul tampoco tiene sprite real, pero usa a propósito el de "hop"
+// como sustituto visual elegido a mano (no un match por nombre). Si algún
+// entrenador quedara sin ninguna de estas asignaciones (`sprite: null`), la
+// interfaz cae al círculo de iniciales ya existente (ver TrainerAvatar), que
+// también sirve de último recurso si una de estas URLs dejara de cargar.
 const TRAINERS = [
   { id: "cintia", name: "Cintia", subtitle: "Campeona de Sinnoh", locked: true, price: 900, color: "#c9a227",
     sprite: "https://play.pokemonshowdown.com/sprites/trainers/cynthia.png",
@@ -64,7 +67,10 @@ const TRAINERS = [
     sprite: "https://play.pokemonshowdown.com/sprites/trainers/leon.png",
     team: ["charizard", "dragapult", "aegislash-shield", "rillaboom", "cinderace", "mr-rime"] },
   { id: "paul", name: "Paul", subtitle: "Rival de Sinnoh", locked: false, color: "#5b4a8a",
-    sprite: null, // TODO: sprite no encontrado en Showdown (personaje exclusivo del anime)
+    // No existe ningún sprite de Paul en Showdown (personaje exclusivo del
+    // anime): se usa a propósito el de Hop como sustituto visual elegido a
+    // mano (confirmado que carga), no un match real por nombre.
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/hop.png",
     team: ["electivire", "torterra", "ninjask", "ursaring", "ariados", "ambipom"] },
   { id: "gary", name: "Gary", subtitle: "Rival de Kanto", locked: false, color: "#3b6dc7",
     // Gary Oak (nombre del anime) es el mismo personaje que el rival "Blue"
@@ -95,17 +101,23 @@ const TRAINERS = [
     sprite: "https://play.pokemonshowdown.com/sprites/trainers/alain.png",
     team: ["charizard", "bisharp", "unfezant", "weavile", "metagross", "tyranitar"] }, // TODO: revisar equipo (6º Pokémon: Tyranitar, elegido por mí)
   { id: "sabino", name: "Sabino", subtitle: "Rival de Kalos", locked: true, price: 750, color: "#4a90d9",
-    sprite: null, // TODO: sprite no encontrado en Showdown (Sawyer, personaje exclusivo del anime)
+    // Sawyer (personaje exclusivo del anime): sin match real en Showdown,
+    // se usa el sprite genérico "unknown" en vez del círculo de iniciales.
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/unknown.png",
     team: ["sceptile", "slaking", "aegislash-shield", "salamence", "clawitzer", "beedrill"] },
   { id: "benito", name: "Benito", subtitle: "Rival de Sinnoh", locked: true, price: 800, color: "#e08a2e",
     // Benito = Barry en el anime en español; Showdown usa su nombre en inglés.
     sprite: "https://play.pokemonshowdown.com/sprites/trainers/barry.png",
     team: ["empoleon", "roserade", "heracross", "rapidash", "staraptor", "floatzel"] },
   { id: "trip", name: "Trip", subtitle: "Rival de Teselia", locked: true, price: 700, color: "#6c7a89",
-    sprite: null, // TODO: sprite no encontrado en Showdown (personaje exclusivo del anime)
+    // Personaje exclusivo del anime, sin match real en Showdown: sprite
+    // genérico "unknown" en vez del círculo de iniciales.
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/unknown.png",
     team: ["serperior", "conkeldurr", "jellicent-male", "vanilluxe", "darmanitan-standard", "boldore"] },
   { id: "cameron", name: "Cameron", subtitle: "Copa Junior de Teselia", locked: true, price: 750, color: "#8e44ad",
-    sprite: null, // TODO: sprite no encontrado en Showdown (personaje exclusivo del anime)
+    // Personaje exclusivo del anime, sin match real en Showdown: sprite
+    // genérico "unknown" en vez del círculo de iniciales.
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/unknown.png",
     team: ["lucario", "hydreigon", "samurott", "swanna", "flygon", "magnezone"] }, // TODO: revisar equipo (5º y 6º Pokémon)
   { id: "red", name: "Rojo", subtitle: "Maestro Pokémon legendario", locked: true, price: 1400, color: "#7a1f1f",
     sprite: "https://play.pokemonshowdown.com/sprites/trainers/red.png",
