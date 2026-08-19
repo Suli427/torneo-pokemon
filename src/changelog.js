@@ -328,6 +328,13 @@ export const CHANGELOG = [
     detail: "El sprite de Paul se asigna directamente a hop.png (confirmado que carga), como sustituto visual deliberado y no un match real por nombre, ya que Showdown no tiene sprite de Paul bajo ningún nombre. Sabino (Sawyer), Trip y Cameron —los otros entrenadores del roster sin sprite propio encontrado— pasan de sprite: null (fallback a iniciales) a usar unknown.png, el sprite genérico de silueta que Showdown reserva para personajes sin sprite propio, verificado que existe y carga antes de usarlo. El círculo de iniciales se mantiene como último recurso vía el mismo onError ya implementado, por si alguna de estas URLs dejara de estar disponible en el futuro.",
     date: "2026-08-19T18:39:17+02:00",
   },
+  {
+    id: 46,
+    title: "Sprite de Giovanni versión Let's Go",
+    summary: "El sprite de Giovanni pasa a ser el de su versión en Pokémon Let's Go Pikachu/Eevee, en vez del genérico usado hasta ahora.",
+    detail: "Se sustituye la URL del campo `sprite` de Giovanni por giovanni-lgpe.png (confirmado que carga correctamente), visible en Personajes, el selector de Torneo y cualquier otro sitio donde ya se mostraba su sprite anterior.",
+    date: "2026-08-19T18:42:22+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

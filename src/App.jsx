@@ -129,7 +129,7 @@ const TRAINERS = [
     sprite: "https://play.pokemonshowdown.com/sprites/trainers/n.png",
     team: ["zoroark", "carracosta", "klinklang", "vanilluxe", "archeops", "darmanitan-standard"] }, // TODO: revisar equipo (6º Pokémon)
   { id: "giovanni", name: "Giovanni", subtitle: "Líder del Team Rocket", locked: true, price: 1100, color: "#45484c",
-    sprite: "https://play.pokemonshowdown.com/sprites/trainers/giovanni.png",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/giovanni-lgpe.png",
     team: ["nidoking", "nidoqueen", "rhyperior", "persian", "kangaskhan", "crobat"] }, // TODO: revisar equipo (6º Pokémon)
   { id: "colress", name: "Acromo", subtitle: "Científico del Equipo Plasma", locked: true, price: 950, color: "#16a085",
     sprite: "https://play.pokemonshowdown.com/sprites/trainers/colress.png",
