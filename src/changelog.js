@@ -307,6 +307,13 @@ export const CHANGELOG = [
     detail: "Se añade un botón destructivo \"Borrar equipo\" junto a \"Editar equipo\", con confirmación explícita antes de aplicarse. Al confirmar, el entrenador propio mantiene su nombre pero se queda sin equipo asignado hasta volver a elegir 6 Pokémon con el mismo editor ya existente; la colección del usuario no se ve afectada en ningún caso. Mientras el equipo esté vacío, el entrenador propio queda inseleccionable en Modo A y en Draft, mostrando un aviso claro en ambos sitios en vez de romperse.",
     date: "2026-08-19T13:45:41+02:00",
   },
+  {
+    id: 43,
+    title: "Sprites reales de entrenador",
+    summary: "Los 20 entrenadores del roster ahora muestran su sprite real de Pokémon Showdown en vez de un círculo con su inicial, en Personajes, el selector de Torneo y la clasificación.",
+    detail: "Se añade un campo `sprite` a cada entrada de TRAINERS con la URL verificada una a una contra el índice real de play.pokemonshowdown.com/sprites/trainers/ (nunca asumida por intuición), usando siempre la variante base sin sufijo de generación cuando existe. Con sprite real: Cintia (cynthia), Máximo (steven), Dianta (diantha), Lionel (leon), Gary (blue, su nombre de juego), Iris, Ash, Lance, Plubio (wallace), Mirto (alder), Alain, Benito (barry, su nombre en el anime en inglés), Rojo (red), Helio (cyrus), N, Giovanni y Acromo (colress). Sin sprite disponible en Showdown bajo ningún nombre probado, con fallback automático al círculo de iniciales de siempre (también si la imagen llega a fallar al cargar): Paul, Sabino (Sawyer), Trip y Cameron, los cuatro exclusivos del anime sin contrapartida jugable en los juegos. Cuando un entrenador se juega con un nombre \"prestado\" (Ruleta Pokémon) o reskinado (equipo propio/semanal bajo el slot de Ash), el sprite se resuelve o se limpia junto con el nombre para no mostrar una cara que no corresponde.",
+    date: "2026-08-19T18:20:34+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

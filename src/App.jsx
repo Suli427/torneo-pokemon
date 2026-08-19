@@ -39,22 +39,43 @@ const TYPE_ES = {
   steel: "Acero", fairy: "Hada",
 };
 
+// `sprite`: URL al sprite real de Pokémon Showdown para este entrenador
+// (https://play.pokemonshowdown.com/sprites/trainers/{archivo}.png),
+// verificado uno a uno con peticiones HTTP directas contra ese índice antes
+// de asignarlo (no se ha asumido ningún nombre de archivo por intuición).
+// Se ha preferido siempre la variante base sin sufijo de generación/juego
+// (ej. "ash.png" en vez de una posible "ash-kalos.png"). `null` cuando NO
+// existe ningún sprite razonable bajo ese nombre en el índice (Paul, Sabino/
+// Sawyer, Trip y Cameron son personajes exclusivos del anime sin
+// contrapartida jugable en los juegos, así que Showdown no tiene sprite
+// para ellos bajo ningún nombre probado): en ese caso la interfaz cae al
+// círculo de iniciales ya existente (ver TrainerAvatar).
 const TRAINERS = [
   { id: "cintia", name: "Cintia", subtitle: "Campeona de Sinnoh", locked: true, price: 900, color: "#c9a227",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/cynthia.png",
     team: ["garchomp", "spiritomb", "lucario", "milotic", "roserade", "togekiss"] },
   { id: "maximo", name: "Máximo", subtitle: "Campeón de Hoenn", locked: false, color: "#8a7a5b",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/steven.png",
     team: ["metagross", "skarmory", "aggron", "cradily", "armaldo", "claydol"] },
   { id: "dianta", name: "Dianta", subtitle: "Campeona de Kalos", locked: true, price: 1100, color: "#c25b8f",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/diantha.png",
     team: ["gardevoir", "hawlucha", "tyrantrum", "goodra", "aurorus", "gourgeist-average"] },
   { id: "lionel", name: "Lionel", subtitle: "Campeón de Galar", locked: true, price: 1200, color: "#d3652c",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/leon.png",
     team: ["charizard", "dragapult", "aegislash-shield", "rillaboom", "cinderace", "mr-rime"] },
   { id: "paul", name: "Paul", subtitle: "Rival de Sinnoh", locked: false, color: "#5b4a8a",
+    sprite: null, // TODO: sprite no encontrado en Showdown (personaje exclusivo del anime)
     team: ["electivire", "torterra", "ninjask", "ursaring", "ariados", "ambipom"] },
   { id: "gary", name: "Gary", subtitle: "Rival de Kanto", locked: false, color: "#3b6dc7",
+    // Gary Oak (nombre del anime) es el mismo personaje que el rival "Blue"
+    // de los juegos; Showdown solo tiene sprite bajo su nombre de juego.
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/blue.png",
     team: ["blastoise", "umbreon", "arcanine", "nidoking", "scizor", "electivire"] },
   { id: "iris", name: "Iris", subtitle: "Campeona de Teselia", locked: true, price: 1000, color: "#4a8a5b",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/iris.png",
     team: ["dragonite", "excadrill", "emolga", "dragonair", "gigalith", "druddigon"] },
   { id: "ash", name: "Ash", subtitle: "Maestro Pokémon", locked: false, color: "#e3350d",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/ash.png",
     // Pikachu sustituido por Raichu: sin evolucionar, Pikachu se queda muy
     // corto de daño para el nivel del resto del roster (ver moveset propio
     // y coherente en trainerMovesets.js, no heredado del de Pikachu).
@@ -62,30 +83,44 @@ const TRAINERS = [
 
   // --- Entrenadores nuevos (bloqueados, comprables con monedas de torneo) ---
   { id: "lance", name: "Lance", subtitle: "Campeón de Kanto/Johto", locked: true, price: 1050, color: "#8a2e2e",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/lance.png",
     team: ["gyarados", "dragonite", "dragonite", "charizard", "aerodactyl", "kingdra"] },
   { id: "wallace", name: "Plubio", subtitle: "Campeón de Hoenn", locked: true, price: 1150, color: "#1f8a9e",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/wallace.png",
     team: ["milotic", "ludicolo", "whiscash", "gyarados", "wailord", "starmie"] },
   { id: "alder", name: "Mirto", subtitle: "Campeón de Teselia", locked: true, price: 950, color: "#6b8e23",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/alder.png",
     team: ["volcarona", "bouffalant", "vanilluxe", "druddigon", "escavalier", "accelgor"] },
   { id: "alain", name: "Alain", subtitle: "Rival de Kalos", locked: true, price: 900, color: "#b8452f",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/alain.png",
     team: ["charizard", "bisharp", "unfezant", "weavile", "metagross", "tyranitar"] }, // TODO: revisar equipo (6º Pokémon: Tyranitar, elegido por mí)
   { id: "sabino", name: "Sabino", subtitle: "Rival de Kalos", locked: true, price: 750, color: "#4a90d9",
+    sprite: null, // TODO: sprite no encontrado en Showdown (Sawyer, personaje exclusivo del anime)
     team: ["sceptile", "slaking", "aegislash-shield", "salamence", "clawitzer", "beedrill"] },
   { id: "benito", name: "Benito", subtitle: "Rival de Sinnoh", locked: true, price: 800, color: "#e08a2e",
+    // Benito = Barry en el anime en español; Showdown usa su nombre en inglés.
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/barry.png",
     team: ["empoleon", "roserade", "heracross", "rapidash", "staraptor", "floatzel"] },
   { id: "trip", name: "Trip", subtitle: "Rival de Teselia", locked: true, price: 700, color: "#6c7a89",
+    sprite: null, // TODO: sprite no encontrado en Showdown (personaje exclusivo del anime)
     team: ["serperior", "conkeldurr", "jellicent-male", "vanilluxe", "darmanitan-standard", "boldore"] },
   { id: "cameron", name: "Cameron", subtitle: "Copa Junior de Teselia", locked: true, price: 750, color: "#8e44ad",
+    sprite: null, // TODO: sprite no encontrado en Showdown (personaje exclusivo del anime)
     team: ["lucario", "hydreigon", "samurott", "swanna", "flygon", "magnezone"] }, // TODO: revisar equipo (5º y 6º Pokémon)
   { id: "red", name: "Rojo", subtitle: "Maestro Pokémon legendario", locked: true, price: 1400, color: "#7a1f1f",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/red.png",
     team: ["raichu", "charizard", "snorlax", "espeon", "venusaur", "blastoise"] },
   { id: "cyrus", name: "Helio", subtitle: "Líder del Team Galactic", locked: true, price: 1050, color: "#34495e",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/cyrus.png",
     team: ["weavile", "crobat", "gyarados", "honchkrow", "houndoom", "magnezone"] }, // TODO: revisar equipo (6º Pokémon)
   { id: "n", name: "N", subtitle: "Rey del Equipo Plasma", locked: true, price: 1000, color: "#27ae60",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/n.png",
     team: ["zoroark", "carracosta", "klinklang", "vanilluxe", "archeops", "darmanitan-standard"] }, // TODO: revisar equipo (6º Pokémon)
   { id: "giovanni", name: "Giovanni", subtitle: "Líder del Team Rocket", locked: true, price: 1100, color: "#45484c",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/giovanni.png",
     team: ["nidoking", "nidoqueen", "rhyperior", "persian", "kangaskhan", "crobat"] }, // TODO: revisar equipo (6º Pokémon)
   { id: "colress", name: "Acromo", subtitle: "Científico del Equipo Plasma", locked: true, price: 950, color: "#16a085",
+    sprite: "https://play.pokemonshowdown.com/sprites/trainers/colress.png",
     team: ["klinklang", "escavalier", "beheeyem", "magnezone", "metang", "porygon-z"] }, // TODO: revisar equipo (6º Pokémon)
 ];
 
@@ -4958,6 +4993,36 @@ function PlayerAvatar({ avatar, size = 28 }) {
   );
 }
 
+// Avatar de un entrenador del roster (TRAINERS/effectiveTrainers): sprite
+// real de Pokémon Showdown si `trainer.sprite` existe, con el círculo de
+// iniciales de siempre (mismo patrón visual que PlayerAvatar: fondo
+// color+"33", borde/texto en `color`) como fallback tanto para
+// entrenadores sin sprite conocido (`sprite: null`, ver TRAINERS) como para
+// una URL que exista pero falle al cargar (imagen rota/red caída) — este
+// segundo caso se detecta en el propio `<img onError>`, igual que ya se
+// hace para los sprites de Pokémon en el resto de la app.
+function TrainerAvatar({ trainer, size = 44, className = "" }) {
+  const [imgError, setImgError] = useState(false);
+  const showSprite = !!trainer.sprite && !imgError;
+  return (
+    <div
+      className={`rounded-full flex items-center justify-center font-display shrink-0 overflow-hidden ${className}`}
+      style={{ width: size, height: size, fontSize: size * 0.45, background: trainer.color + "33", color: trainer.color }}
+    >
+      {showSprite ? (
+        <img
+          src={trainer.sprite}
+          alt={trainer.name}
+          className="w-full h-full object-contain"
+          onError={() => setImgError(true)}
+        />
+      ) : (
+        trainer.name[0]
+      )}
+    </div>
+  );
+}
+
 // Modal de configuración del perfil del jugador (apodo + avatar): campo de
 // texto con límite de longitud y un selector de emoji en cuadrícula, mismo
 // patrón general de modal que TournamentHistoryModal/NovedadesModal (fondo
@@ -5413,9 +5478,16 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // puramente cosmético, para dar sabor a la clasificación de este modo;
   // el historial de torneos sigue guardando "Ruleta Pokémon" como modo,
   // nunca el nombre prestado (ver finalizeRound, no se toca aquí).
+  // `sprite` se trata igual que `name`/`color`/`subtitle` en cada reskin: el
+  // slot "ash" reskinado con un equipo aleatorio/propio ya no es realmente
+  // Ash, así que su sprite se limpia a `null` (cae a las iniciales, ver
+  // TrainerAvatar) para no mostrar la cara de Ash bajo un nombre distinto;
+  // el rival con nombre "prestado" en modo C, en cambio, SÍ toma prestado
+  // también el sprite real del entrenador del que toma nombre/color, por la
+  // misma razón de coherencia visual.
   const effectiveTrainers = (mode === "C" && rouletteTeam)
     ? TRAINERS.map((t) => {
-        if (t.id === "ash") return { ...t, name: "Ruleta Pokémon", team: rouletteTeam.map((e) => e.slug), subtitle: "Equipo aleatorio" };
+        if (t.id === "ash") return { ...t, name: "Ruleta Pokémon", team: rouletteTeam.map((e) => e.slug), subtitle: "Equipo aleatorio", sprite: null };
         const rivalTeam = rouletteRivalTeams?.[t.id];
         if (rivalTeam) {
           const borrowedId = rouletteRivalNames?.[t.id];
@@ -5424,6 +5496,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             ...t,
             name: borrowed?.name ?? t.name,
             color: borrowed?.color ?? t.color,
+            sprite: borrowed?.sprite ?? null,
             subtitle: borrowed?.subtitle ?? "Equipo aleatorio",
             team: rivalTeam.map((e) => e.slug),
           };
@@ -5431,9 +5504,9 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         return t;
       })
     : (mode === "weekly" && weeklyTeam)
-      ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: `${weeklyTheme.title} (Semanal)`, team: weeklyTeam.map((e) => e.slug), subtitle: "Torneo Semanal" } : t)
+      ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: `${weeklyTheme.title} (Semanal)`, team: weeklyTeam.map((e) => e.slug), subtitle: "Torneo Semanal", sprite: null } : t)
       : (playAsCustom && customTrainer)
-        ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador" } : t)
+        ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador", sprite: null } : t)
         : TRAINERS;
 
   async function startTournament() {
@@ -5894,10 +5967,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                     border: (userTrainerId === t.id && !playAsCustom) ? `1.5px solid ${t.color}` : "1px solid #262a3a",
                   }}
                 >
-                  <div className="w-9 h-9 rounded-full flex items-center justify-center font-display text-sm mb-2"
-                       style={{ background: t.color + "33", color: t.color }}>
-                    {t.name[0]}
-                  </div>
+                  <TrainerAvatar trainer={t} size={36} className="text-sm mb-2" />
                   <div className="text-white font-semibold text-sm">{t.name}</div>
                   <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
                 </button>
@@ -6138,7 +6208,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                     {phase === "finished" && idx === 0 ? <Trophy size={15} color="#f2b705" /> : idx + 1}
                   </span>
                   <span className="flex items-center gap-2 text-white font-medium">
-                    <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-display" style={{ background: t.color + "33", color: t.color }}>{t.name[0]}</span>
+                    <TrainerAvatar trainer={t} size={24} className="text-[11px]" />
                     {t.name}
                     {isUser && (
                       <span className="flex items-center gap-1 text-[10px] pl-1.5 pr-2 py-0.5 rounded-full bg-[#e3350d33] text-[#ff8a6a]">
@@ -7106,7 +7176,7 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
           return (
             <div key={t.id} className="rounded-xl p-4 relative overflow-hidden" style={{ background: "#14161f", border: "1px solid #262a3a", opacity: unlocked ? 1 : 0.6 }}>
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-11 h-11 rounded-full flex items-center justify-center font-display text-lg" style={{ background: t.color + "33", color: t.color }}>{t.name[0]}</div>
+                <TrainerAvatar trainer={t} size={44} className="text-lg" />
                 <div>
                   <div className="text-white font-semibold flex items-center gap-2">{t.name} {!unlocked && <Lock size={13} color="#8a8fa3" />}</div>
                   <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
