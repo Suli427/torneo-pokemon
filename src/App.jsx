@@ -617,14 +617,29 @@ const RECOVERY_MOVE_NAMES = new Set([
   "morning-sun", "synthesis", "rest", "shore-up", "wish", "heal-order",
 ]);
 
-// Movimientos que sacrifican al propio usuario (lo dejan a 0 PS) como parte
-// de su efecto: a diferencia de OHKO (meta.category="ohko", ver isOHKO), no
-// hay ningún flag estructurado en PokeAPI para esto, así que se hardcodea
-// aquí igual que el resto de listas de excepción del proyecto. Se usa SOLO
-// para desprioritizar su elección en el moveset competitivo (ver
-// buildCompetitiveMoveset/damagePenalty), nunca para bloquear su uso real
-// en combate — el motor de combate no se toca en este cambio.
-const SELF_KO_MOVES = new Set(["explosion", "self-destruct", "misty-explosion"]);
+// Movimientos que dejan a 0 PS a quien los usa como parte de su efecto: a
+// diferencia de OHKO (meta.category="ohko", ver isOHKO), no hay ningún flag
+// estructurado en PokeAPI para esto, así que se hardcodea aquí igual que el
+// resto de listas de excepción del proyecto. Se usa tanto para
+// desprioritizar su elección en el moveset competitivo (ver
+// buildCompetitiveMoveset/damagePenalty) como, ahora, para el motor de
+// combate real (ver executeMoveWithSelfKO): el usuario queda debilitado
+// SIEMPRE al usarlos, acierte, falle o quede bloqueado por Protección — el
+// coste es del propio acto de usar el movimiento, no del resultado sobre el
+// rival.
+//
+// Otros candidatos revisados y descartados A PROPÓSITO (mismo "el usuario
+// siempre se debilita", pero por una razón distinta cada uno):
+//  - Proeza (final-gambit): su power viene null en la API (daño = PS
+//    actuales del usuario, no modelado por ninguna fórmula ya existente del
+//    motor); añadirla aquí sin esa fórmula la dejaría "debilitando pero sin
+//    hacer daño real", peor que no tocarla. Se deja fuera hasta que se pida
+//    implementar su fórmula de daño en una sesión aparte.
+//  - Vínculo Fatal (memento): mismo "el usuario siempre se debilita", pero
+//    es un movimiento de ESTADO (no hace daño, solo baja stats del rival),
+//    así que no pasa por este mismo camino de código (el de movimientos de
+//    daño) y no se pidió tocar esa mecánica en esta sesión.
+const SELF_KO_MOVES = new Set(["explosion", "self-destruct", "mind-blown", "misty-explosion"]);
 
 // Un movimiento es "fiable" para el moveset competitivo (ver
 // buildCompetitiveMoveset) si nunca falla (accuracy null) o si su precisión
@@ -724,18 +739,22 @@ const FIXED_DAMAGE_MOVES = { "dragon-rage": 40, "sonic-boom": 20 };
 // estado no volátil.
 const YAWN_MOVES = new Set(["yawn"]);
 
-// Movimientos de "dos turnos con invulnerabilidad" (Golpe Fantasma/Phantom
-// Force, Cavar/Dig — usado como movimiento por defecto de tipo Tierra en
-// DEFAULT_MOVES_BY_TYPE, así que sí está en uso real pese al comentario
-// anterior; Fly/Dive/Bounce comparten la misma mecánica real pero no están
-// en uso en el roster actual, añadir su nombre a este set basta para
-// extenderlo el día que se necesiten). El primer turno el usuario
-// "desaparece" (invulnerable, sin daño); el segundo se repite el mismo
-// movimiento automáticamente (reutilizando lockedMove, el mismo campo que
-// ya usan los movimientos de furia) y golpea con normalidad. Ver
-// CHARGE_MOVES_VULNERABLE más abajo para el grupo PARALELO de movimientos
-// de carga que NO son invulnerables (Sky Attack y similares).
-const TWO_TURN_MOVES = new Set(["phantom-force", "dig"]);
+// Movimientos de "dos turnos con invulnerabilidad": familia completa de la
+// saga (Golpe Fantasma/Phantom Force y Cavar/Dig ya estaban — Cavar se usa
+// como movimiento por defecto de tipo Tierra en DEFAULT_MOVES_BY_TYPE, así
+// que sí está en uso real pese a lo que decía un comentario anterior aquí;
+// Buceo/Dive, Vuelo/Fly, Rebote/Bounce y Sombra Vil/Shadow Force no
+// aparecen en ningún moveset FIJO del roster actual, pero comparten
+// exactamente la misma mecánica real y SÍ son alcanzables por el moveset
+// competitivo/aleatorio algorítmico o por el editor manual de la colección
+// para cualquiera de las ~480 especies del pool, así que se cubren aquí
+// igual). El primer turno el usuario "desaparece" (invulnerable, sin
+// daño); el segundo se repite el mismo movimiento automáticamente
+// (reutilizando lockedMove, el mismo campo que ya usan los movimientos de
+// furia) y golpea con normalidad. Ver CHARGE_MOVES_VULNERABLE más abajo
+// para el grupo PARALELO de movimientos de carga que NO son invulnerables
+// (Sky Attack y similares).
+const TWO_TURN_MOVES = new Set(["phantom-force", "dig", "dive", "fly", "bounce", "shadow-force"]);
 
 // Movimientos de carga de dos turnos SIN invulnerabilidad: el primer turno
 // tampoco hace daño, pero a diferencia de TWO_TURN_MOVES el usuario SÍ
@@ -3135,6 +3154,28 @@ function useApiCache() {
     }
   }, [executeMove]);
 
+  // Envoltorio final (por encima de executeMoveWithTerrainPulse) para
+  // Explosión/Autodestrucción y similares (ver SELF_KO_MOVES): el usuario
+  // queda debilitado SIEMPRE tras usarlos, acierte, falle o quede
+  // bloqueado por Protección — por eso se resuelve aquí, envolviendo TODO
+  // el resultado de executeMove, en vez de dentro de executeMove mismo
+  // (que tiene muchos puntos de retorno distintos según precisión/
+  // Protección/tipo de movimiento, y repetir esta lógica en cada uno sería
+  // frágil). Si el usuario ya estaba a 0 PS por cualquier otro motivo
+  // (no debería pasar, un Pokémon debilitado no llega a actuar) no hace
+  // nada de más, `pushFaintOnce` ya protege contra el mensaje duplicado.
+  const executeMoveWithSelfKO = useCallback(async (attacker, defender, move, weather, extra) => {
+    const result = await executeMoveWithTerrainPulse(attacker, defender, move, weather, extra);
+    if (SELF_KO_MOVES.has(move.name) && attacker.hp > 0) {
+      attacker.hp = 0;
+      const events = [...(result.events || [])];
+      events.push({ type: "statusText", text: `¡${attacker.name} también ha quedado debilitado por la explosión!`, inline: false });
+      pushFaintOnce(attacker, events);
+      return { ...result, events };
+    }
+    return result;
+  }, [executeMoveWithTerrainPulse]);
+
   // Resuelve un único turno: ambos movimientos ya elegidos, orden por
   // prioridad/velocidad (con parálisis afectando la velocidad efectiva),
   // ejecuta cada ataque y aplica el daño residual de quemadura/veneno al
@@ -3217,7 +3258,7 @@ function useApiCache() {
       // executeMove: se detecta aquí (único punto de salida de esta
       // llamada) comparando el estado del objetivo antes/después.
       const defenderWasFrozen = defender.status === "freeze";
-      const result = await executeMoveWithTerrainPulse(attacker, defender, move, weather, { suckerPunchFails });
+      const result = await executeMoveWithSelfKO(attacker, defender, move, weather, { suckerPunchFails });
       let inlineEffect = null;
       const extraEvents = [];
       for (const ev of result.events || []) {
@@ -3288,7 +3329,18 @@ function useApiCache() {
         } else {
           const result = await runSlot(attacker, defender, move, firstTrainer, false);
           attacker.hasActedSinceEntering = true;
-          if (defender.hp <= 0 && decisiveWinnerSide === null) decisiveWinnerSide = firstSide;
+          // Excepción de Explosión/Autodestrucción y similares
+          // (SELF_KO_MOVES, ver executeMoveWithSelfKO): si el golpe que
+          // remata al rival es TAMBIÉN el que debilita al propio usuario
+          // (por el coste fijo del movimiento, no por retroceso normal —
+          // esa regla general de "gana quien remató primero" sigue igual,
+          // ver comentario de decisiveWinnerSide más arriba), el ganador
+          // pasa a ser el RIVAL: el usuario se autodestruyó
+          // voluntariamente, así que es quien "pierde" la decisión final
+          // aunque también derrotara al rival en el proceso.
+          if (defender.hp <= 0 && decisiveWinnerSide === null) {
+            decisiveWinnerSide = (SELF_KO_MOVES.has(move.name) && attacker.hp <= 0) ? secondSide : firstSide;
+          }
 
           if (enableSwitchEffects && result.hit && result.damage > 0) {
             if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && benchAlive[secondSide]) {
@@ -3379,7 +3431,11 @@ function useApiCache() {
           const suckerPunchFails = move.name === "sucker-punch";
           const result = await runSlot(attacker, defender, move, secondTrainer, suckerPunchFails);
           attacker.hasActedSinceEntering = true;
-          if (defender.hp <= 0 && decisiveWinnerSide === null) decisiveWinnerSide = secondSide;
+          // Ver comentario equivalente en el primer mover: misma excepción
+          // de SELF_KO_MOVES.
+          if (defender.hp <= 0 && decisiveWinnerSide === null) {
+            decisiveWinnerSide = (SELF_KO_MOVES.has(move.name) && attacker.hp <= 0) ? firstSide : secondSide;
+          }
 
           if (enableSwitchEffects && result.hit && result.damage > 0) {
             // El cambio del SEGUNDO mover (si lo hay) es el último efecto
@@ -3457,7 +3513,7 @@ function useApiCache() {
     activePb.flinched = false;
 
     return { turns, switchSignals, decisiveWinnerSide };
-  }, [executeMove, executeMoveWithTerrainPulse]);
+  }, [executeMove, executeMoveWithSelfKO]);
 
   // Resuelve un turno en el que el usuario cambia de Pokémon en vez de
   // atacar. El cambio voluntario SIEMPRE resuelve antes que cualquier
@@ -3512,7 +3568,7 @@ function useApiCache() {
         return;
       }
       const targetWasFrozen = target.status === "freeze";
-      const result = await executeMoveWithTerrainPulse(opponent, target, opponentMove, weather, extra);
+      const result = await executeMoveWithSelfKO(opponent, target, opponentMove, weather, extra);
       opponent.hasActedSinceEntering = true;
       let inlineEffect = null;
       const extraEvents = [];
@@ -3548,7 +3604,12 @@ function useApiCache() {
       // atacó (bajada de stat propia, retroceso...).
       if (target.hp <= 0) {
         pushFaintOnce(target, turns);
-        decisiveWinnerIsOpponent = true;
+        // Misma excepción de SELF_KO_MOVES que en resolveTurn: si el golpe
+        // que remata al objetivo es TAMBIÉN el que debilita al propio
+        // `opponent` (por el coste fijo del movimiento), el "decisivo" deja
+        // de ser el rival — gana el lado del objetivo, ya que el rival se
+        // autodestruyó voluntariamente.
+        decisiveWinnerIsOpponent = !(SELF_KO_MOVES.has(opponentMove.name) && opponent.hp <= 0);
       }
       turns.push(...extraEvents);
 
@@ -3621,7 +3682,7 @@ function useApiCache() {
     opponent.flinched = false;
 
     return { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch };
-  }, [executeMove, executeMoveWithTerrainPulse]);
+  }, [executeMove, executeMoveWithSelfKO]);
 
   // Combate 1 contra 1 por turnos hasta que uno de los dos se quede a 0 PS
   // (IA para ambos lados).

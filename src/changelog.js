@@ -272,6 +272,13 @@ export const CHANGELOG = [
     detail: "Bug 1: el equipo activo y el rival de cada ronda del Draft se reconstruían como objetos nuevos en cada render de DraftMode, y como la tab Torneo se sigue renderizando por motivos ajenos al Draft (el tick de la cuenta atrás del Torneo Semanal, cambios de monedas/colección...), el combate en curso volvía a prepararse desde cero cada vez que eso pasaba — se veía como si todo el equipo reviviera y se curara al máximo de la nada. Se corrigió memoizando el equipo del usuario y del rival para que mantengan la misma referencia mientras no cambien de verdad, así el combate ya no se reinicializa por error. Bug 2: la cabecera 'Elige tu entrenador' y el selector de 'Modo de torneo' seguían visibles encima de la pantalla del Draft en cuanto empezaba una partida, porque ese modo nunca cambia la fase interna del torneo normal (se queda en 'setup' a propósito, ya que Draft no usa la clasificación Swiss de siempre). Ahora DraftMode avisa a la tab Torneo en cuanto la partida está realmente en marcha, y esa cabecera/selector se ocultan por completo mientras tanto, igual que ya pasa en el resto de modos.",
     date: "2026-08-19T12:17:26+02:00",
   },
+  {
+    id: 38,
+    title: "Explosión debilita siempre y completa la familia de Buceo",
+    summary: "Explosión, Autodestrucción y similares ahora debilitan siempre a quien los usa (con una excepción de victoria si eso deja a ambos equipos sin Pokémon a la vez), y Buceo/Vuelo/Rebote/Sombra Vil ya funcionan igual que Golpe Fantasma.",
+    detail: "Explosión, Autodestrucción, Detonación Confusa y Explosión Feérica (SELF_KO_MOVES) ahora debilitan siempre al usuario tras usarlas, acierte, falle o quede bloqueado por Protección — antes no tenían ningún coste real. Caso especial: si el usuario era el último Pokémon con vida de su equipo y ese mismo golpe debilita también al último Pokémon del rival, gana el RIVAL en vez de quedar en empate (el usuario se autodestruyó voluntariamente), sin tocar la regla ya existente de 'gana quien remató primero' para el retroceso normal. Se completó también la familia de movimientos de carga de dos turnos con invulnerabilidad (antes solo cubría Golpe Fantasma y Cavar): Buceo, Vuelo, Rebote y Sombra Vil comparten ahora exactamente la misma mecánica (primer turno invulnerable sin daño, segundo turno ataque automático), alcanzables tanto por el moveset competitivo/aleatorio como por el editor manual de la colección.",
+    date: "2026-08-19T12:38:49+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
