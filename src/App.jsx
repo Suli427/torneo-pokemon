@@ -5827,15 +5827,20 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                 <div className="text-[11px] text-[#8a8fa3]">Dificultad Maestro fija y una temática distinta cada semana. Recompensa única de {WEEKLY_TOURNAMENT_REWARD} monedas la primera vez que ganes.</div>
               </button>
               <button
-                onClick={() => handleModeChange("draft")}
-                className="rounded-xl p-4 text-left transition-all"
+                onClick={() => customTrainer && handleModeChange("draft")}
+                disabled={!customTrainer}
+                className="rounded-xl p-4 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50"
                 style={{
                   background: mode === "draft" ? "linear-gradient(160deg, #4a90d933, #14161f)" : "#14161f",
                   border: mode === "draft" ? "1.5px solid #4a90d9" : "1px solid #262a3a",
                 }}
               >
                 <div className="text-white font-semibold text-sm mb-1">Draft</div>
-                <div className="text-[11px] text-[#8a8fa3]">Rivales infinitos con tu colección real. ⚠️ Cambios PERMANENTES: puedes ganar y perder Pokémon para siempre.</div>
+                <div className="text-[11px] text-[#8a8fa3]">
+                  {customTrainer
+                    ? "Rivales infinitos con el equipo de tu entrenador propio. ⚠️ Cambios PERMANENTES: puedes ganar y perder Pokémon para siempre."
+                    : "Necesitas crear tu propio entrenador primero, en la pestaña Personajes."}
+                </div>
               </button>
             </div>
           </div>
@@ -5846,6 +5851,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             <DraftMode
               api={api}
               collection={collection}
+              customTrainer={customTrainer}
               coins={coins}
               setCoins={setCoins}
               onTournamentFinished={onTournamentFinished}
@@ -6230,8 +6236,8 @@ const DRAFT_RIVAL_ID = "draft-rival";
 // bucle de estado independiente y solo toma prestado lo genérico del motor
 // (api.simulateMatch vía InteractiveBattle, api.primeMoveset,
 // api.buildCompetitiveMoveset).
-function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile, onActiveChange }) {
-  const [phase, setPhase] = useState("team-select"); // team-select, confirm, loading, battle, swap, post-swap, summary
+function DraftMode({ api, collection, customTrainer, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile, onActiveChange }) {
+  const [phase, setPhase] = useState("confirm"); // confirm, loading, battle, swap, post-swap, summary
 
   // BUG corregido: la cabecera "Elige tu entrenador" y la cuadrícula de
   // "Modo de torneo" (definidas en TorneoTab, no aquí) se seguían
@@ -6240,13 +6246,12 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
   // fase, el del torneo Swiss normal) y el modo Draft nunca toca ese
   // estado — se queda en "setup" durante TODO el Draft, a propósito, ya
   // que Draft no usa standings/finalizeRound. TorneoTab necesita saber,
-  // aparte, si el Draft está "activo de verdad" (más allá de elegir
-  // equipo/confirmar el aviso) para ocultar esa cabecera+selector solo
-  // en ese caso, sin tocar el resto del flujo de los modos A/B/C/weekly.
+  // aparte, si el Draft está "activo de verdad" (más allá de confirmar el
+  // aviso) para ocultar esa cabecera+selector solo en ese caso, sin tocar
+  // el resto del flujo de los modos A/B/C/weekly.
   useEffect(() => {
-    if (onActiveChange) onActiveChange(phase !== "team-select" && phase !== "confirm");
+    if (onActiveChange) onActiveChange(phase !== "confirm");
   }, [phase, onActiveChange]);
-  const [selectedKeys, setSelectedKeys] = useState([]);
   const [confirmChecked, setConfirmChecked] = useState(false);
   const [draftTeam, setDraftTeam] = useState(null); // [{ slug, shiny, moves, origin: "collection"|"draft", originalKey? }]
   const [originalKeys, setOriginalKeys] = useState(null); // Set<collectionEntryKey> del equipo inicial
@@ -6300,12 +6305,29 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
     return { id: DRAFT_RIVAL_ID, name: opponentMeta.name, color: opponentMeta.color, subtitle: opponentMeta.subtitle, team: opponentMeta.team.map((p) => p.slug) };
   }, [opponentMeta]);
 
-  // Sprites para el selector de equipo inicial (colección completa) y,
-  // según la fase, también los del equipo actual/del rival — se piden todos
-  // los slugs relevantes cada vez que cambian, sin re-pedir los que ya
-  // están en caché local (`sprites`).
+  // Equipo "candidato" mostrado en la pantalla de confirmación: siempre el
+  // equipo ACTUAL del entrenador propio, resuelto contra la colección real
+  // para sacar sus movesets ya asignados — se recalcula solo si
+  // customTrainer/collection cambian de verdad (por ejemplo, tras aplicar
+  // el resultado de un Draft anterior, ver applyAndReturn/onDraftResult en
+  // App), no en cada render. `null` si todavía no hay entrenador propio
+  // (no debería poder llegarse aquí sin uno — ver el botón de modo "Draft"
+  // en TorneoTab, deshabilitado sin customTrainer — pero se comprueba
+  // igualmente por seguridad).
+  const confirmTeamPreview = useMemo(() => {
+    if (!customTrainer) return null;
+    return customTrainer.team.map(({ slug, shiny }) => {
+      const entry = findCollectionEntry(collection, slug, shiny);
+      return { slug, shiny: !!shiny, moves: entry?.moves || [], origin: "collection", originalKey: collectionEntryKey({ slug, shiny }) };
+    });
+  }, [customTrainer, collection]);
+
+  // Sprites del equipo candidato/actual, y según la fase también del
+  // equipo del rival — se piden todos los slugs relevantes cada vez que
+  // cambian, sin re-pedir los que ya están en caché local (`sprites`).
   useEffect(() => {
-    const slugs = new Set(collection.map((c) => c.slug));
+    const slugs = new Set();
+    if (confirmTeamPreview) confirmTeamPreview.forEach((p) => slugs.add(p.slug));
     if (draftTeam) draftTeam.forEach((p) => slugs.add(p.slug));
     if (opponentMeta) opponentMeta.team.forEach((p) => slugs.add(p.slug));
     let cancelled = false;
@@ -6318,26 +6340,7 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collection, draftTeam, opponentMeta, api]);
-
-  function toggleTeamSelect(key) {
-    setSelectedKeys((sel) => {
-      if (sel.includes(key)) return sel.filter((k) => k !== key);
-      if (sel.length >= WEEKLY_TEAM_SIZE) return sel;
-      return [...sel, key];
-    });
-  }
-
-  function confirmTeamSelection() {
-    if (selectedKeys.length !== WEEKLY_TEAM_SIZE) return;
-    const team = selectedKeys.map((key) => {
-      const entry = collection.find((c) => collectionEntryKey(c) === key);
-      return { slug: entry.slug, shiny: !!entry.shiny, moves: entry.moves, origin: "collection", originalKey: key };
-    });
-    setDraftTeam(team);
-    setOriginalKeys(new Set(selectedKeys));
-    setPhase("confirm");
-  }
+  }, [confirmTeamPreview, draftTeam, opponentMeta, api]);
 
   // Genera el rival de la ronda `roundNum` (1-indexado): nombre prestado de
   // TRAINERS (barajado sin repetir, agotable) mientras queden, y a partir
@@ -6372,16 +6375,26 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
   }
 
   async function startDraft() {
+    if (!confirmTeamPreview) return;
     setError(null);
     setPhase("loading");
     try {
+      // Instantánea del equipo del entrenador propio EN ESTE MOMENTO: a
+      // partir de aquí `draftTeam` es la copia mutable de la partida (los
+      // intercambios ya no tocan customTrainer hasta el final, ver
+      // applyAndReturn), así que un cambio posterior al equipo del
+      // entrenador (p.ej. desde la pestaña Personajes en otra ventana) no
+      // afecta a una partida ya en marcha.
+      const team = confirmTeamPreview;
+      setDraftTeam(team);
+      setOriginalKeys(new Set(team.map((p) => p.originalKey)));
       api.clearPrimedMovesets();
       await api.preloadAll();
       const pool = shuffleInPlace(TRAINERS.map((t) => t.id));
       setRivalPool(pool);
       setRoundsWon(0);
       setCoinsAccumulated(0);
-      await prepareRound(1, pool, draftTeam);
+      await prepareRound(1, pool, team);
     } catch (e) {
       setError("No se pudo conectar con PokeAPI. Comprueba tu conexión e inténtalo de nuevo.");
       setPhase("confirm");
@@ -6471,8 +6484,7 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
       coinsEarned: coinsAccumulated,
       draftRoundsWon: roundsWon,
     });
-    setPhase("team-select");
-    setSelectedKeys([]);
+    setPhase("confirm");
     setConfirmChecked(false);
     setDraftTeam(null);
     setOriginalKeys(null);
@@ -6487,65 +6499,44 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
 
   const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
 
-  if (phase === "team-select") {
-    return (
-      <div className="space-y-4">
-        <div className="rounded-xl p-4" style={{ background: "#4a90d914", border: "1px solid #4a90d955" }}>
-          <div className="text-white font-semibold text-sm mb-1">Construye tu equipo Draft</div>
-          <div className="text-[11px] text-[#8a8fa3]">Elige exactamente 6 Pokémon de tu colección real. Combatirán con los movimientos que ya tienen asignados.</div>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-[#8a8fa3]">Elige 6 Pokémon</span>
-          <span className="text-xs font-semibold" style={{ color: selectedKeys.length === WEEKLY_TEAM_SIZE ? "#5fae5f" : "#8a8fa3" }}>
-            {selectedKeys.length} / {WEEKLY_TEAM_SIZE}
-          </span>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {collection.map((c) => {
-            const key = collectionEntryKey(c);
-            const p = sprites[c.slug];
-            const sprite = spriteOf(c.slug, c.shiny);
-            const isSelected = selectedKeys.includes(key);
-            const disabled = !isSelected && selectedKeys.length >= WEEKLY_TEAM_SIZE;
-            return (
-              <button
-                key={key}
-                onClick={() => toggleTeamSelect(key)}
-                disabled={disabled}
-                className="rounded-lg p-2 text-left flex items-center gap-2 disabled:opacity-40 relative"
-                style={{ background: isSelected ? "#4a90d91e" : "#14161f", border: isSelected ? "1.5px solid #4a90d9" : c.shiny ? "1px solid #f2b70566" : "1px solid #262a3a" }}
-              >
-                {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
-                <div className="min-w-0">
-                  <div className="text-white text-xs font-semibold truncate flex items-center gap-1">
-                    {p?.name || displayName(c.slug)}
-                    {c.shiny && <Star size={10} fill="#f2b705" color="#f2b705" />}
-                  </div>
-                  <div className="flex gap-0.5 flex-wrap">{(p?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
-                </div>
-                {isSelected && <Check size={14} color="#5fae5f" className="ml-auto shrink-0" />}
-              </button>
-            );
-          })}
-        </div>
-        {collection.length < WEEKLY_TEAM_SIZE && (
-          <div className="text-[11px] text-[#ff8a8a]">Necesitas al menos {WEEKLY_TEAM_SIZE} Pokémon en tu colección para jugar al Draft (tienes {collection.length}). Consigue más en el Gacha.</div>
-        )}
-        <button
-          onClick={confirmTeamSelection}
-          disabled={selectedKeys.length !== WEEKLY_TEAM_SIZE}
-          className="px-6 py-3 rounded-xl font-display text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: "linear-gradient(135deg,#4a90d9,#2c5f8a)" }}
-        >
-          Continuar
-        </button>
-      </div>
-    );
-  }
-
   if (phase === "confirm") {
+    if (!customTrainer) {
+      return (
+        <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">
+          Necesitas crear tu propio entrenador primero, en la pestaña Personajes.
+        </div>
+      );
+    }
     return (
       <div className="space-y-4">
+        <div>
+          <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
+            <Users size={18} color="#4a90d9" /> Tu equipo Draft
+          </h3>
+          <p className="text-[11px] text-[#8a8fa3] mb-2">El Draft se juega con el equipo actual de {customTrainer.name}, con los movimientos que ya tiene asignados.</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {(confirmTeamPreview || []).map((c, i) => {
+              const p = sprites[c.slug];
+              const sprite = spriteOf(c.slug, c.shiny);
+              return (
+                <div
+                  key={i}
+                  className="rounded-lg p-2 flex items-center gap-2"
+                  style={{ background: "#14161f", border: c.shiny ? "1px solid #f2b70566" : "1px solid #262a3a" }}
+                >
+                  {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                  <div className="min-w-0">
+                    <div className="text-white text-xs font-semibold truncate flex items-center gap-1">
+                      {p?.name || displayName(c.slug)}
+                      {c.shiny && <Star size={10} fill="#f2b705" color="#f2b705" />}
+                    </div>
+                    <div className="flex gap-0.5 flex-wrap">{(p?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
         <div>
           <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
             <Swords size={18} color="#f2b705" /> Dificultad de la CPU
@@ -6572,8 +6563,9 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
         <div className="rounded-xl p-4" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
           <div className="text-white font-display text-lg mb-2 flex items-center gap-2">⚠️ Los cambios del Draft son PERMANENTES</div>
           <ul className="text-sm text-[#c7cbdb] space-y-1.5 list-disc pl-5">
-            <li>Los Pokémon de tu equipo que acaben <span className="text-[#ff8a8a] font-semibold">fuera</span> de tu equipo al terminar el Draft se <span className="text-[#ff8a8a] font-semibold">perderán de tu colección para siempre</span>.</li>
-            <li>Los Pokémon que ganes de tus rivales y conserves al terminar se <span className="text-[#5fae5f] font-semibold">añadirán a tu colección para siempre</span>.</li>
+            <li>El Draft se juega con el equipo actual de <span className="text-white font-semibold">{customTrainer.name}</span>. Al terminar, ese equipo se <span className="text-[#ff8a8a] font-semibold">sustituirá directamente</span> por el equipo final del Draft.</li>
+            <li>Los Pokémon de tu equipo que acaben <span className="text-[#ff8a8a] font-semibold">fuera</span> de tu equipo al terminar el Draft se <span className="text-[#ff8a8a] font-semibold">perderán de tu colección para siempre</span> y dejarán de estar en el equipo de tu entrenador.</li>
+            <li>Los Pokémon que ganes de tus rivales y conserves al terminar se <span className="text-[#5fae5f] font-semibold">añadirán a tu colección para siempre</span> y pasarán a formar parte del equipo de tu entrenador.</li>
             <li>Puedes retirarte después de cualquier ronda ganada para aplicar el resultado cuando quieras, o seguir hasta que pierdas.</li>
           </ul>
           <label className="flex items-center gap-2 mt-4 text-sm text-white cursor-pointer">
@@ -6584,15 +6576,8 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
         {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
         <div className="flex gap-2">
           <button
-            onClick={() => setPhase("team-select")}
-            className="px-4 py-2.5 rounded-lg text-sm font-semibold"
-            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
-          >
-            Volver a elegir equipo
-          </button>
-          <button
             onClick={startDraft}
-            disabled={!confirmChecked}
+            disabled={!confirmChecked || !confirmTeamPreview}
             className="px-6 py-2.5 rounded-xl font-display text-white disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
           >
@@ -6764,7 +6749,8 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
         <div className="rounded-xl p-4" style={{ background: "linear-gradient(135deg,#4a90d922,#12141c)", border: "1px solid #4a90d944" }}>
           <div className="text-white font-display text-lg mb-2">Fin del Draft</div>
           <div className="text-sm text-[#c7cbdb] mb-1">Rondas ganadas: <span className="font-bold text-white">{roundsWon}</span></div>
-          <div className="text-sm text-[#c7cbdb]">Monedas obtenidas: <span className="font-bold text-[#f2b705]">+{coinsAccumulated}</span></div>
+          <div className="text-sm text-[#c7cbdb] mb-1">Monedas obtenidas: <span className="font-bold text-[#f2b705]">+{coinsAccumulated}</span></div>
+          {customTrainer && <div className="text-sm text-[#c7cbdb]">El equipo de <span className="font-bold text-white">{customTrainer.name}</span> se ha actualizado con este resultado.</div>}
         </div>
         <div className={`grid gap-3 ${summaryExcludedDuplicates.length > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
           <div className="rounded-lg p-3" style={{ background: "#5fae5f14", border: "1px solid #5fae5f55" }}>
@@ -8502,15 +8488,33 @@ export default function App() {
   // declaración y el useEffect de persistencia que lo consume).
   function applyDraftCollectionResult(finalTeam, originalKeys) {
     allowCollectionShrinkRef.current = true;
+    const finalCollectionKeys = new Set(
+      finalTeam.filter((p) => p.origin === "collection").map((p) => p.originalKey)
+    );
     setCollection((prev) => {
-      const finalCollectionKeys = new Set(
-        finalTeam.filter((p) => p.origin === "collection").map((p) => p.originalKey)
-      );
       const kept = prev.filter((e) => !originalKeys.has(collectionEntryKey(e)) || finalCollectionKeys.has(collectionEntryKey(e)));
       const additions = finalTeam
         .filter((p) => p.origin === "draft" && !p.excludedFromReward)
         .map((p) => ({ slug: p.slug, moves: p.moves, obtainedAt: Date.now(), shiny: false }));
       return [...kept, ...additions];
+    });
+    // El equipo del entrenador propio se sustituye por el equipo final del
+    // Draft, en el mismo golpe que la colección: así nunca puede quedar
+    // apuntando a un Pokémon que la colección acaba de perder. Para los
+    // slots excludedFromReward (especie duplicada, no se añade una segunda
+    // entrada) se referencia la entrada YA EXISTENTE de esa especie, leída
+    // de `collection` (congelada durante todo el Draft, ver DraftMode).
+    setCustomTrainer((prevTrainer) => {
+      if (!prevTrainer) return prevTrainer;
+      const team = finalTeam.map((p) => {
+        if (p.origin === "collection") return { slug: p.slug, shiny: !!p.shiny };
+        if (p.excludedFromReward) {
+          const existing = collection.find((c) => c.slug === p.slug);
+          return { slug: p.slug, shiny: !!existing?.shiny };
+        }
+        return { slug: p.slug, shiny: false };
+      });
+      return { ...prevTrainer, team };
     });
   }
 

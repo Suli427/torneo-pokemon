@@ -293,6 +293,13 @@ export const CHANGELOG = [
     detail: "Nuevo selector de dificultad de la CPU en la pantalla de configuración del Draft (mismo Normal/Difícil/Maestro que los modos A/B/C), aplicado a todos los rivales de esa partida, con nombre prestado o 'Desafiante N'; no afecta a las 100 monedas por ronda ganada, que siguen igual. Se corrigió además un bug de duplicados: al intercambiar por un Pokémon del rival derrotado cuya especie ya tenías en tu colección real, ahora aparece un aviso antes de completar el intercambio explicando que ese Pokémon podrá usarse con normalidad el resto del Draft pero no se añadirá a la colección al terminar (para no duplicar la especie) — el usuario puede confirmar igualmente o cancelar y elegir otro. El resumen final del Draft ahora indica también qué Pokémon no se añadieron por este motivo.",
     date: "2026-08-19T12:59:47+02:00",
   },
+  {
+    id: 41,
+    title: "El Draft se juega con tu entrenador propio",
+    summary: "El modo Draft ya no empieza con una selección libre de tu colección: se juega siempre con el equipo actual de tu entrenador propio, y al terminar ese equipo se actualiza directamente con el resultado.",
+    detail: "Se elimina la pantalla de selección libre de 6 Pokémon: el Draft ahora usa siempre el equipo actual del entrenador propio (deshabilitado si aún no tienes uno creado). Al terminar, el equipo del entrenador se sustituye por el equipo final del Draft en la misma operación que actualiza la colección, así que un Pokémon perdido en el Draft nunca puede quedar como referencia rota en el equipo guardado; los intercambios marcados como duplicado (excludedFromReward) apuntan a la entrada ya existente de esa especie en vez de duplicarla.",
+    date: "2026-08-19T13:36:22+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
