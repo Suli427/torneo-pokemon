@@ -12,7 +12,7 @@ import {
   DAILY_REWARDS_STORAGE_KEY, loadDailyRewardsState, getDailyResetDayKey, getPokemonOfTheDay,
   claimDailyReward, getStreakDayNumberForToday, computePokedleReward, scorePokedleGuess, POKEDLE_MAX_ATTEMPTS,
 } from "./dailyRewards";
-import { getSortedChangelog } from "./changelog";
+import { CHANGELOG, getSortedChangelog } from "./changelog";
 import {
   WEEKLY_TOURNAMENT_STORAGE_KEY, WEEKLY_TOURNAMENT_REWARD, WEEKLY_TEAM_SIZE,
   getActiveWeekKey, getNextWeeklyResetDate, selectWeeklyTheme, speciesMatchesTheme,
@@ -116,6 +116,25 @@ function loadStoredCoins() {
 function loadStoredPurchasedTrainers() {
   try {
     const raw = localStorage.getItem(UNLOCKED_TRAINERS_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return [];
+}
+
+const CHANGELOG_READ_STORAGE_KEY = "liga-pokemon:changelog-read";
+
+// Ids de entradas de Novedades ya leídas: por defecto (clave vacía o
+// inexistente) ninguna lo está, así que TODO el changelog actual cuenta
+// como no leído la primera vez — igual pasa de forma natural con
+// cualquier entrada NUEVA que se añada en el futuro, ya que un id que
+// nunca se ha guardado como leído simplemente no está en el array, sin
+// necesidad de ninguna migración manual.
+function loadStoredChangelogReadIds() {
+  try {
+    const raw = localStorage.getItem(CHANGELOG_READ_STORAGE_KEY);
     if (raw) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr)) return arr;
@@ -3861,16 +3880,22 @@ function formatCountdown(ms) {
 // 1-2 líneas siempre visibles, y el detalle completo se expande in-line al
 // pulsarla (sin abrir un sub-modal aparte, para no anidar overlays dentro
 // del propio modal de Novedades).
-function ChangelogCard({ entry, expanded, onToggle }) {
+function ChangelogCard({ entry, expanded, unread, onToggle }) {
   return (
     <button
       type="button"
       onClick={onToggle}
-      className="rounded-xl p-4 text-left w-full"
+      className="rounded-xl p-4 text-left w-full relative"
       style={{ background: "#14161f", border: expanded ? "1px solid #e3350d55" : "1px solid #262a3a" }}
     >
       <div className="flex items-start justify-between gap-2 mb-1.5">
-        <h4 className="text-sm font-semibold text-white">{entry.title}</h4>
+        <h4 className="text-sm font-semibold text-white flex items-center gap-1.5">
+          {/* Punto de "no leído": mismo patrón que el resto de la app para
+              marcar algo pendiente, desaparece en cuanto se lee (ver
+              onToggle -> onMarkRead). */}
+          {unread && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#e3350d" }} />}
+          {entry.title}
+        </h4>
         <ChevronDown
           size={16}
           color="#6b7086"
@@ -3895,10 +3920,11 @@ function ChangelogCard({ entry, expanded, onToggle }) {
 // visual de overlay ya usado en el resto de la app (fondo oscurecido +
 // tarjeta central), ampliado a una cuadrícula con scroll para las 30
 // entradas.
-function NovedadesModal({ open, onClose }) {
+function NovedadesModal({ open, onClose, readIds, onMarkRead, onMarkAllRead }) {
   const [expandedId, setExpandedId] = useState(null);
   if (!open) return null;
   const sorted = getSortedChangelog();
+  const anyUnread = sorted.some((entry) => !readIds.has(entry.id));
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
       <div
@@ -3909,7 +3935,18 @@ function NovedadesModal({ open, onClose }) {
         <button onClick={onClose} className="absolute top-4 right-4 text-[#7c8199] hover:text-white">
           <X size={20} />
         </button>
-        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><ScrollText size={22} color="#e3350d" /> Novedades</h2>
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+          <h2 className="font-display text-2xl text-white flex items-center gap-2"><ScrollText size={22} color="#e3350d" /> Novedades</h2>
+          {anyUnread && (
+            <button
+              onClick={onMarkAllRead}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0"
+              style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+            >
+              <Check size={13} color="#5fae5f" /> Marcar todo como leído
+            </button>
+          )}
+        </div>
         <p className="text-sm text-[#9aa0b4] mb-5">Historial de actualizaciones de PokéArena, con la fecha real de cada una.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {sorted.map((entry) => (
@@ -3917,7 +3954,11 @@ function NovedadesModal({ open, onClose }) {
               key={entry.id}
               entry={entry}
               expanded={expandedId === entry.id}
-              onToggle={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
+              unread={!readIds.has(entry.id)}
+              onToggle={() => {
+                setExpandedId((id) => (id === entry.id ? null : entry.id));
+                onMarkRead(entry.id);
+              }}
             />
           ))}
         </div>
@@ -8173,8 +8214,13 @@ export default function App() {
   const [collectionSaveError, setCollectionSaveError] = useState(null);
   // Modal de "Novedades" (historial de actualizaciones, ver
   // src/changelog.js): no hace falta persistirlo, se abre/cierra en cada
-  // sesión desde cero.
+  // sesión desde cero. `changelogReadIds` sí se persiste (ver
+  // loadStoredChangelogReadIds): se guarda como Set en memoria para poder
+  // comprobar "¿está leída?" en O(1) tanto en el badge de la cabecera como
+  // en cada tarjeta, convirtiendo a/desde array solo al cargar/guardar.
   const [showNovedades, setShowNovedades] = useState(false);
+  const [changelogReadIds, setChangelogReadIds] = useState(() => new Set(loadStoredChangelogReadIds()));
+  const unreadChangelogCount = CHANGELOG.length - changelogReadIds.size;
   // Perfil del jugador (apodo + avatar): visible en cabecera, clasificación
   // e historial de torneos. El modal de edición tampoco hace falta
   // persistirlo (se abre/cierra desde cero cada sesión); solo el propio
@@ -8201,6 +8247,10 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem(PLAYER_PROFILE_STORAGE_KEY, JSON.stringify(playerProfile)); } catch (e) { /* localStorage no disponible */ }
   }, [playerProfile]);
+
+  useEffect(() => {
+    try { localStorage.setItem(CHANGELOG_READ_STORAGE_KEY, JSON.stringify([...changelogReadIds])); } catch (e) { /* localStorage no disponible */ }
+  }, [changelogReadIds]);
 
   useEffect(() => {
     try { localStorage.setItem(WEEKLY_TOURNAMENT_STORAGE_KEY, JSON.stringify(weeklyTournamentState)); } catch (e) { /* localStorage no disponible */ }
@@ -8360,6 +8410,19 @@ export default function App() {
     });
   }
 
+  // Marca una entrada de Novedades como leída (al expandirla, ver
+  // NovedadesModal/ChangelogCard) o todas de golpe ("Marcar todo como
+  // leído"). Ambas funciones son no-op idempotentes: añadir un id ya
+  // presente, o "todas" cuando ya no queda ninguna sin leer, no cambia
+  // nada — el Set ya se encarga de eso, así que no hace falta comprobarlo
+  // aparte antes de llamar a setChangelogReadIds.
+  function markChangelogEntryRead(id) {
+    setChangelogReadIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }
+  function markAllChangelogRead() {
+    setChangelogReadIds(new Set(CHANGELOG.map((entry) => entry.id)));
+  }
+
   // Al hacer una tirada de gacha (ver GatchaTab): alimenta los contadores
   // de tiradas totales/repetidos seguidos/shinies del progreso de logros.
   function recordGachaPull({ isNew, shiny }) {
@@ -8462,10 +8525,21 @@ export default function App() {
           </button>
           <button
             onClick={() => setShowNovedades(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
+            className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
             style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
           >
             <ScrollText size={14} /> Novedades
+            {/* Badge de notificaciones sin leer: solo se muestra si hay al
+                menos una (nunca un "0" visible), superpuesto en la esquina
+                del botón. */}
+            {unreadChangelogCount > 0 && (
+              <span
+                className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[10px] font-display text-white"
+                style={{ background: "#e3350d", border: "1px solid #0c0e15" }}
+              >
+                {unreadChangelogCount}
+              </span>
+            )}
           </button>
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: "#f2b70518", border: "1px solid #f2b70544" }}>
             <Coins size={15} color="#f2b705" />
@@ -8474,7 +8548,13 @@ export default function App() {
         </div>
       </header>
 
-      <NovedadesModal open={showNovedades} onClose={() => setShowNovedades(false)} />
+      <NovedadesModal
+        open={showNovedades}
+        onClose={() => setShowNovedades(false)}
+        readIds={changelogReadIds}
+        onMarkRead={markChangelogEntryRead}
+        onMarkAllRead={markAllChangelogRead}
+      />
       <PlayerProfileModal
         open={showPlayerProfile}
         profile={playerProfile}

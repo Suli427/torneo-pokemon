@@ -279,6 +279,13 @@ export const CHANGELOG = [
     detail: "Explosión, Autodestrucción, Detonación Confusa y Explosión Feérica (SELF_KO_MOVES) ahora debilitan siempre al usuario tras usarlas, acierte, falle o quede bloqueado por Protección — antes no tenían ningún coste real. Caso especial: si el usuario era el último Pokémon con vida de su equipo y ese mismo golpe debilita también al último Pokémon del rival, gana el RIVAL en vez de quedar en empate (el usuario se autodestruyó voluntariamente), sin tocar la regla ya existente de 'gana quien remató primero' para el retroceso normal. Se completó también la familia de movimientos de carga de dos turnos con invulnerabilidad (antes solo cubría Golpe Fantasma y Cavar): Buceo, Vuelo, Rebote y Sombra Vil comparten ahora exactamente la misma mecánica (primer turno invulnerable sin daño, segundo turno ataque automático), alcanzables tanto por el moveset competitivo/aleatorio como por el editor manual de la colección.",
     date: "2026-08-19T12:38:49+02:00",
   },
+  {
+    id: 39,
+    title: "Badge de Novedades sin leer",
+    summary: "El botón de Novedades ahora muestra cuántas entradas te faltan por leer, cada tarjeta se marca como leída al abrirla, y hay un botón para marcarlas todas de golpe.",
+    detail: "Nuevo badge circular en el botón 'Novedades' de la cabecera con el número de entradas del changelog que aún no has abierto (no se muestra si no hay ninguna pendiente). Cada tarjeta sin leer se distingue con un punto de color junto al título, que desaparece en cuanto se expande para ver el detalle completo — eso ya la marca como leída, sin necesitar ninguna confirmación aparte. Dentro del propio modal hay un botón 'Marcar todo como leído' que las marca todas de golpe y hace desaparecer el badge al instante. El estado de leído/no leído se guarda en localStorage por id de entrada, así que cualquier entrada nueva que se añada en el futuro (como esta misma) aparece automáticamente como no leída para todo el mundo sin ninguna migración manual.",
+    date: "2026-08-19T12:49:45+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
