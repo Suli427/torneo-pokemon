@@ -286,6 +286,13 @@ export const CHANGELOG = [
     detail: "Nuevo badge circular en el botón 'Novedades' de la cabecera con el número de entradas del changelog que aún no has abierto (no se muestra si no hay ninguna pendiente). Cada tarjeta sin leer se distingue con un punto de color junto al título, que desaparece en cuanto se expande para ver el detalle completo — eso ya la marca como leída, sin necesitar ninguna confirmación aparte. Dentro del propio modal hay un botón 'Marcar todo como leído' que las marca todas de golpe y hace desaparecer el badge al instante. El estado de leído/no leído se guarda en localStorage por id de entrada, así que cualquier entrada nueva que se añada en el futuro (como esta misma) aparece automáticamente como no leída para todo el mundo sin ninguna migración manual.",
     date: "2026-08-19T12:49:45+02:00",
   },
+  {
+    id: 40,
+    title: "Dificultad en el Draft y sin duplicados al intercambiar",
+    summary: "El modo Draft ya tiene selector de dificultad (Normal/Difícil/Maestro) para todos sus rivales, y avisa antes de intercambiar por una especie que ya tienes, para que no acabe duplicada en tu colección.",
+    detail: "Nuevo selector de dificultad de la CPU en la pantalla de configuración del Draft (mismo Normal/Difícil/Maestro que los modos A/B/C), aplicado a todos los rivales de esa partida, con nombre prestado o 'Desafiante N'; no afecta a las 100 monedas por ronda ganada, que siguen igual. Se corrigió además un bug de duplicados: al intercambiar por un Pokémon del rival derrotado cuya especie ya tenías en tu colección real, ahora aparece un aviso antes de completar el intercambio explicando que ese Pokémon podrá usarse con normalidad el resto del Draft pero no se añadirá a la colección al terminar (para no duplicar la especie) — el usuario puede confirmar igualmente o cancelar y elegir otro. El resumen final del Draft ahora indica también qué Pokémon no se añadieron por este motivo.",
+    date: "2026-08-19T12:59:47+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

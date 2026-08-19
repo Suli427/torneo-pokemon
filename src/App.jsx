@@ -6258,9 +6258,21 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
   const [error, setError] = useState(null);
   const [swapOutIdx, setSwapOutIdx] = useState(null);
   const [swapInSlug, setSwapInSlug] = useState(null);
+  // Aviso de especie duplicada al intercambiar (ver requestSwapConfirm más
+  // abajo): { slug, moves } del Pokémon del rival pendiente de confirmar
+  // pese a que su especie ya existe en la colección real, o null si no hay
+  // ningún aviso pendiente.
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [summaryAdditions, setSummaryAdditions] = useState([]);
+  const [summaryExcludedDuplicates, setSummaryExcludedDuplicates] = useState([]);
   const [summaryRemovals, setSummaryRemovals] = useState([]);
   const [sprites, setSprites] = useState({});
+  // Dificultad de la CPU rival para TODA la partida de Draft (todos los
+  // rivales generados, prestados o "Desafiante N"): mismo selector y misma
+  // IA ya usada en los modos A/B/C, elegida una vez antes de empezar y sin
+  // efecto sobre las recompensas de monedas del Draft (esas ya tienen su
+  // propio sistema fijo de 100 por ronda).
+  const [difficulty, setDifficulty] = useState("normal");
 
   // BUG corregido: trainerA/trainerB se construían como objetos literales
   // nuevos en cada render de DraftMode (dentro del bloque `if (phase ===
@@ -6389,11 +6401,37 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
     setPhase("swap");
   }
 
-  function confirmSwap() {
+  // Pulsar "Confirmar intercambio": si la ESPECIE del Pokémon entrante (sin
+  // importar shiny) ya existe en la colección REAL (`collection`, el prop
+  // — nunca cambia durante el Draft, la mutación real solo ocurre al
+  // terminar vía onDraftResult, así que sirve tal cual como "colección
+  // antes de este Draft" durante toda la partida), se pide confirmación
+  // explícita aparte (ver duplicateWarning) en vez de completar el
+  // intercambio directamente. Si no hay coincidencia, se completa sin más,
+  // igual que antes.
+  function requestSwapConfirm() {
     if (swapOutIdx == null || !swapInSlug) return;
     const incoming = opponentMeta.team.find((p) => p.slug === swapInSlug);
-    const newTeam = draftTeam.map((p, i) => (i === swapOutIdx ? { slug: incoming.slug, shiny: false, moves: incoming.moves, origin: "draft" } : p));
+    if (collection.some((c) => c.slug === incoming.slug)) {
+      setDuplicateWarning(incoming);
+      return;
+    }
+    performSwap(incoming, false);
+  }
+
+  function confirmDuplicateSwap() {
+    if (!duplicateWarning) return;
+    performSwap(duplicateWarning, true);
+  }
+
+  // `excludedFromReward`: si true, este Pokémon se podrá usar con
+  // normalidad el resto del Draft, pero NO se añadirá a la colección real
+  // al terminar (ver finishDraft/applyDraftCollectionResult en App), para
+  // no duplicar una especie que el usuario ya tenía antes de este Draft.
+  function performSwap(incoming, excludedFromReward) {
+    const newTeam = draftTeam.map((p, i) => (i === swapOutIdx ? { slug: incoming.slug, shiny: false, moves: incoming.moves, origin: "draft", excludedFromReward } : p));
     setDraftTeam(newTeam);
+    setDuplicateWarning(null);
     setPhase("post-swap");
   }
 
@@ -6407,10 +6445,15 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
   // del resumen (ver applyAndReturn), para que quede constancia clara de lo
   // ocurrido antes de tocar la colección de verdad.
   function finishDraft(finalTeam) {
-    const additions = finalTeam.filter((p) => p.origin === "draft").map((p) => p.slug);
+    const draftOrigin = finalTeam.filter((p) => p.origin === "draft");
+    const additions = draftOrigin.filter((p) => !p.excludedFromReward).map((p) => p.slug);
+    // Duplicados: quedan en el equipo (se pudieron usar con normalidad todo
+    // el Draft) pero no se añaden a la colección real, ver performSwap.
+    const excludedDuplicates = draftOrigin.filter((p) => p.excludedFromReward).map((p) => p.slug);
     const keptKeys = new Set(finalTeam.filter((p) => p.origin === "collection").map((p) => p.originalKey));
     const removals = [...originalKeys].filter((key) => !keptKeys.has(key)).map((key) => key.split("::")[0]);
     setSummaryAdditions(additions);
+    setSummaryExcludedDuplicates(excludedDuplicates);
     setSummaryRemovals(removals);
     setPhase("summary");
   }
@@ -6437,7 +6480,9 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
     setCoinsAccumulated(0);
     setOpponentMeta(null);
     setSummaryAdditions([]);
+    setSummaryExcludedDuplicates([]);
     setSummaryRemovals([]);
+    setDuplicateWarning(null);
   }
 
   const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
@@ -6501,6 +6546,29 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
   if (phase === "confirm") {
     return (
       <div className="space-y-4">
+        <div>
+          <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
+            <Swords size={18} color="#f2b705" /> Dificultad de la CPU
+          </h3>
+          <p className="text-[11px] text-[#8a8fa3] mb-2">Se aplica a todos los rivales de esta partida (con nombre prestado o "Desafiante N"). No afecta a las 100 monedas por ronda ganada.</p>
+          <div className="flex flex-wrap gap-3">
+            {Object.entries(DIFFICULTY_META).map(([key, meta]) => (
+              <button
+                key={key}
+                onClick={() => setDifficulty(key)}
+                className="text-left px-4 py-2.5 rounded-lg text-sm font-medium max-w-[15rem]"
+                style={{
+                  background: difficulty === key ? "#e3350d22" : "#14161f",
+                  border: difficulty === key ? "1px solid #e3350d" : "1px solid #262a3a",
+                  color: difficulty === key ? "#ff6b4a" : "#c7cbdb",
+                }}
+              >
+                <span className="font-semibold">{meta.label}</span>
+                <div className="text-[10px] text-[#8a8fa3] font-normal leading-snug mt-0.5">{meta.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="rounded-xl p-4" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
           <div className="text-white font-display text-lg mb-2 flex items-center gap-2">⚠️ Los cambios del Draft son PERMANENTES</div>
           <ul className="text-sm text-[#c7cbdb] space-y-1.5 list-disc pl-5">
@@ -6563,7 +6631,7 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
           trainerA={trainerA}
           trainerB={trainerB}
           userSide="a"
-          difficulty="normal"
+          difficulty={difficulty}
           onFinish={handleBattleFinish}
         />
       </div>
@@ -6627,14 +6695,39 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
           </div>
         </div>
 
-        <button
-          onClick={confirmSwap}
-          disabled={swapOutIdx == null || !swapInSlug}
-          className="px-6 py-2.5 rounded-xl font-display text-white disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: "linear-gradient(135deg,#4a90d9,#2c5f8a)" }}
-        >
-          Confirmar intercambio
-        </button>
+        {duplicateWarning ? (
+          <div className="rounded-xl p-4" style={{ background: "#f2b70514", border: "1px solid #f2b70555" }}>
+            <div className="text-sm text-white mb-3">
+              Ya tienes un <span className="font-semibold">{sprites[duplicateWarning.slug]?.name || displayName(duplicateWarning.slug)}</span> en tu colección.
+              Si continúas, este {sprites[duplicateWarning.slug]?.name || displayName(duplicateWarning.slug)} del Draft <span className="text-[#ffb84d] font-semibold">NO se añadirá</span> a tu colección al terminar la partida (para no duplicarlo), aunque sí podrás usarlo con normalidad durante el resto de este Draft.
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setDuplicateWarning(null)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              >
+                Cancelar y elegir otro
+              </button>
+              <button
+                onClick={confirmDuplicateSwap}
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#4a90d9,#2c5f8a)" }}
+              >
+                Sí, continuar de todas formas
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={requestSwapConfirm}
+            disabled={swapOutIdx == null || !swapInSlug}
+            className="px-6 py-2.5 rounded-xl font-display text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: "linear-gradient(135deg,#4a90d9,#2c5f8a)" }}
+          >
+            Confirmar intercambio
+          </button>
+        )}
       </div>
     );
   }
@@ -6673,7 +6766,7 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
           <div className="text-sm text-[#c7cbdb] mb-1">Rondas ganadas: <span className="font-bold text-white">{roundsWon}</span></div>
           <div className="text-sm text-[#c7cbdb]">Monedas obtenidas: <span className="font-bold text-[#f2b705]">+{coinsAccumulated}</span></div>
         </div>
-        <div className="grid sm:grid-cols-2 gap-3">
+        <div className={`grid gap-3 ${summaryExcludedDuplicates.length > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
           <div className="rounded-lg p-3" style={{ background: "#5fae5f14", border: "1px solid #5fae5f55" }}>
             <div className="text-xs font-semibold text-[#5fae5f] mb-1.5">Se añaden a tu colección para siempre ({summaryAdditions.length})</div>
             {summaryAdditions.length === 0 ? (
@@ -6690,6 +6783,12 @@ function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onC
               <ul className="text-sm text-white space-y-0.5">{summaryRemovals.map((slug, i) => <li key={i}>{displayName(slug)}</li>)}</ul>
             )}
           </div>
+          {summaryExcludedDuplicates.length > 0 && (
+            <div className="rounded-lg p-3" style={{ background: "#f2b70514", border: "1px solid #f2b70555" }}>
+              <div className="text-xs font-semibold text-[#f2b705] mb-1.5">No añadidos, ya tenías la especie ({summaryExcludedDuplicates.length})</div>
+              <ul className="text-sm text-white space-y-0.5">{summaryExcludedDuplicates.map((slug, i) => <li key={i}>{displayName(slug)}</li>)}</ul>
+            </div>
+          )}
         </div>
         <button
           onClick={applyAndReturn}
@@ -8387,15 +8486,20 @@ export default function App() {
   // Aplica las consecuencias PERMANENTES del modo Draft (ver DraftMode) a
   // la colección real: `finalTeam` es el equipo con el que terminó el
   // Draft ([{ slug, shiny, moves, origin: "collection"|"draft",
-  // originalKey? }]), `originalKeys` es el Set de collectionEntryKey del
-  // equipo con el que EMPEZÓ (los 6 elegidos al construir el equipo). Todo
-  // Pokémon de la colección original que ya no esté en el equipo final se
-  // elimina para siempre; todo Pokémon del equipo final que no viniera de
-  // la colección original se añade para siempre; el resto de la colección
-  // (todo lo que nunca formó parte del equipo de este Draft) no se toca.
-  // Marca `allowCollectionShrinkRef` porque esta es la única vía legítima
-  // de la app para reducir la colección a propósito (ver su declaración y
-  // el useEffect de persistencia que lo consume).
+  // originalKey?, excludedFromReward? }]), `originalKeys` es el Set de
+  // collectionEntryKey del equipo con el que EMPEZÓ (los 6 elegidos al
+  // construir el equipo). Todo Pokémon de la colección original que ya no
+  // esté en el equipo final se elimina para siempre; todo Pokémon del
+  // equipo final que no viniera de la colección original SE AÑADE para
+  // siempre, EXCEPTO si `excludedFromReward` es true (el usuario confirmó
+  // el aviso de especie duplicada al intercambiarlo — ver
+  // requestSwapConfirm/performSwap en DraftMode: pudo usarse con
+  // normalidad durante el Draft, pero no debe generar una segunda entrada
+  // de una especie que ya tenía antes de empezar); el resto de la
+  // colección (todo lo que nunca formó parte del equipo de este Draft) no
+  // se toca. Marca `allowCollectionShrinkRef` porque esta es la única vía
+  // legítima de la app para reducir la colección a propósito (ver su
+  // declaración y el useEffect de persistencia que lo consume).
   function applyDraftCollectionResult(finalTeam, originalKeys) {
     allowCollectionShrinkRef.current = true;
     setCollection((prev) => {
@@ -8404,7 +8508,7 @@ export default function App() {
       );
       const kept = prev.filter((e) => !originalKeys.has(collectionEntryKey(e)) || finalCollectionKeys.has(collectionEntryKey(e)));
       const additions = finalTeam
-        .filter((p) => p.origin === "draft")
+        .filter((p) => p.origin === "draft" && !p.excludedFromReward)
         .map((p) => ({ slug: p.slug, moves: p.moves, obtainedAt: Date.now(), shiny: false }));
       return [...kept, ...additions];
     });
