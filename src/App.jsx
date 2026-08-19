@@ -617,6 +617,47 @@ const RECOVERY_MOVE_NAMES = new Set([
   "morning-sun", "synthesis", "rest", "shore-up", "wish", "heal-order",
 ]);
 
+// Movimientos que sacrifican al propio usuario (lo dejan a 0 PS) como parte
+// de su efecto: a diferencia de OHKO (meta.category="ohko", ver isOHKO), no
+// hay ningún flag estructurado en PokeAPI para esto, así que se hardcodea
+// aquí igual que el resto de listas de excepción del proyecto. Se usa SOLO
+// para desprioritizar su elección en el moveset competitivo (ver
+// buildCompetitiveMoveset/damagePenalty), nunca para bloquear su uso real
+// en combate — el motor de combate no se toca en este cambio.
+const SELF_KO_MOVES = new Set(["explosion", "self-destruct", "misty-explosion"]);
+
+// Un movimiento es "fiable" para el moveset competitivo (ver
+// buildCompetitiveMoveset) si nunca falla (accuracy null) o si su precisión
+// es de al menos 85; el resto se desprioriza frente a alternativas fiables
+// del mismo grupo, salvo que no haya ninguna.
+function isReliableMove(m) {
+  return m.accuracy == null || m.accuracy >= 85;
+}
+
+// ¿Retroceso significativo? drain negativo de al menos 1/4 del daño
+// infligido (-25): es el umbral real más bajo de retroceso "de verdad" en
+// los juegos (Doble Filo/Golpe Cabeza bajan 1/4 o 1/3); por debajo de eso
+// no merece penalizar la elección del moveset competitivo.
+function hasSignificantRecoil(m) {
+  return typeof m.drain === "number" && m.drain <= -25;
+}
+
+// Penalización de un movimiento de daño para el moveset competitivo (ver
+// buildCompetitiveMoveset/damageScore): fulminantes y sacrificio propio
+// quedan prácticamente descartados salvo que sean el único candidato de su
+// grupo (penalización enorme, pero nunca una exclusión real de la lista);
+// carga/recarga/retroceso relevante se desprioritizan con más matiz, ya que
+// siguen siendo opciones razonables si no hay nada mejor disponible.
+function damagePenalty(m) {
+  let penalty = 0;
+  if (m.isOHKO) penalty += 1000;
+  if (SELF_KO_MOVES.has(m.name)) penalty += 1000;
+  if (TWO_TURN_MOVES.has(m.name) || CHARGE_MOVES_VULNERABLE.has(m.name)) penalty += 70;
+  if (RECHARGE_MOVES.has(m.name)) penalty += 40;
+  if (hasSignificantRecoil(m)) penalty += 50;
+  return penalty;
+}
+
 // Movimientos que hacen daño Y ADEMÁS fuerzan al OBJETIVO a retirarse y ser
 // sustituido por otro Pokémon de su equipo (Cola Dragón/Dragon Tail, Giro
 // Vil/Circle Throw: mismo efecto que Rugido/Whirlwind pero después de
@@ -1974,25 +2015,32 @@ function useApiCache() {
 
   // Moveset "razonablemente competitivo" para un Pokémon CUALQUIERA del
   // pool (no solo los 20 entrenadores del roster fijo, que sí tienen
-  // TRAINER_MOVESETS_ADVANCED diseñado a mano): usado por el modo Ruleta
-  // Pokémon para el equipo del usuario Y de los 7 rivales, ya que no es
-  // viable diseñar a mano un set para las ~480 especies del pool. NO
-  // sustituye a assignRandomMoveset (que sigue igual, sin tocar, para el
-  // moveset aleatorio normal de la colección del gacha real).
+  // TRAINER_MOVESETS_ADVANCED diseñado a mano): usado por Ruleta Pokémon y
+  // por el modo Draft (ver DraftMode), tanto para el equipo del usuario
+  // como para los rivales generados, ya que no es viable diseñar a mano un
+  // set para las ~480 especies del pool. NO sustituye a assignRandomMoveset
+  // (que sigue igual, sin tocar, para el moveset aleatorio normal de la
+  // colección del gacha real).
   //
-  // Criterio, en este orden: hasta 2 movimientos STAB (mismo tipo que el
-  // propio Pokémon) de mayor potencia disponible, priorizando la categoría
-  // física/especial que corresponda a su stat ofensiva más alta SOLO si
-  // hay una diferencia notable entre Ataque y Ataque Especial (si están
-  // parejos, no se fuerza ninguna categoría); 1 movimiento de cobertura de
-  // un tipo distinto a los propios (evitando repetir tipo entre los ya
-  // elegidos si hay alternativas); un 4º hueco para un movimiento de
-  // estado útil (subida de la stat ofensiva principal, o recuperación si
-  // el Pokémon tiene PS altos) si lo hay, si no, el siguiente movimiento
-  // de daño de mayor potencia disponible. Si el pool aprendible es
-  // demasiado pequeño para cubrir esto, se rellena con lo que haya
-  // (incluido Tackle/Struggle como último recurso), igual que
-  // assignRandomMoveset.
+  // Criterio, en este orden:
+  //  1) Un movimiento STAB por cada tipo propio (1 si es monotipo, 2 si es
+  //     bitipo), eligiendo el de mayor damageScore disponible de ESE tipo
+  //     concreto — fiabilidad (precisión ≥85 o nula) por delante de
+  //     potencia bruta salvo diferencia grande, y desprioriza (sin excluir)
+  //     fulminantes, movimientos de carga, recarga, retroceso relevante y
+  //     sacrificio propio (ver damageScore/damagePenalty).
+  //  2) Hasta 3 huecos adicionales (2 si bitipo, 3 si monotipo), en este
+  //     orden de prioridad, saltando una categoría sin dejar hueco vacío si
+  //     no hay nada aprendible en ella: a) cobertura de un tercer tipo
+  //     distinto a los propios, b) recuperación (curación directa antes que
+  //     Descanso), c) subida de la stat ofensiva principal, d) inducir un
+  //     estado al rival.
+  //  3) Huecos todavía sin cubrir: siguiente movimiento de daño de mayor
+  //     damageScore, evitando repetir un tipo ya elegido si hay alternativa
+  //     (mismo criterio anti-redundancia que la cobertura del paso 2a).
+  // Si el pool aprendible es demasiado pequeño para cubrir esto, se rellena
+  // con lo que haya (incluido Tackle/Struggle como último recurso), igual
+  // que assignRandomMoveset.
   const buildCompetitiveMoveset = useCallback(async (slug) => {
     const [poke, names] = await Promise.all([getPokemon(slug), getLearnableMoveNames(slug)]);
     const resolved = await Promise.all(names.map((n) => getMove(n)));
@@ -2001,16 +2049,28 @@ function useApiCache() {
     const statusMoves = resolved.filter((m) => !isDamaging(m));
     const categoryOf = (m) => (m.damageClass === "special" ? "special" : "physical");
     // Potencia "efectiva" para ordenar movimientos que no tienen un
-    // `power` numérico fijo (fulminantes, daño variable como Bostezo... no,
-    // esos son de estado): un valor nominal razonable para poder comparar,
-    // no una estimación real de daño (esa ya la hace expectedDamage para
-    // el combate en sí, aquí solo hace falta un orden aproximado).
+    // `power` numérico fijo (fulminantes, daño variable...): un valor
+    // nominal razonable para poder comparar, no una estimación real de
+    // daño (esa ya la hace expectedDamage para el combate en sí, aquí solo
+    // hace falta un orden aproximado).
     const effectivePower = (m) => m.power || (m.isOHKO ? 150 : m.specialDamage ? 80 : 0);
 
     const atk = poke.stats?.attack ?? 0;
     const spa = poke.stats?.["special-attack"] ?? 0;
     const preferredCategory = Math.abs(atk - spa) > 15 ? (spa > atk ? "special" : "physical") : null;
     const categoryBonus = (m) => (preferredCategory && categoryOf(m) === preferredCategory ? 1 : 0);
+
+    // Puntuación de un movimiento de daño para elegir el "mejor" dentro de
+    // un grupo (mismo tipo, o cobertura, o relleno): potencia efectiva +
+    // bonus de categoría preferida + bonus de fiabilidad (+25, pensado para
+    // pesar como una diferencia de potencia moderada: una opción fiable
+    // gana a una menos fiable salvo que esta última tenga bastante más
+    // potencia de verdad) - las penalizaciones de damagePenalty. No
+    // EXCLUYE ningún movimiento: si es el único candidato de su grupo se
+    // elige igual pese a la puntuación baja.
+    function damageScore(m) {
+      return effectivePower(m) + categoryBonus(m) * 5 + (isReliableMove(m) ? 25 : 0) - damagePenalty(m);
+    }
 
     const chosen = [];
     const usedNames = new Set();
@@ -2021,33 +2081,34 @@ function useApiCache() {
       return true;
     }
 
-    // Hasta 2 STAB, priorizando categoría preferida y luego potencia.
-    const stabMoves = damaging.filter((m) => poke.types.includes(m.type));
-    const stabSorted = [...stabMoves].sort((a, b) => (categoryBonus(b) - categoryBonus(a)) || (effectivePower(b) - effectivePower(a)));
-    for (const m of stabSorted) {
-      if (chosen.length >= 2) break;
-      tryAdd(m);
+    // 1) Un STAB por tipo propio (1 si monotipo, 2 si bitipo).
+    for (const type of poke.types) {
+      const ofType = damaging.filter((m) => m.type === type && !usedNames.has(m.name));
+      if (!ofType.length) continue;
+      const best = [...ofType].sort((a, b) => damageScore(b) - damageScore(a))[0];
+      tryAdd(best);
     }
 
-    // 1 de cobertura: tipo distinto a los propios, priorizando no repetir
-    // tipo con lo ya elegido, luego categoría preferida, luego potencia.
-    const coverageMoves = damaging.filter((m) => !poke.types.includes(m.type));
-    const coverageSorted = [...coverageMoves].sort((a, b) => {
-      const usedTypes = new Set(chosen.map((c) => c.type));
-      const aNew = usedTypes.has(a.type) ? 0 : 1, bNew = usedTypes.has(b.type) ? 0 : 1;
-      return (bNew - aNew) || (categoryBonus(b) - categoryBonus(a)) || (effectivePower(b) - effectivePower(a));
-    });
-    for (const m of coverageSorted) {
-      if (tryAdd(m)) break;
+    // 2a) Cobertura: mejor movimiento de daño de un tipo que NO sea
+    // ninguno de los propios (un tercer tipo).
+    if (chosen.length < 4) {
+      const coverage = damaging.filter((m) => !poke.types.includes(m.type) && !usedNames.has(m.name));
+      const best = [...coverage].sort((a, b) => damageScore(b) - damageScore(a))[0];
+      if (best) tryAdd(best);
     }
 
-    // 4º hueco: estado útil (setup de la stat ofensiva principal propia, o
-    // recuperación con PS altos) si lo hay; si no, más daño. Si Ataque y
-    // Ataque Especial están parejos (preferredCategory null), se mira qué
-    // categoría domina entre los movimientos YA elegidos (STAB/cobertura)
-    // en vez de asumir físico por defecto — si no, un Pokémon con set
-    // especial de verdad podía acabar con una subida de Ataque físico que
-    // no beneficia a ninguno de sus otros 3 movimientos.
+    // 2b) Recuperación: curación directa (RECOVERY_MOVE_NAMES menos
+    // "rest") antes que Descanso; Descanso solo si es la única disponible.
+    if (chosen.length < 4) {
+      const recoveryOptions = statusMoves.filter((m) => RECOVERY_MOVE_NAMES.has(m.name) && !usedNames.has(m.name));
+      const pick = recoveryOptions.find((m) => m.name !== "rest") || recoveryOptions.find((m) => m.name === "rest");
+      if (pick) tryAdd(pick);
+    }
+
+    // 2c) Subida de estadísticas: setup de la stat ofensiva más alta
+    // (Ataque vs Ataque Especial). Si están muy parejos (preferredCategory
+    // null), se mira qué categoría domina entre lo YA elegido en vez de
+    // asumir físico por defecto.
     if (chosen.length < 4) {
       let mainOffenseStat;
       if (preferredCategory) {
@@ -2056,21 +2117,35 @@ function useApiCache() {
         const specialCount = chosen.filter((m) => categoryOf(m) === "special").length;
         mainOffenseStat = specialCount > chosen.length - specialCount ? "special-attack" : "attack";
       }
-      const setupMoves = statusMoves.filter((m) => m.selfTargeted && (m.statChanges || []).some((sc) => sc.stat === mainOffenseStat && sc.change > 0));
-      const recoveryMoves = statusMoves.filter((m) => RECOVERY_MOVE_NAMES.has(m.name));
-      const utilityPick = ((poke.stats?.hp ?? 0) >= 90 && recoveryMoves[0]) || setupMoves[0] || recoveryMoves[0] || null;
-      if (utilityPick) tryAdd(utilityPick);
+      const setupMoves = statusMoves.filter((m) =>
+        !usedNames.has(m.name) && m.selfTargeted && (m.statChanges || []).some((sc) => sc.stat === mainOffenseStat && sc.change > 0)
+      );
+      if (setupMoves[0]) tryAdd(setupMoves[0]);
     }
 
-    // Huecos restantes (incluido si no había ni cobertura ni estado útil
-    // disponibles): siguiente movimiento de daño de mayor potencia, sin
-    // repetir tipo si hay alternativa, ya elegido o no.
-    const remainingDamaging = damaging
-      .filter((m) => !usedNames.has(m.name))
-      .sort((a, b) => effectivePower(b) - effectivePower(a));
-    for (const m of remainingDamaging) {
-      if (chosen.length >= 4) break;
-      tryAdd(m);
+    // 2d) Problema de estado: un movimiento que induzca un ailment real al
+    // rival (parálisis/quemadura/sueño/veneno/confusión).
+    if (chosen.length < 4) {
+      const statusInflict = statusMoves.filter((m) =>
+        !usedNames.has(m.name) && !m.selfTargeted && m.ailmentName && m.ailmentName !== "none"
+      );
+      if (statusInflict[0]) tryAdd(statusInflict[0]);
+    }
+
+    // 3) Huecos todavía sin cubrir (pool aprendible limitado o sin nada en
+    // ninguna categoría de 2a-2d): siguiente movimiento de daño de mayor
+    // damageScore, evitando repetir un tipo ya elegido si hay alternativa.
+    if (chosen.length < 4) {
+      const usedTypes = new Set(chosen.map((c) => c.type));
+      const remaining = damaging.filter((m) => !usedNames.has(m.name));
+      const remainingSorted = [...remaining].sort((a, b) => {
+        const aNew = usedTypes.has(a.type) ? 0 : 1, bNew = usedTypes.has(b.type) ? 0 : 1;
+        return (bNew - aNew) || (damageScore(b) - damageScore(a));
+      });
+      for (const m of remainingSorted) {
+        if (chosen.length >= 4) break;
+        tryAdd(m);
+      }
     }
 
     // Último recurso (pool aprendible casi vacío): mismo relleno que
@@ -4894,7 +4969,12 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
           (() => {
             const wins = history.filter((h) => h.finalPosition === 1).length;
             const winPct = Math.round((wins / played) * 100);
-            const bestPosition = Math.min(...history.map((h) => h.finalPosition));
+            // Draft no tiene "posición final" (no hay clasificación de 8, ver
+            // DraftMode): sus entradas guardan finalPosition=null a
+            // propósito, así que se excluyen de "Mejor posición" para no
+            // falsear el mínimo con un null convertido a 0.
+            const positionedHistory = history.filter((h) => h.finalPosition != null);
+            const bestPosition = positionedHistory.length ? Math.min(...positionedHistory.map((h) => h.finalPosition)) : null;
             const totalCoins = history.reduce((sum, h) => sum + h.coinsEarned, 0);
             let streak = 0;
             for (const h of history) {
@@ -4910,6 +4990,12 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
             const modeB = modeStats("B");
             const modeC = modeStats("C");
             const modeWeekly = modeStats("weekly");
+            // Draft: "victorias" no tiene sentido (no hay una posición final
+            // que ganar), así que se muestran partidas jugadas y el total de
+            // rondas ganadas acumuladas en su lugar (ver draftRoundsWon en
+            // cada entrada, puesto por DraftMode).
+            const draftList = history.filter((h) => h.mode === "draft");
+            const draftRoundsWonTotal = draftList.reduce((sum, h) => sum + (h.draftRoundsWon || 0), 0);
 
             return (
               <>
@@ -4917,7 +5003,7 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
                   {[
                     ["Torneos jugados", played, "#c7cbdb"],
                     ["Victorias", `${wins} (${winPct}%)`, "#5fae5f"],
-                    ["Mejor posición", `${bestPosition}º`, "#4a90d9"],
+                    ["Mejor posición", bestPosition != null ? `${bestPosition}º` : "—", "#4a90d9"],
                     ["Monedas ganadas", totalCoins, "#f2b705"],
                     ["Racha de victorias", streak, "#e3350d"],
                   ].map(([label, value, color]) => (
@@ -4928,7 +5014,7 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
                   ))}
                 </div>
 
-                <div className="grid sm:grid-cols-4 gap-2 mb-5">
+                <div className="grid sm:grid-cols-5 gap-2 mb-5">
                   <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
                     <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Modo A · Solo tu entrenador</div>
                     <div className="text-sm text-white">{modeA.played} jugados · {modeA.wins} victorias ({modeA.pct}%)</div>
@@ -4945,6 +5031,10 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
                     <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Torneo Semanal</div>
                     <div className="text-sm text-white">{modeWeekly.played} jugados · {modeWeekly.wins} victorias ({modeWeekly.pct}%)</div>
                   </div>
+                  <div className="rounded-lg p-3" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+                    <div className="text-xs font-semibold text-[#8a8fa3] mb-1">Draft</div>
+                    <div className="text-sm text-white">{draftList.length} partidas · {draftRoundsWonTotal} rondas ganadas en total</div>
+                  </div>
                 </div>
 
                 <div className="rounded-xl overflow-hidden border border-[#262a3a]">
@@ -4959,10 +5049,12 @@ function TournamentHistoryModal({ open, history, playerProfile, onClose }) {
                         style={{ background: i % 2 ? "#14161f" : "#12141c", borderTop: "1px solid #1e2130" }}
                       >
                         <span className="text-[#9aa0b4]">{new Date(h.date).toLocaleDateString()}</span>
-                        <span className="text-[#c7cbdb]" title={h.mode === "weekly" ? "Torneo Semanal" : undefined}>{h.mode === "weekly" ? "S" : h.mode}</span>
+                        <span className="text-[#c7cbdb]" title={h.mode === "weekly" ? "Torneo Semanal" : h.mode === "draft" ? "Draft" : undefined}>
+                          {h.mode === "weekly" ? "S" : h.mode === "draft" ? "D" : h.mode}
+                        </span>
                         <span className="text-white truncate" title={h.trainerName}>{h.trainerName}</span>
-                        <span className="text-[#c7cbdb]">{h.finalPosition}º</span>
-                        <span className="text-[#c7cbdb]">{h.points}</span>
+                        <span className="text-[#c7cbdb]">{h.finalPosition != null ? `${h.finalPosition}º` : "—"}</span>
+                        <span className="text-[#c7cbdb]">{h.mode === "draft" ? `${h.draftRoundsWon} rondas` : h.points}</span>
                         <span className="text-right text-[#f2b705] font-semibold">+{h.coinsEarned}</span>
                       </div>
                     ))}
@@ -5050,7 +5142,7 @@ function buildPairsAvoidingRematches(ordered, playedPairsSet) {
   return best;
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -5559,7 +5651,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
               <Users size={18} color="#f2b705" /> Modo de torneo
             </h3>
-            <div className="grid sm:grid-cols-4 gap-3">
+            <div className="grid sm:grid-cols-5 gap-3">
               <button
                 onClick={() => customTrainer && handleModeChange("A")}
                 disabled={!customTrainer}
@@ -5612,9 +5704,33 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                 </div>
                 <div className="text-[11px] text-[#8a8fa3]">Dificultad Maestro fija y una temática distinta cada semana. Recompensa única de {WEEKLY_TOURNAMENT_REWARD} monedas la primera vez que ganes.</div>
               </button>
+              <button
+                onClick={() => handleModeChange("draft")}
+                className="rounded-xl p-4 text-left transition-all"
+                style={{
+                  background: mode === "draft" ? "linear-gradient(160deg, #4a90d933, #14161f)" : "#14161f",
+                  border: mode === "draft" ? "1.5px solid #4a90d9" : "1px solid #262a3a",
+                }}
+              >
+                <div className="text-white font-semibold text-sm mb-1">Draft</div>
+                <div className="text-[11px] text-[#8a8fa3]">Rivales infinitos con tu colección real. ⚠️ Cambios PERMANENTES: puedes ganar y perder Pokémon para siempre.</div>
+              </button>
             </div>
           </div>
 
+          {mode === "draft" ? (
+            <DraftMode
+              api={api}
+              collection={collection}
+              coins={coins}
+              setCoins={setCoins}
+              onTournamentFinished={onTournamentFinished}
+              onCombatMechanics={onCombatMechanics}
+              onDraftResult={onDraftResult}
+              playerProfile={playerProfile}
+            />
+          ) : (
+          <>
           {mode === "B" ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {unlockedTrainers.map((t) => (
@@ -5785,6 +5901,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           >
             Iniciar torneo <ChevronRight size={18} />
           </button>
+          </>
+          )}
         </div>
       )}
 
@@ -5948,6 +6066,480 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       )}
     </div>
   );
+}
+
+/* ---------------------------------------------------------------
+   MODO DRAFT
+--------------------------------------------------------------- */
+
+// Fisher-Yates in-place, mismo patrón ya usado en varios sitios del motor
+// (rotateTeamRandomStart, sorteos de Ruleta Pokémon...).
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+const DRAFT_ROUND_COINS = 100;
+// Ids fijos y estables de los dos "trainers" sintéticos del Draft (nunca
+// cambian de partida en partida): el equipo del usuario nunca usa "ash" (a
+// diferencia de los modos A/B/C/weekly, el Draft NO reskinea ningún
+// entrenador del roster, ver el pedido: "el entrenador propio del usuario
+// NO se usa en este modo"), y el rival reutiliza siempre el mismo id, ya
+// que primeMoveset sobrescribe sin más el moveset de cada slug bajo ese id
+// en cada ronda (ver primeMoveset/getMoveset: `movesetCache.current[key] =
+// moves` es una asignación directa, no un "solo si falta").
+const DRAFT_USER_ID = "draft-user";
+const DRAFT_RIVAL_ID = "draft-rival";
+
+// Modo Draft: el usuario construye su equipo desde su colección REAL del
+// gacha y se enfrenta a rivales generados indefinidamente; cada victoria
+// obliga a un intercambio 1x1 con el equipo del rival derrotado, y el
+// resultado final (qué Pokémon quedaron en el equipo) se aplica de forma
+// PERMANENTE a la colección real al terminar (por derrota o retirada
+// voluntaria). No reutiliza standings/finalizeRound/TOURNAMENT_ROUNDS de
+// TorneoTab (ver comentario de arriba de startTournament): es una liga sin
+// límite de rondas, no un Swiss de 8 participantes, así que tiene su propio
+// bucle de estado independiente y solo toma prestado lo genérico del motor
+// (api.simulateMatch vía InteractiveBattle, api.primeMoveset,
+// api.buildCompetitiveMoveset).
+function DraftMode({ api, collection, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile }) {
+  const [phase, setPhase] = useState("team-select"); // team-select, confirm, loading, battle, swap, post-swap, summary
+  const [selectedKeys, setSelectedKeys] = useState([]);
+  const [confirmChecked, setConfirmChecked] = useState(false);
+  const [draftTeam, setDraftTeam] = useState(null); // [{ slug, shiny, moves, origin: "collection"|"draft", originalKey? }]
+  const [originalKeys, setOriginalKeys] = useState(null); // Set<collectionEntryKey> del equipo inicial
+  const [roundsWon, setRoundsWon] = useState(0);
+  const [coinsAccumulated, setCoinsAccumulated] = useState(0);
+  const [rivalPool, setRivalPool] = useState(null); // ids de TRAINERS barajados, consumidos en orden ronda a ronda
+  const [currentRound, setCurrentRound] = useState(0);
+  const [opponentMeta, setOpponentMeta] = useState(null); // { name, color, subtitle, team: [{slug, moves}] }
+  const [error, setError] = useState(null);
+  const [swapOutIdx, setSwapOutIdx] = useState(null);
+  const [swapInSlug, setSwapInSlug] = useState(null);
+  const [summaryAdditions, setSummaryAdditions] = useState([]);
+  const [summaryRemovals, setSummaryRemovals] = useState([]);
+  const [sprites, setSprites] = useState({});
+
+  // Sprites para el selector de equipo inicial (colección completa) y,
+  // según la fase, también los del equipo actual/del rival — se piden todos
+  // los slugs relevantes cada vez que cambian, sin re-pedir los que ya
+  // están en caché local (`sprites`).
+  useEffect(() => {
+    const slugs = new Set(collection.map((c) => c.slug));
+    if (draftTeam) draftTeam.forEach((p) => slugs.add(p.slug));
+    if (opponentMeta) opponentMeta.team.forEach((p) => slugs.add(p.slug));
+    let cancelled = false;
+    (async () => {
+      for (const slug of slugs) {
+        if (sprites[slug]) continue;
+        const p = await api.getPokemon(slug);
+        if (!cancelled) setSprites((s) => (s[slug] ? s : { ...s, [slug]: p }));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collection, draftTeam, opponentMeta, api]);
+
+  function toggleTeamSelect(key) {
+    setSelectedKeys((sel) => {
+      if (sel.includes(key)) return sel.filter((k) => k !== key);
+      if (sel.length >= WEEKLY_TEAM_SIZE) return sel;
+      return [...sel, key];
+    });
+  }
+
+  function confirmTeamSelection() {
+    if (selectedKeys.length !== WEEKLY_TEAM_SIZE) return;
+    const team = selectedKeys.map((key) => {
+      const entry = collection.find((c) => collectionEntryKey(c) === key);
+      return { slug: entry.slug, shiny: !!entry.shiny, moves: entry.moves, origin: "collection", originalKey: key };
+    });
+    setDraftTeam(team);
+    setOriginalKeys(new Set(selectedKeys));
+    setPhase("confirm");
+  }
+
+  // Genera el rival de la ronda `roundNum` (1-indexado): nombre prestado de
+  // TRAINERS (barajado sin repetir, agotable) mientras queden, y a partir
+  // de ahí "Desafiante N" indefinidamente — nunca se acaban los rivales.
+  function nextOpponentIdentity(roundNum, pool) {
+    if (roundNum <= pool.length) {
+      const t = TRAINERS.find((tr) => tr.id === pool[roundNum - 1]);
+      return { name: t.name, color: t.color, subtitle: t.subtitle };
+    }
+    return { name: `Desafiante ${roundNum}`, color: "#6c7a89", subtitle: "Retador" };
+  }
+
+  async function prepareRound(roundNum, pool, team) {
+    setError(null);
+    setPhase("loading");
+    try {
+      const identity = nextOpponentIdentity(roundNum, pool);
+      const rivalPicks = shuffleInPlace([...GACHA_POOL]).slice(0, 6);
+      const rivalTeam = await Promise.all(rivalPicks.map(async (p) => {
+        const moves = await api.buildCompetitiveMoveset(p.slug);
+        await api.primeMoveset(DRAFT_RIVAL_ID, p.slug, moves);
+        return { slug: p.slug, moves };
+      }));
+      await Promise.all(team.map((p) => api.primeMoveset(DRAFT_USER_ID, p.slug, p.moves)));
+      setOpponentMeta({ ...identity, team: rivalTeam });
+      setCurrentRound(roundNum);
+      setPhase("battle");
+    } catch (e) {
+      setError("No se pudo conectar con PokeAPI. Comprueba tu conexión e inténtalo de nuevo.");
+      setPhase(roundNum === 1 ? "confirm" : "post-swap");
+    }
+  }
+
+  async function startDraft() {
+    setError(null);
+    setPhase("loading");
+    try {
+      api.clearPrimedMovesets();
+      await api.preloadAll();
+      const pool = shuffleInPlace(TRAINERS.map((t) => t.id));
+      setRivalPool(pool);
+      setRoundsWon(0);
+      setCoinsAccumulated(0);
+      await prepareRound(1, pool, draftTeam);
+    } catch (e) {
+      setError("No se pudo conectar con PokeAPI. Comprueba tu conexión e inténtalo de nuevo.");
+      setPhase("confirm");
+    }
+  }
+
+  function handleBattleFinish(matchResult) {
+    if (matchResult.mechanicsFlags && onCombatMechanics) onCombatMechanics(matchResult.mechanicsFlags);
+    if (matchResult.winnerId !== DRAFT_USER_ID) {
+      finishDraft(draftTeam);
+      return;
+    }
+    setRoundsWon((r) => r + 1);
+    setCoinsAccumulated((c) => c + DRAFT_ROUND_COINS);
+    setSwapOutIdx(null);
+    setSwapInSlug(null);
+    setPhase("swap");
+  }
+
+  function confirmSwap() {
+    if (swapOutIdx == null || !swapInSlug) return;
+    const incoming = opponentMeta.team.find((p) => p.slug === swapInSlug);
+    const newTeam = draftTeam.map((p, i) => (i === swapOutIdx ? { slug: incoming.slug, shiny: false, moves: incoming.moves, origin: "draft" } : p));
+    setDraftTeam(newTeam);
+    setPhase("post-swap");
+  }
+
+  function continueDraft() {
+    prepareRound(currentRound + 1, rivalPool, draftTeam);
+  }
+
+  // Fin del Draft (derrota o retirada voluntaria): calcula qué se añade y
+  // qué se pierde de la colección real, y pasa a la pantalla de resumen
+  // ANTES de aplicar nada — la aplicación real ocurre al pulsar el botón
+  // del resumen (ver applyAndReturn), para que quede constancia clara de lo
+  // ocurrido antes de tocar la colección de verdad.
+  function finishDraft(finalTeam) {
+    const additions = finalTeam.filter((p) => p.origin === "draft").map((p) => p.slug);
+    const keptKeys = new Set(finalTeam.filter((p) => p.origin === "collection").map((p) => p.originalKey));
+    const removals = [...originalKeys].filter((key) => !keptKeys.has(key)).map((key) => key.split("::")[0]);
+    setSummaryAdditions(additions);
+    setSummaryRemovals(removals);
+    setPhase("summary");
+  }
+
+  function applyAndReturn() {
+    onDraftResult(draftTeam, originalKeys);
+    setCoins((c) => c + coinsAccumulated);
+    onTournamentFinished({
+      date: Date.now(),
+      mode: "draft",
+      trainerId: DRAFT_USER_ID,
+      trainerName: "Draft",
+      finalPosition: null,
+      points: 0,
+      coinsEarned: coinsAccumulated,
+      draftRoundsWon: roundsWon,
+    });
+    setPhase("team-select");
+    setSelectedKeys([]);
+    setConfirmChecked(false);
+    setDraftTeam(null);
+    setOriginalKeys(null);
+    setRoundsWon(0);
+    setCoinsAccumulated(0);
+    setOpponentMeta(null);
+    setSummaryAdditions([]);
+    setSummaryRemovals([]);
+  }
+
+  const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
+
+  if (phase === "team-select") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl p-4" style={{ background: "#4a90d914", border: "1px solid #4a90d955" }}>
+          <div className="text-white font-semibold text-sm mb-1">Construye tu equipo Draft</div>
+          <div className="text-[11px] text-[#8a8fa3]">Elige exactamente 6 Pokémon de tu colección real. Combatirán con los movimientos que ya tienen asignados.</div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-[#8a8fa3]">Elige 6 Pokémon</span>
+          <span className="text-xs font-semibold" style={{ color: selectedKeys.length === WEEKLY_TEAM_SIZE ? "#5fae5f" : "#8a8fa3" }}>
+            {selectedKeys.length} / {WEEKLY_TEAM_SIZE}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {collection.map((c) => {
+            const key = collectionEntryKey(c);
+            const p = sprites[c.slug];
+            const sprite = spriteOf(c.slug, c.shiny);
+            const isSelected = selectedKeys.includes(key);
+            const disabled = !isSelected && selectedKeys.length >= WEEKLY_TEAM_SIZE;
+            return (
+              <button
+                key={key}
+                onClick={() => toggleTeamSelect(key)}
+                disabled={disabled}
+                className="rounded-lg p-2 text-left flex items-center gap-2 disabled:opacity-40 relative"
+                style={{ background: isSelected ? "#4a90d91e" : "#14161f", border: isSelected ? "1.5px solid #4a90d9" : c.shiny ? "1px solid #f2b70566" : "1px solid #262a3a" }}
+              >
+                {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                <div className="min-w-0">
+                  <div className="text-white text-xs font-semibold truncate flex items-center gap-1">
+                    {p?.name || displayName(c.slug)}
+                    {c.shiny && <Star size={10} fill="#f2b705" color="#f2b705" />}
+                  </div>
+                  <div className="flex gap-0.5 flex-wrap">{(p?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
+                </div>
+                {isSelected && <Check size={14} color="#5fae5f" className="ml-auto shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+        {collection.length < WEEKLY_TEAM_SIZE && (
+          <div className="text-[11px] text-[#ff8a8a]">Necesitas al menos {WEEKLY_TEAM_SIZE} Pokémon en tu colección para jugar al Draft (tienes {collection.length}). Consigue más en el Gacha.</div>
+        )}
+        <button
+          onClick={confirmTeamSelection}
+          disabled={selectedKeys.length !== WEEKLY_TEAM_SIZE}
+          className="px-6 py-3 rounded-xl font-display text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#4a90d9,#2c5f8a)" }}
+        >
+          Continuar
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "confirm") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl p-4" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+          <div className="text-white font-display text-lg mb-2 flex items-center gap-2">⚠️ Los cambios del Draft son PERMANENTES</div>
+          <ul className="text-sm text-[#c7cbdb] space-y-1.5 list-disc pl-5">
+            <li>Los Pokémon de tu equipo que acaben <span className="text-[#ff8a8a] font-semibold">fuera</span> de tu equipo al terminar el Draft se <span className="text-[#ff8a8a] font-semibold">perderán de tu colección para siempre</span>.</li>
+            <li>Los Pokémon que ganes de tus rivales y conserves al terminar se <span className="text-[#5fae5f] font-semibold">añadirán a tu colección para siempre</span>.</li>
+            <li>Puedes retirarte después de cualquier ronda ganada para aplicar el resultado cuando quieras, o seguir hasta que pierdas.</li>
+          </ul>
+          <label className="flex items-center gap-2 mt-4 text-sm text-white cursor-pointer">
+            <input type="checkbox" checked={confirmChecked} onChange={(e) => setConfirmChecked(e.target.checked)} />
+            He entendido que los cambios de este Draft son permanentes.
+          </label>
+        </div>
+        {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setPhase("team-select")}
+            className="px-4 py-2.5 rounded-lg text-sm font-semibold"
+            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          >
+            Volver a elegir equipo
+          </button>
+          <button
+            onClick={startDraft}
+            disabled={!confirmChecked}
+            className="px-6 py-2.5 rounded-xl font-display text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+          >
+            Entiendo, empezar Draft
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === "loading") {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-[#9aa0b4]">
+        <Loader2 className="animate-spin mb-3" size={28} />
+        <div className="text-sm">Preparando el Draft...</div>
+      </div>
+    );
+  }
+
+  const draftStatusBar = (
+    <div className="flex flex-wrap items-center gap-3 text-xs text-[#9aa0b4] rounded-lg p-2.5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      <span className="flex items-center gap-1"><Swords size={13} color="#4a90d9" /> Ronda {currentRound}</span>
+      <span className="flex items-center gap-1"><Trophy size={13} color="#f2b705" /> {roundsWon} rondas ganadas</span>
+      <span className="flex items-center gap-1"><Coins size={13} color="#f2b705" /> {coinsAccumulated} monedas acumuladas</span>
+      {opponentMeta && <span className="ml-auto">Contra: <span className="text-white font-semibold">{opponentMeta.name}</span></span>}
+    </div>
+  );
+
+  if (phase === "battle" && opponentMeta) {
+    const trainerA = { id: DRAFT_USER_ID, name: playerProfile?.nickname || "Tu equipo", color: "#4a90d9", subtitle: "Draft", team: draftTeam.map((p) => p.slug) };
+    const trainerB = { id: DRAFT_RIVAL_ID, name: opponentMeta.name, color: opponentMeta.color, subtitle: opponentMeta.subtitle, team: opponentMeta.team.map((p) => p.slug) };
+    return (
+      <div className="space-y-4">
+        {draftStatusBar}
+        <InteractiveBattle
+          key={`draft-round-${currentRound}`}
+          api={api}
+          trainerA={trainerA}
+          trainerB={trainerB}
+          userSide="a"
+          difficulty="normal"
+          onFinish={handleBattleFinish}
+        />
+      </div>
+    );
+  }
+
+  if (phase === "swap" && opponentMeta) {
+    return (
+      <div className="space-y-4">
+        {draftStatusBar}
+        <div className="rounded-xl p-4" style={{ background: "#5fae5f14", border: "1px solid #5fae5f55" }}>
+          <div className="text-white font-semibold text-sm mb-1">¡Has ganado! Intercambio obligatorio</div>
+          <div className="text-[11px] text-[#8a8fa3]">Elige un Pokémon de tu equipo actual para sacar, y uno del equipo de {opponentMeta.name} para meter en su lugar.</div>
+        </div>
+
+        <div>
+          <div className="text-xs font-semibold text-[#8a8fa3] mb-2">Tu equipo actual (elige a quién sacar)</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {draftTeam.map((p, i) => {
+              const info = sprites[p.slug];
+              const selected = swapOutIdx === i;
+              return (
+                <button
+                  key={i}
+                  onClick={() => setSwapOutIdx(i)}
+                  className="rounded-lg p-2 text-left flex items-center gap-2"
+                  style={{ background: selected ? "#e3350d1e" : "#14161f", border: selected ? "1.5px solid #e3350d" : "1px solid #262a3a" }}
+                >
+                  {spriteOf(p.slug, p.shiny) ? <img src={spriteOf(p.slug, p.shiny)} alt={p.slug} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                  <div className="min-w-0">
+                    <div className="text-white text-xs font-semibold truncate">{info?.name || displayName(p.slug)}</div>
+                    <div className="flex gap-0.5 flex-wrap">{(info?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-semibold text-[#8a8fa3] mb-2">Equipo de {opponentMeta.name} (elige a quién meter)</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {opponentMeta.team.map((p, i) => {
+              const info = sprites[p.slug];
+              const selected = swapInSlug === p.slug;
+              return (
+                <button
+                  key={i}
+                  onClick={() => setSwapInSlug(p.slug)}
+                  className="rounded-lg p-2 text-left flex items-center gap-2"
+                  style={{ background: selected ? "#5fae5f1e" : "#14161f", border: selected ? "1.5px solid #5fae5f" : "1px solid #262a3a" }}
+                >
+                  {spriteOf(p.slug, false) ? <img src={spriteOf(p.slug, false)} alt={p.slug} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                  <div className="min-w-0">
+                    <div className="text-white text-xs font-semibold truncate">{info?.name || displayName(p.slug)}</div>
+                    <div className="flex gap-0.5 flex-wrap">{(info?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <button
+          onClick={confirmSwap}
+          disabled={swapOutIdx == null || !swapInSlug}
+          className="px-6 py-2.5 rounded-xl font-display text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#4a90d9,#2c5f8a)" }}
+        >
+          Confirmar intercambio
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "post-swap") {
+    return (
+      <div className="space-y-4">
+        {draftStatusBar}
+        <div className="text-sm text-[#c7cbdb]">Intercambio hecho. ¿Sigues al siguiente rival, o te retiras y aplicas el resultado ahora?</div>
+        {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={continueDraft}
+            className="px-6 py-2.5 rounded-xl font-display text-white"
+            style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+          >
+            Continuar (Ronda {currentRound + 1}) <ChevronRight size={16} className="inline" />
+          </button>
+          <button
+            onClick={() => finishDraft(draftTeam)}
+            className="px-6 py-2.5 rounded-xl font-display text-sm"
+            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          >
+            Retirarse y aplicar resultado
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === "summary") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl p-4" style={{ background: "linear-gradient(135deg,#4a90d922,#12141c)", border: "1px solid #4a90d944" }}>
+          <div className="text-white font-display text-lg mb-2">Fin del Draft</div>
+          <div className="text-sm text-[#c7cbdb] mb-1">Rondas ganadas: <span className="font-bold text-white">{roundsWon}</span></div>
+          <div className="text-sm text-[#c7cbdb]">Monedas obtenidas: <span className="font-bold text-[#f2b705]">+{coinsAccumulated}</span></div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div className="rounded-lg p-3" style={{ background: "#5fae5f14", border: "1px solid #5fae5f55" }}>
+            <div className="text-xs font-semibold text-[#5fae5f] mb-1.5">Se añaden a tu colección para siempre ({summaryAdditions.length})</div>
+            {summaryAdditions.length === 0 ? (
+              <div className="text-[11px] text-[#8a8fa3]">Ninguno.</div>
+            ) : (
+              <ul className="text-sm text-white space-y-0.5">{summaryAdditions.map((slug, i) => <li key={i}>{displayName(slug)}</li>)}</ul>
+            )}
+          </div>
+          <div className="rounded-lg p-3" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+            <div className="text-xs font-semibold text-[#ff8a8a] mb-1.5">Se pierden para siempre ({summaryRemovals.length})</div>
+            {summaryRemovals.length === 0 ? (
+              <div className="text-[11px] text-[#8a8fa3]">Ninguno.</div>
+            ) : (
+              <ul className="text-sm text-white space-y-0.5">{summaryRemovals.map((slug, i) => <li key={i}>{displayName(slug)}</li>)}</ul>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={applyAndReturn}
+          className="px-6 py-3 rounded-xl font-display text-lg text-white"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          Aplicar y volver
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 /* ---------------------------------------------------------------
@@ -7417,6 +8009,17 @@ export default function App() {
   const [coins, setCoins] = useState(loadStoredCoins);
   const [purchasedTrainerIds, setPurchasedTrainerIds] = useState(loadStoredPurchasedTrainers);
   const [collection, setCollection] = useState(loadStoredCollection);
+  // Escape hatch del blindaje contra pérdidas de datos de la colección (ver
+  // el useEffect de persistencia más abajo): el modo Draft es la ÚNICA
+  // función de la app que de verdad puede (y debe) reducir la colección a
+  // propósito, cuando el usuario pierde Pokémon de forma permanente al
+  // terminar una partida. `applyDraftCollectionResult` marca este ref justo
+  // antes de llamar a setCollection con un array potencialmente más
+  // pequeño, para que esa escritura concreta no se bloquee; el efecto lo
+  // consume y lo vuelve a poner a `false` en cuanto lo usa, así que
+  // cualquier reducción NO relacionada con Draft (un bug, una corrupción de
+  // estado) sigue quedando bloqueada como hasta ahora.
+  const allowCollectionShrinkRef = useRef(false);
   const [customTrainer, setCustomTrainer] = useState(() => loadStoredCustomTrainer(loadStoredCollection()));
   const [ownedTrainerMovesets, setOwnedTrainerMovesets] = useState(loadStoredOwnedTrainerMovesets);
   const [tournamentHistory, setTournamentHistory] = useState(loadStoredTournamentHistory);
@@ -7481,21 +8084,23 @@ export default function App() {
     try { localStorage.setItem(WEEKLY_TOURNAMENT_STORAGE_KEY, JSON.stringify(weeklyTournamentState)); } catch (e) { /* localStorage no disponible */ }
   }, [weeklyTournamentState]);
 
-  // Blindaje contra pérdidas de datos de la colección: NINGUNA función de
-  // la app borra entradas hoy (solo se añade una nueva tras una tirada de
-  // gacha, o se sustituye el campo `moves` de una entrada existente al
-  // editarla — ver GatchaTab/PokemonTab), así que el tamaño de la
-  // colección nunca debería reducirse por sí solo. Antes de escribir,
-  // se compara contra lo que YA hay en disco (no solo contra el estado en
-  // memoria, para detectar también el caso de dos pestañas abiertas a la
-  // vez, donde una pudiera intentar sobrescribir con un estado más viejo
-  // que el que la otra ya guardó): si la nueva escritura reduciría el
-  // número de entradas de forma inesperada, se aborta sin tocar
-  // localStorage (el dato previo se conserva intacto) y se avisa. Si el
-  // valor previo en disco está corrupto (JSON inválido) no hay con qué
-  // comparar, así que se deja pasar la escritura — es la única forma de
-  // recuperarse de una corrupción real, y no hay ningún baseline fiable
-  // que proteger en ese caso.
+  // Blindaje contra pérdidas de datos de la colección: fuera del modo
+  // Draft, ninguna función de la app borra entradas (solo se añade una
+  // nueva tras una tirada de gacha, o se sustituye el campo `moves` de una
+  // entrada existente al editarla — ver GatchaTab/PokemonTab), así que el
+  // tamaño de la colección nunca debería reducirse por sí solo. Antes de
+  // escribir, se compara contra lo que YA hay en disco (no solo contra el
+  // estado en memoria, para detectar también el caso de dos pestañas
+  // abiertas a la vez, donde una pudiera intentar sobrescribir con un
+  // estado más viejo que el que la otra ya guardó): si la nueva escritura
+  // reduciría el número de entradas de forma inesperada, se aborta sin
+  // tocar localStorage (el dato previo se conserva intacto) y se avisa —
+  // SALVO que `allowCollectionShrinkRef` esté marcado (ver su declaración),
+  // que es como el modo Draft aplica sus pérdidas permanentes de forma
+  // intencionada. Si el valor previo en disco está corrupto (JSON
+  // inválido) no hay con qué comparar, así que se deja pasar la escritura
+  // — es la única forma de recuperarse de una corrupción real, y no hay
+  // ningún baseline fiable que proteger en ese caso.
   useEffect(() => {
     try {
       let previousLength = null;
@@ -7506,12 +8111,13 @@ export default function App() {
           if (Array.isArray(prev)) previousLength = prev.length;
         } catch (parseErr) { /* JSON corrupto: sin baseline fiable, se deja pasar la escritura */ }
       }
-      if (previousLength != null && collection.length < previousLength) {
+      if (previousLength != null && collection.length < previousLength && !allowCollectionShrinkRef.current) {
         setCollectionSaveError(
           `Se ha bloqueado un intento de guardar tu colección con menos Pokémon (${collection.length}) de los que ya tenías guardados (${previousLength}), para no perder datos. Recarga la página antes de seguir editando.`
         );
         return;
       }
+      allowCollectionShrinkRef.current = false;
       localStorage.setItem(COLLECTION_STORAGE_KEY, JSON.stringify(collection));
     } catch (e) { /* localStorage no disponible */ }
   }, [collection]);
@@ -7604,6 +8210,32 @@ export default function App() {
   function addTournamentHistoryEntry(entry) {
     setTournamentHistory((h) => [entry, ...h].slice(0, TOURNAMENT_HISTORY_LIMIT));
     setAchievementProgress((p) => applyTournamentResult(p, entry));
+  }
+
+  // Aplica las consecuencias PERMANENTES del modo Draft (ver DraftMode) a
+  // la colección real: `finalTeam` es el equipo con el que terminó el
+  // Draft ([{ slug, shiny, moves, origin: "collection"|"draft",
+  // originalKey? }]), `originalKeys` es el Set de collectionEntryKey del
+  // equipo con el que EMPEZÓ (los 6 elegidos al construir el equipo). Todo
+  // Pokémon de la colección original que ya no esté en el equipo final se
+  // elimina para siempre; todo Pokémon del equipo final que no viniera de
+  // la colección original se añade para siempre; el resto de la colección
+  // (todo lo que nunca formó parte del equipo de este Draft) no se toca.
+  // Marca `allowCollectionShrinkRef` porque esta es la única vía legítima
+  // de la app para reducir la colección a propósito (ver su declaración y
+  // el useEffect de persistencia que lo consume).
+  function applyDraftCollectionResult(finalTeam, originalKeys) {
+    allowCollectionShrinkRef.current = true;
+    setCollection((prev) => {
+      const finalCollectionKeys = new Set(
+        finalTeam.filter((p) => p.origin === "collection").map((p) => p.originalKey)
+      );
+      const kept = prev.filter((e) => !originalKeys.has(collectionEntryKey(e)) || finalCollectionKeys.has(collectionEntryKey(e)));
+      const additions = finalTeam
+        .filter((p) => p.origin === "draft")
+        .map((p) => ({ slug: p.slug, moves: p.moves, obtainedAt: Date.now(), shiny: false }));
+      return [...kept, ...additions];
+    });
   }
 
   // Al hacer una tirada de gacha (ver GatchaTab): alimenta los contadores
@@ -7781,6 +8413,7 @@ export default function App() {
             playerProfile={playerProfile}
             weeklyTournamentState={weeklyTournamentState}
             setWeeklyTournamentState={setWeeklyTournamentState}
+            onDraftResult={applyDraftCollectionResult}
           />
         </div>
         <div style={{ display: tab === "personajes" ? "block" : "none" }}>
