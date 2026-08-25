@@ -342,6 +342,13 @@ export const CHANGELOG = [
     detail: "Se sustituye el círculo de iniciales del entrenador propio por el avatar VIGENTE del perfil del jugador en Personajes, el selector de Torneo (modo A) y la clasificación del torneo, leyéndolo en cada render en vez de guardar una copia aparte: si más adelante cambias tu avatar de perfil, el entrenador propio lo refleja automáticamente en todos esos sitios sin tocar nada más. Los 20 entrenadores del roster no se ven afectados, siguen usando su propio sprite ya asignado con normalidad.",
     date: "2026-08-19T18:49:15+02:00",
   },
+  {
+    id: 48,
+    title: "Nuevo modo: Torre Batalla",
+    summary: "Combates infinitos con el equipo de cualquier entrenador desbloqueado (o el tuyo propio), con dificultad y stats del rival crecientes cada 5 rondas, y un récord personal de rondas superadas.",
+    detail: "Nueva sección en la tab Torneo, sin intercambios ni consecuencias sobre tu colección (a diferencia del Draft): eliges con qué entrenador jugar (cualquiera de los desbloqueados/comprados, o tu entrenador propio si lo tienes) y te enfrentas a rivales infinitos generados igual que en el Draft. La dificultad de la IA escala cada bloque de 5 rondas (Normal 1-5, Difícil 6-10, Maestro 11+), y a partir de la ronda 16 se añade además un +5% adicional a las stats del equipo rival por cada bloque de 5 rondas superado, sin límite. Tu equipo mantiene el desgaste (PS, estados, debilitados) dentro de un mismo bloque de 5 rondas y se cura por completo justo al pasar al siguiente. Las monedas por ronda superada también escalan con la dificultad (100/150/200, +50 extra por cada bloque de boost), y puedes retirarte y cobrar después de cualquier ronda ganada. Se guarda un historial propio de partidas y un récord personal (mejor número de rondas superadas), visible antes de empezar y en vivo durante la partida — por ahora es un ranking puramente local/personal; un ranking global entre jugadores sería una ampliación futura que necesitaría infraestructura de servidor.",
+    date: "2026-08-25T18:52:50+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

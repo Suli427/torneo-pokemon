@@ -282,6 +282,45 @@ function loadStoredTournamentHistory() {
   return [];
 }
 
+const BATTLE_TOWER_HISTORY_STORAGE_KEY = "liga-pokemon:battle-tower-history";
+const BATTLE_TOWER_BEST_STORAGE_KEY = "liga-pokemon:battle-tower-best";
+const BATTLE_TOWER_HISTORY_LIMIT = 20;
+
+// Historial de partidas de Torre Batalla (ver BattleTowerMode), SEPARADO
+// del historial de torneos normales: [{ date, trainerId, roundsCleared,
+// difficultyReached, statBoostTier, coinsEarned }], más recientes primero,
+// limitado a las últimas BATTLE_TOWER_HISTORY_LIMIT — misma forma pensada
+// para poder conectar un ranking global más adelante (ver el pedido: por
+// ahora es puramente local/personal, un ranking global necesitaría
+// infraestructura de servidor). Mismo patrón try/catch que el resto de
+// datos persistidos.
+function loadStoredBattleTowerHistory() {
+  try {
+    const raw = localStorage.getItem(BATTLE_TOWER_HISTORY_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return [];
+}
+
+// Récord personal de la Torre Batalla: la entrada completa (misma forma que
+// una del historial) de la mejor partida por `roundsCleared` hasta ahora, o
+// `null` si nunca se ha jugado ninguna. Se guarda aparte del historial
+// completo (en vez de derivarlo cada vez con un max()) para que quede como
+// un valor estable y barato de leer en cualquier punto de la interfaz.
+function loadStoredBattleTowerBest() {
+  try {
+    const raw = localStorage.getItem(BATTLE_TOWER_BEST_STORAGE_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object" && typeof obj.roundsCleared === "number") return obj;
+    }
+  } catch (e) { /* localStorage no disponible */ }
+  return null;
+}
+
 const OWNED_TRAINER_MOVESETS_STORAGE_KEY = "liga-pokemon:owned-trainer-movesets";
 
 // Movesets EDITADOS por el usuario para entrenadores comprados que usa para
@@ -644,6 +683,29 @@ function rotateTeamRandomStart(team) {
   const rotated = [...team.slice(r), ...team.slice(0, r)];
   team.splice(0, team.length, ...rotated);
   return team;
+}
+
+// Aplica un multiplicador a las stats base (ataque, defensa, ataque
+// especial, defensa especial, velocidad) y a los PS máximos/actuales de UN
+// Pokémon ya preparado para combate (ver preparePokemonForBattle), usado
+// por la Torre Batalla a partir de la ronda 16 (ver battleTowerStatMultiplier
+// en BattleTowerMode). Mutar `p` en sí es seguro: cada llamada a
+// prepareTeam/preparePokemonForBattle devuelve un objeto NUEVO por
+// Pokémon para ESTE combate concreto, nunca el objeto compartido del
+// caché de PokeAPI — pero `p.stats` en sí SÍ es la misma referencia que
+// `base.stats` (cacheada por especie), así que aquí se le asigna un
+// objeto `stats` nuevo en vez de mutar sus campos, para no corromper esa
+// caché compartida y afectar a cualquier otro combate futuro con la misma
+// especie. No toca el motor de combate (resolveTurn/chooseMove/daño): solo
+// ajusta los datos de entrada de este Pokémon antes de que el combate
+// empiece.
+function applyStatMultiplier(p, multiplier) {
+  const newStats = {};
+  for (const key of Object.keys(p.stats)) newStats[key] = Math.round(p.stats[key] * multiplier);
+  p.stats = newStats;
+  const newMaxHp = Math.round(p.maxHp * multiplier);
+  p.maxHp = newMaxHp;
+  p.hp = newMaxHp;
 }
 
 // ¿Quién actúa primero entre dos movimientos ya elegidos? Misma regla que
@@ -4173,16 +4235,19 @@ function BattleFieldIndicators({ weather, trainerA, trainerB }) {
 }
 
 // Cuadrícula de tarjetas seleccionables de Pokémon del equipo del usuario,
-// reutilizada tanto para elegir con quién empezar el combate (los 6, ninguno
-// debilitado todavía) como para elegir el reemplazo obligatorio tras un
-// debilitamiento (solo los que sigan con vida). `showHp` decide si se
-// muestra la barra de PS actuales/máximos (no aplica al elegir el inicial,
-// ya que todos están a PS máximos) o solo los PS máximos.
+// reutilizada tanto para elegir con quién empezar el combate (normalmente
+// los 6, ninguno debilitado todavía — salvo en la Torre Batalla, ver
+// BattleTowerMode, donde el equipo puede llegar con debilitados de una
+// ronda anterior dentro del mismo bloque de 5) como para elegir el
+// reemplazo obligatorio tras un debilitamiento (solo los que sigan con
+// vida). Un Pokémon debilitado nunca es seleccionable en ningún caso,
+// independientemente de `showHp` (que solo decide si se MUESTRA la barra
+// de PS actuales/máximos, no si se excluye a los debilitados).
 function TeamPicker({ team, onChoose, showHp, disabled, excludeIndex }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
       {team.map((p, i) => {
-        if (showHp && p.hp <= 0) return null;
+        if (p.hp <= 0) return null;
         if (excludeIndex === i) return null;
         return (
           <button
@@ -4321,7 +4386,7 @@ function BattlerCard({ poke, label }) {
 
 // Pantalla de combate interactiva: el usuario elige el movimiento de su
 // Pokémon activo en cada turno; el rival lo controla la IA (chooseMove).
-function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish }) {
+function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish, rivalStatMultiplier = 1, initialUserTeam = null }) {
   const [teamA, setTeamA] = useState(null);
   const [teamB, setTeamB] = useState(null);
   const [idxA, setIdxA] = useState(0);
@@ -4389,16 +4454,36 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [ta, tb] = await Promise.all([api.prepareTeam(trainerA, difficulty), api.prepareTeam(trainerB, difficulty)]);
+      const [ta0, tb0] = await Promise.all([api.prepareTeam(trainerA, difficulty), api.prepareTeam(trainerB, difficulty)]);
+      let ta = ta0, tb = tb0;
       // El lado de la CPU empieza con un Pokémon aleatorio, no siempre el
       // primero de la fila; el lado del usuario mantiene su equipo tal cual
       // recibido, ya que él mismo elige con quién empezar más abajo.
       if (userSide !== "a") rotateTeamRandomStart(ta);
       if (userSide !== "b") rotateTeamRandomStart(tb);
+      // Torre Batalla (ver BattleTowerMode): el equipo del usuario puede
+      // venir con el desgaste (PS/estados) acumulado de la ronda anterior
+      // dentro del mismo bloque de 5, en vez del equipo recién curado que
+      // prepareTeam siempre da — se sustituye aquí, DESPUÉS de preparar
+      // ambos lados con normalidad (así el rival se sigue montando exacto
+      // igual que siempre), sin tocar prepareTeam/preparePokemonForBattle.
+      if (initialUserTeam) {
+        if (userSide === "a") ta = initialUserTeam; else tb = initialUserTeam;
+      }
+      // Torre Batalla: boost de stats del equipo rival a partir de la ronda
+      // 16 (ver battleTowerStatMultiplier) — se aplica sobre la copia YA
+      // preparada para este combate concreto (preparePokemonForBattle
+      // siempre devuelve un objeto nuevo, aunque `stats` en sí venga por
+      // referencia del caché de la especie: applyStatMultiplier le asigna
+      // un `stats` nuevo a esa copia, nunca muta el objeto cacheado).
+      if (rivalStatMultiplier !== 1) {
+        const rivalTeam = userSide === "a" ? tb : ta;
+        rivalTeam.forEach((p) => applyStatMultiplier(p, rivalStatMultiplier));
+      }
       if (!cancelled) { setTeamA(ta); setTeamB(tb); }
     })();
     return () => { cancelled = true; };
-  }, [api, trainerA, trainerB, userSide, difficulty]);
+  }, [api, trainerA, trainerB, userSide, difficulty, rivalStatMultiplier, initialUserTeam]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -5003,7 +5088,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
             {userWon ? "¡Has ganado tu combate!" : "Has perdido tu combate."} Quedan <span className="font-bold text-white">{result.remaining}</span> Pokémon en pie del ganador.
           </div>
           <button
-            onClick={() => onFinish({ ...result, log: [{ pokemonAName: trainerA.name, pokemonBName: trainerB.name, turns: log }], mechanicsFlags: buildBattleMechanicsFlags() })}
+            onClick={() => onFinish({ ...result, log: [{ pokemonAName: trainerA.name, pokemonBName: trainerB.name, turns: log }], mechanicsFlags: buildBattleMechanicsFlags(), finalUserTeam: userSide === "a" ? teamA : teamB })}
             className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-white shrink-0"
             style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
           >
@@ -5512,7 +5597,7 @@ function buildPairsAvoidingRematches(ordered, playedPairsSet) {
   return best;
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult, battleTowerBest, onBattleTowerResult }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -5570,6 +5655,9 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // `phase` (el estado de fase del torneo Swiss normal) nunca cambia
   // durante un Draft.
   const [draftInProgress, setDraftInProgress] = useState(false);
+  // Mismo mecanismo que draftInProgress, para la Torre Batalla (ver
+  // BattleTowerMode/onActiveChange).
+  const [towerInProgress, setTowerInProgress] = useState(false);
   const [difficulty, setDifficulty] = useState("normal");
   const [pairMode, setPairMode] = useState("random");
   const [standings, setStandings] = useState([]);
@@ -6032,7 +6120,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               una partida en marcha), dejando SOLO la pantalla del Draft
               visible en ese caso — igual que ya ocurre en los demás modos
               al arrancar de verdad (fase "loading"/"ready"/"finished"). */}
-          {!draftInProgress && (
+          {!draftInProgress && !towerInProgress && (
           <>
           <div className="flex items-start justify-between flex-wrap gap-3">
             <div>
@@ -6055,7 +6143,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
               <Users size={18} color="#f2b705" /> Modo de torneo
             </h3>
-            <div className="grid sm:grid-cols-5 gap-3">
+            <div className="grid sm:grid-cols-3 lg:grid-cols-6 gap-3">
               <button
                 onClick={() => hasCustomTrainerTeam(customTrainer) && handleModeChange("A")}
                 disabled={!hasCustomTrainerTeam(customTrainer)}
@@ -6128,6 +6216,17 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                       : "Necesitas crear tu propio entrenador primero, en la pestaña Personajes."}
                 </div>
               </button>
+              <button
+                onClick={() => handleModeChange("tower")}
+                className="rounded-xl p-4 text-left transition-all"
+                style={{
+                  background: mode === "tower" ? "linear-gradient(160deg, #2ec4b633, #14161f)" : "#14161f",
+                  border: mode === "tower" ? "1.5px solid #2ec4b6" : "1px solid #262a3a",
+                }}
+              >
+                <div className="text-white font-semibold text-sm mb-1">🗼 Torre Batalla</div>
+                <div className="text-[11px] text-[#8a8fa3]">Combates infinitos con cualquiera de tus entrenadores. Dificultad y stats del rival crecen cada 5 rondas. Sin consecuencias sobre tu colección.</div>
+              </button>
             </div>
           </div>
           </>
@@ -6145,6 +6244,20 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               onDraftResult={onDraftResult}
               playerProfile={playerProfile}
               onActiveChange={setDraftInProgress}
+            />
+          ) : mode === "tower" ? (
+            <BattleTowerMode
+              api={api}
+              collection={collection}
+              customTrainer={customTrainer}
+              purchasedTrainerIds={purchasedTrainerIds}
+              ownedTrainerMovesets={ownedTrainerMovesets}
+              coins={coins}
+              setCoins={setCoins}
+              playerProfile={playerProfile}
+              onActiveChange={setTowerInProgress}
+              battleTowerBest={battleTowerBest}
+              onBattleTowerResult={onBattleTowerResult}
             />
           ) : (
           <>
@@ -7069,6 +7182,476 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
           onClick={applyAndReturn}
           className="px-6 py-3 rounded-xl font-display text-lg text-white"
           style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          Aplicar y volver
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// Ids fijos y estables de los dos "trainers" sintéticos de la Torre Batalla
+// (mismo criterio que DRAFT_USER_ID/DRAFT_RIVAL_ID en DraftMode): el rival
+// reutiliza siempre el mismo id entre rondas, ya que primeMoveset sobrescribe
+// sin más el moveset de cada slug bajo ese id en cada ronda nueva.
+const BATTLE_TOWER_USER_ID = "tower-user";
+const BATTLE_TOWER_RIVAL_ID = "tower-rival";
+
+// Escalado de dificultad/stats/recompensas de la Torre Batalla cada bloque
+// de 5 rondas (ver el pedido). Todas estas funciones toman el número de
+// ronda 1-indexado y son puras (sin estado), para poder reutilizarlas tanto
+// en vivo (con la ronda actual) como al construir el registro final (con
+// `roundsCleared`, ver BattleTowerMode/applyAndReturn).
+//
+// Dificultad de la IA (misma tabla DIFFICULTY_META ya usada en el resto de
+// la app): Normal en 1-5, Difícil en 6-10, Maestro de ahí en adelante
+// (incluido el boost de stats de la 16 en adelante, que es un multiplicador
+// APARTE sobre las stats del rival, no una dificultad de IA distinta).
+function battleTowerCpuDifficulty(roundNum) {
+  if (roundNum <= 5) return "normal";
+  if (roundNum <= 10) return "hard";
+  return "master";
+}
+
+// Bloques de boost de stats alcanzados: 0 antes de la ronda 16, 1 en 16-20,
+// 2 en 21-25... sin límite superior.
+function battleTowerStatBoostTier(roundNum) {
+  if (roundNum < 16) return 0;
+  return Math.floor((roundNum - 16) / 5) + 1;
+}
+
+// Multiplicador efectivo sobre Ataque/Defensa/Ataque Especial/Defensa
+// Especial/Velocidad/PS máximos del equipo rival de esa ronda: +5% por cada
+// bloque de boost ya alcanzado (ver applyStatMultiplier, aplicado en
+// InteractiveBattle sobre los datos ya preparados del rival, sin tocar el
+// motor de combate en sí).
+function battleTowerStatMultiplier(roundNum) {
+  return 1 + battleTowerStatBoostTier(roundNum) * 0.05;
+}
+
+// Etiqueta de dificultad para el registro persistido (ver el pedido, campo
+// `difficultyReached`): distinta de las claves internas de DIFFICULTY_META
+// ("normal"/"hard"/"master") porque aquí hace falta distinguir Maestro CON
+// boost de stats de Maestro sin él, algo que DIFFICULTY_META no modela (es
+// una dimensión aparte, el multiplicador de battleTowerStatMultiplier).
+function battleTowerDifficultyReached(roundNum) {
+  if (roundNum <= 5) return "normal";
+  if (roundNum <= 10) return "dificil";
+  if (roundNum <= 15) return "maestro";
+  return "maestro-boost";
+}
+
+// Monedas por ronda superada, escaladas según la dificultad de ESA ronda
+// concreta (ver el pedido): 100/150/200, y +50 adicionales por cada bloque
+// de boost ya alcanzado a partir de la ronda 16 (250, 300, 350...).
+function battleTowerRoundReward(roundNum) {
+  if (roundNum <= 5) return 100;
+  if (roundNum <= 10) return 150;
+  if (roundNum <= 15) return 200;
+  return 200 + battleTowerStatBoostTier(roundNum) * 50;
+}
+
+// ¿La ronda `roundNum` empieza un bloque nuevo de 5 (6, 11, 16, 21...)? Si
+// es así, el equipo del usuario se cura por completo justo antes de esa
+// ronda (ver prepareRound: cuando es true, se ignora el equipo "cargado"
+// de la ronda anterior y se deja que InteractiveBattle prepare uno nuevo
+// con normalidad, que siempre da PS máximos/sin estados/PP lleno). La
+// ronda 1 también cumple la condición, pero es un no-op ahí: todavía no
+// hay ningún equipo cargado de una ronda anterior.
+function battleTowerStartsNewBlock(roundNum) {
+  return (roundNum - 1) % 5 === 0;
+}
+
+// Torre Batalla: combates infinitos con el equipo de cualquier entrenador
+// desbloqueado/comprado del usuario, o su entrenador propio — a diferencia
+// del Draft, SIN intercambios ni consecuencias permanentes sobre la
+// colección, así que no hace falta ningún aviso de permanencia. La
+// dificultad de la IA y un multiplicador de stats del rival escalan solos
+// cada 5 rondas (ver las funciones de arriba); el equipo del usuario
+// mantiene el desgaste dentro de un mismo bloque de 5 y se cura del todo al
+// pasar al siguiente (ver prepareRound/handleBattleFinish). Reutiliza el
+// mismo patrón de estado independiente que DraftMode (no standings/
+// finalizeRound/TOURNAMENT_ROUNDS de TorneoTab) y las mismas piezas
+// genéricas del motor (api.simulateMatch vía InteractiveBattle,
+// api.primeMoveset, api.buildCompetitiveMoveset).
+function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, ownedTrainerMovesets, coins, setCoins, playerProfile, onActiveChange, battleTowerBest, onBattleTowerResult }) {
+  const [phase, setPhase] = useState("select"); // select, loading, battle, post-round, summary
+
+  // Mismo bug/corrección que en DraftMode: TorneoTab oculta su cabecera y
+  // el selector de "Modo de torneo" mientras la Torre Batalla está
+  // realmente en marcha (más allá de la pantalla de selección de
+  // entrenador), ya que su propio `phase` (el del torneo Swiss normal)
+  // nunca cambia durante esta partida.
+  useEffect(() => {
+    if (onActiveChange) onActiveChange(phase !== "select");
+  }, [phase, onActiveChange]);
+
+  const [towerTrainerId, setTowerTrainerId] = useState(null); // "custom" | id de TRAINERS | null
+  const [towerTeam, setTowerTeam] = useState(null); // [{ slug, shiny, moves }] instantánea al empezar
+  const [currentRound, setCurrentRound] = useState(0);
+  const [roundsWon, setRoundsWon] = useState(0);
+  const [coinsAccumulated, setCoinsAccumulated] = useState(0);
+  const [rivalPool, setRivalPool] = useState(null); // ids de TRAINERS barajados (sin el elegido), consumidos en orden
+  const [opponentMeta, setOpponentMeta] = useState(null); // { name, color, subtitle, team: [{slug, moves}] }
+  // Equipo del usuario YA PREPARADO (con PS/estados/PP tal y como quedó al
+  // ganar la ronda anterior), a inyectar en la siguiente ronda DENTRO del
+  // mismo bloque de 5 en vez de dejar que se prepare uno nuevo a PS
+  // máximos — ver InteractiveBattle/initialUserTeam. `null` fuerza una
+  // preparación nueva (equipo sano): se usa tanto para la ronda 1 como
+  // para la primera de cada bloque nuevo (ver battleTowerStartsNewBlock).
+  const [carriedUserTeam, setCarriedUserTeam] = useState(null);
+  const [error, setError] = useState(null);
+  const [sprites, setSprites] = useState({});
+  // Si la partida que se acaba de terminar bate el récord personal previo
+  // (`battleTowerBest`, el vigente ANTES de esta partida): se calcula una
+  // sola vez al terminar (ver finishTower) y se muestra en el resumen.
+  const [newRecord, setNewRecord] = useState(false);
+
+  const unlockedTrainers = TRAINERS.filter((t) => isTrainerUnlocked(t, purchasedTrainerIds));
+
+  const trainerA = useMemo(() => {
+    if (!towerTeam) return null;
+    return { id: BATTLE_TOWER_USER_ID, name: playerProfile?.nickname || "Tu equipo", color: "#2ec4b6", subtitle: "Torre Batalla", team: towerTeam.map((p) => p.slug) };
+  }, [towerTeam, playerProfile]);
+  const trainerB = useMemo(() => {
+    if (!opponentMeta) return null;
+    return { id: BATTLE_TOWER_RIVAL_ID, name: opponentMeta.name, color: opponentMeta.color, subtitle: opponentMeta.subtitle, team: opponentMeta.team.map((p) => p.slug) };
+  }, [opponentMeta]);
+
+  // Equipo "candidato" mostrado en la pantalla de selección: el equipo
+  // ACTUAL del entrenador elegido (propio o del roster), resuelto con sus
+  // movimientos reales — mismo criterio que confirmTeamPreview en
+  // DraftMode para el entrenador propio; para un entrenador del roster,
+  // mismo criterio que Modo B en TorneoTab (moveset editado por el usuario
+  // si existe, si no el fijo de TRAINER_MOVESETS).
+  const selectedTeamPreview = useMemo(() => {
+    if (towerTrainerId === "custom") {
+      if (!hasCustomTrainerTeam(customTrainer)) return null;
+      return customTrainer.team.map(({ slug, shiny }) => {
+        const entry = findCollectionEntry(collection, slug, shiny);
+        return { slug, shiny: !!shiny, moves: entry?.moves || [] };
+      });
+    }
+    if (!towerTrainerId) return null;
+    const t = TRAINERS.find((tr) => tr.id === towerTrainerId);
+    if (!t) return null;
+    return t.team.map((slug) => {
+      const key = `${towerTrainerId}:${slug}`;
+      const moves = ownedTrainerMovesets[key] || TRAINER_MOVESETS[key] || [];
+      return { slug, shiny: false, moves };
+    });
+  }, [towerTrainerId, customTrainer, collection, ownedTrainerMovesets]);
+
+  // Sprites del equipo candidato/actual y, según la fase, del rival —
+  // mismo patrón que DraftMode.
+  useEffect(() => {
+    const slugs = new Set();
+    if (selectedTeamPreview) selectedTeamPreview.forEach((p) => slugs.add(p.slug));
+    if (towerTeam) towerTeam.forEach((p) => slugs.add(p.slug));
+    if (opponentMeta) opponentMeta.team.forEach((p) => slugs.add(p.slug));
+    let cancelled = false;
+    (async () => {
+      for (const slug of slugs) {
+        if (sprites[slug]) continue;
+        const p = await api.getPokemon(slug);
+        if (!cancelled) setSprites((s) => (s[slug] ? s : { ...s, [slug]: p }));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTeamPreview, towerTeam, opponentMeta, api]);
+
+  // Rival de la ronda `roundNum`: nombre prestado de TRAINERS (barajado sin
+  // repetir dentro de esta partida, sin el entrenador que está usando el
+  // propio usuario si es uno del roster — mismo criterio que "tu entrenador
+  // propio no aparece como rival" ya usado en el Modo B) mientras queden, y
+  // a partir de ahí "Retador N" indefinidamente.
+  function nextOpponentIdentity(roundNum, pool) {
+    if (roundNum <= pool.length) {
+      const t = TRAINERS.find((tr) => tr.id === pool[roundNum - 1]);
+      return { name: t.name, color: t.color, subtitle: t.subtitle };
+    }
+    return { name: `Retador ${roundNum}`, color: "#6c7a89", subtitle: "Retador" };
+  }
+
+  async function prepareRound(roundNum, pool, team, carried) {
+    setError(null);
+    setPhase("loading");
+    try {
+      const identity = nextOpponentIdentity(roundNum, pool);
+      const rivalPicks = shuffleInPlace([...GACHA_POOL]).slice(0, 6);
+      const rivalTeam = await Promise.all(rivalPicks.map(async (p) => {
+        const moves = await api.buildCompetitiveMoveset(p.slug);
+        await api.primeMoveset(BATTLE_TOWER_RIVAL_ID, p.slug, moves);
+        return { slug: p.slug, moves };
+      }));
+      await Promise.all(team.map((p) => api.primeMoveset(BATTLE_TOWER_USER_ID, p.slug, p.moves)));
+      setOpponentMeta({ ...identity, team: rivalTeam });
+      // Curación completa al empezar un bloque nuevo (6, 11, 16...): se
+      // ignora el equipo cargado y se deja `null` para que InteractiveBattle
+      // prepare uno nuevo con normalidad (PS máximos, sin estados, PP
+      // lleno). Dentro del mismo bloque, se pasa tal cual el equipo con el
+      // que se terminó la ronda anterior.
+      setCarriedUserTeam(battleTowerStartsNewBlock(roundNum) ? null : carried);
+      setCurrentRound(roundNum);
+      setPhase("battle");
+    } catch (e) {
+      setError("No se pudo conectar con PokeAPI. Comprueba tu conexión e inténtalo de nuevo.");
+      setPhase(roundNum === 1 ? "select" : "post-round");
+    }
+  }
+
+  async function startTower() {
+    if (!selectedTeamPreview) return;
+    setError(null);
+    setPhase("loading");
+    try {
+      const team = selectedTeamPreview;
+      setTowerTeam(team);
+      api.clearPrimedMovesets();
+      await api.preloadAll();
+      const pool = shuffleInPlace(TRAINERS.map((t) => t.id).filter((id) => id !== towerTrainerId));
+      setRivalPool(pool);
+      setRoundsWon(0);
+      setCoinsAccumulated(0);
+      setNewRecord(false);
+      await prepareRound(1, pool, team, null);
+    } catch (e) {
+      setError("No se pudo conectar con PokeAPI. Comprueba tu conexión e inténtalo de nuevo.");
+      setPhase("select");
+    }
+  }
+
+  function handleBattleFinish(matchResult) {
+    if (matchResult.winnerId !== BATTLE_TOWER_USER_ID) {
+      finishTower(roundsWon);
+      return;
+    }
+    const reward = battleTowerRoundReward(currentRound);
+    setRoundsWon((r) => r + 1);
+    setCoinsAccumulated((c) => c + reward);
+    setCarriedUserTeam(matchResult.finalUserTeam || null);
+    setPhase("post-round");
+  }
+
+  function continueTower() {
+    prepareRound(currentRound + 1, rivalPool, towerTeam, carriedUserTeam);
+  }
+
+  // Fin de la Torre Batalla (derrota o retirada voluntaria): calcula si se
+  // ha batido el récord personal PREVIO (`battleTowerBest`, que no cambia
+  // hasta que se pulse "Aplicar y volver" más abajo) y pasa al resumen.
+  function finishTower(finalRoundsWon) {
+    const beatsRecord = (!battleTowerBest || finalRoundsWon > battleTowerBest.roundsCleared) && finalRoundsWon > 0;
+    setNewRecord(beatsRecord);
+    setPhase("summary");
+  }
+
+  function applyAndReturn() {
+    onBattleTowerResult({
+      date: Date.now(),
+      trainerId: towerTrainerId,
+      roundsCleared: roundsWon,
+      difficultyReached: battleTowerDifficultyReached(roundsWon),
+      statBoostTier: battleTowerStatBoostTier(roundsWon),
+      coinsEarned: coinsAccumulated,
+    });
+    setCoins((c) => c + coinsAccumulated);
+    setPhase("select");
+    setTowerTeam(null);
+    setCurrentRound(0);
+    setRoundsWon(0);
+    setCoinsAccumulated(0);
+    setOpponentMeta(null);
+    setCarriedUserTeam(null);
+    setNewRecord(false);
+  }
+
+  const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
+
+  if (phase === "select") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl p-4" style={{ background: "#2ec4b614", border: "1px solid #2ec4b655" }}>
+          <div className="text-white font-display text-lg mb-1 flex items-center gap-2">🗼 Torre Batalla</div>
+          <p className="text-sm text-[#c7cbdb]">Combates infinitos, sin intercambios ni consecuencias sobre tu colección. La dificultad de la IA y las stats del rival escalan cada 5 rondas; tu equipo se cura del todo al pasar de bloque.</p>
+          <div className="mt-3 text-sm text-[#8a8fa3]">
+            Récord personal: {battleTowerBest ? <span className="font-bold text-[#f2b705]">{battleTowerBest.roundsCleared} rondas</span> : <span className="text-[#6b7086]">todavía ninguno</span>}
+          </div>
+        </div>
+
+        <div>
+          <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
+            <Users size={18} color="#2ec4b6" /> Elige con qué equipo jugar
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {hasCustomTrainerTeam(customTrainer) && (
+              <button
+                onClick={() => setTowerTrainerId("custom")}
+                className="rounded-xl p-4 text-left transition-all"
+                style={{
+                  background: towerTrainerId === "custom" ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
+                  border: towerTrainerId === "custom" ? "1.5px solid #2ecc71" : "1px solid #262a3a",
+                }}
+              >
+                <PlayerAvatar avatar={playerProfile.avatar} size={36} color="#2ecc71" />
+                <div className="text-white font-semibold text-sm mt-2">{customTrainer.name}</div>
+                <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+              </button>
+            )}
+            {unlockedTrainers.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTowerTrainerId(t.id)}
+                className="rounded-xl p-4 text-left transition-all"
+                style={{
+                  background: towerTrainerId === t.id ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
+                  border: towerTrainerId === t.id ? `1.5px solid ${t.color}` : "1px solid #262a3a",
+                }}
+              >
+                <TrainerAvatar trainer={t} size={36} className="text-sm" />
+                <div className="text-white font-semibold text-sm mt-2">{t.name}</div>
+                <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {selectedTeamPreview && (
+          <div>
+            <div className="text-xs font-semibold text-[#8a8fa3] mb-2">Equipo elegido</div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {selectedTeamPreview.map((c, i) => {
+                const p = sprites[c.slug];
+                const sprite = spriteOf(c.slug, c.shiny);
+                return (
+                  <div key={i} className="rounded-lg p-2 flex items-center gap-2" style={{ background: "#14161f", border: c.shiny ? "1px solid #f2b70566" : "1px solid #262a3a" }}>
+                    {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                    <div className="min-w-0">
+                      <div className="text-white text-xs font-semibold truncate flex items-center gap-1">
+                        {p?.name || displayName(c.slug)}
+                        {c.shiny && <Star size={10} fill="#f2b705" color="#f2b705" />}
+                      </div>
+                      <div className="flex gap-0.5 flex-wrap">{(p?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
+
+        <button
+          onClick={startTower}
+          disabled={!selectedTeamPreview}
+          className="px-6 py-2.5 rounded-xl font-display text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#2ec4b6,#1a8f84)" }}
+        >
+          Empezar Torre Batalla
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "loading") {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-[#9aa0b4]">
+        <Loader2 className="animate-spin mb-3" size={28} />
+        <div className="text-sm">Preparando la Torre Batalla...</div>
+      </div>
+    );
+  }
+
+  const boostTier = battleTowerStatBoostTier(currentRound);
+  const towerStatusBar = (
+    <div className="flex flex-wrap items-center gap-3 text-xs text-[#9aa0b4] rounded-lg p-2.5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      <span className="flex items-center gap-1"><Swords size={13} color="#2ec4b6" /> Ronda {currentRound}</span>
+      <span className="flex items-center gap-1"><Trophy size={13} color="#f2b705" /> {roundsWon} superadas</span>
+      <span className="flex items-center gap-1">Dificultad: <span className="text-white font-semibold">{DIFFICULTY_META[battleTowerCpuDifficulty(currentRound)]?.label}</span></span>
+      {boostTier > 0 && (
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold" style={{ background: "#e3350d22", color: "#ff8a6a", border: "1px solid #e3350d55" }}>
+          Boost rival ×{boostTier} (+{boostTier * 5}%)
+        </span>
+      )}
+      <span className="flex items-center gap-1"><Coins size={13} color="#f2b705" /> {coinsAccumulated} monedas acumuladas</span>
+      <span className="ml-auto">Récord: <span className="font-semibold text-white">{battleTowerBest ? `${battleTowerBest.roundsCleared} rondas` : "—"}</span></span>
+      {opponentMeta && <span>Contra: <span className="text-white font-semibold">{opponentMeta.name}</span></span>}
+    </div>
+  );
+
+  if (phase === "battle" && opponentMeta && trainerA && trainerB) {
+    return (
+      <div className="space-y-4">
+        {towerStatusBar}
+        <InteractiveBattle
+          key={`tower-round-${currentRound}`}
+          api={api}
+          trainerA={trainerA}
+          trainerB={trainerB}
+          userSide="a"
+          difficulty={battleTowerCpuDifficulty(currentRound)}
+          rivalStatMultiplier={battleTowerStatMultiplier(currentRound)}
+          initialUserTeam={carriedUserTeam}
+          onFinish={handleBattleFinish}
+        />
+      </div>
+    );
+  }
+
+  if (phase === "post-round") {
+    const nextRound = currentRound + 1;
+    const willHeal = battleTowerStartsNewBlock(nextRound);
+    return (
+      <div className="space-y-4">
+        {towerStatusBar}
+        <div className="rounded-xl p-4" style={{ background: "#5fae5f14", border: "1px solid #5fae5f55" }}>
+          <div className="text-white font-semibold text-sm mb-1">¡Ronda {currentRound} superada!</div>
+          <div className="text-[11px] text-[#8a8fa3]">
+            {willHeal
+              ? `Tu equipo se curará por completo (PS y estados) antes de la ronda ${nextRound}, el siguiente bloque de dificultad.`
+              : "Tu equipo sigue con el desgaste acumulado a la siguiente ronda."}
+          </div>
+        </div>
+        {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={continueTower}
+            className="px-6 py-2.5 rounded-xl font-display text-white"
+            style={{ background: "linear-gradient(135deg,#2ec4b6,#1a8f84)" }}
+          >
+            Continuar (Ronda {nextRound}) <ChevronRight size={16} className="inline" />
+          </button>
+          <button
+            onClick={() => finishTower(roundsWon)}
+            className="px-6 py-2.5 rounded-xl font-display text-sm"
+            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          >
+            Retirarse y cobrar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === "summary") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl p-4" style={{ background: "linear-gradient(135deg,#2ec4b622,#12141c)", border: "1px solid #2ec4b644" }}>
+          <div className="text-white font-display text-lg mb-2">Fin de la Torre Batalla</div>
+          <div className="text-sm text-[#c7cbdb] mb-1">Rondas superadas: <span className="font-bold text-white">{roundsWon}</span></div>
+          <div className="text-sm text-[#c7cbdb] mb-1">Monedas obtenidas: <span className="font-bold text-[#f2b705]">+{coinsAccumulated}</span></div>
+          {newRecord && (
+            <div className="mt-2 text-base font-display" style={{ color: "#f2b705" }}>¡Nuevo récord personal! 🏆</div>
+          )}
+        </div>
+        <button
+          onClick={applyAndReturn}
+          className="px-6 py-3 rounded-xl font-display text-lg text-white"
+          style={{ background: "linear-gradient(135deg,#2ec4b6,#1a8f84)" }}
         >
           Aplicar y volver
         </button>
@@ -8618,6 +9201,8 @@ export default function App() {
   const [customTrainer, setCustomTrainer] = useState(() => loadStoredCustomTrainer(loadStoredCollection()));
   const [ownedTrainerMovesets, setOwnedTrainerMovesets] = useState(loadStoredOwnedTrainerMovesets);
   const [tournamentHistory, setTournamentHistory] = useState(loadStoredTournamentHistory);
+  const [battleTowerHistory, setBattleTowerHistory] = useState(loadStoredBattleTowerHistory);
+  const [battleTowerBest, setBattleTowerBest] = useState(loadStoredBattleTowerBest);
   // Progreso del sistema de logros: si ya existe guardado, se usa tal
   // cual; si esta es la PRIMERA vez que se activa el sistema sobre una
   // partida ya en curso (no existe todavía la clave en localStorage), se
@@ -8741,6 +9326,16 @@ export default function App() {
   }, [tournamentHistory]);
 
   useEffect(() => {
+    try { localStorage.setItem(BATTLE_TOWER_HISTORY_STORAGE_KEY, JSON.stringify(battleTowerHistory)); } catch (e) { /* localStorage no disponible */ }
+  }, [battleTowerHistory]);
+
+  useEffect(() => {
+    try {
+      if (battleTowerBest) localStorage.setItem(BATTLE_TOWER_BEST_STORAGE_KEY, JSON.stringify(battleTowerBest));
+    } catch (e) { /* localStorage no disponible */ }
+  }, [battleTowerBest]);
+
+  useEffect(() => {
     try { localStorage.setItem(ACHIEVEMENT_PROGRESS_STORAGE_KEY, JSON.stringify(achievementProgress)); } catch (e) { /* localStorage no disponible */ }
   }, [achievementProgress]);
 
@@ -8814,6 +9409,16 @@ export default function App() {
   function addTournamentHistoryEntry(entry) {
     setTournamentHistory((h) => [entry, ...h].slice(0, TOURNAMENT_HISTORY_LIMIT));
     setAchievementProgress((p) => applyTournamentResult(p, entry));
+  }
+
+  // Se añade al terminar cada partida de Torre Batalla (ver BattleTowerMode),
+  // en un historial SEPARADO del de torneos normales (no alimenta el
+  // sistema de logros/achievements, que no contempla este modo). El récord
+  // personal se actualiza aparte, solo si esta partida supera el
+  // `roundsCleared` del vigente hasta ahora (o si todavía no había ninguno).
+  function addBattleTowerResult(entry) {
+    setBattleTowerHistory((h) => [entry, ...h].slice(0, BATTLE_TOWER_HISTORY_LIMIT));
+    setBattleTowerBest((prev) => (!prev || entry.roundsCleared > prev.roundsCleared) ? entry : prev);
   }
 
   // Aplica las consecuencias PERMANENTES del modo Draft (ver DraftMode) a
@@ -9083,6 +9688,8 @@ export default function App() {
             weeklyTournamentState={weeklyTournamentState}
             setWeeklyTournamentState={setWeeklyTournamentState}
             onDraftResult={applyDraftCollectionResult}
+            battleTowerBest={battleTowerBest}
+            onBattleTowerResult={addBattleTowerResult}
           />
         </div>
         <div style={{ display: tab === "personajes" ? "block" : "none" }}>
