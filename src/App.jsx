@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2 } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -4113,6 +4113,42 @@ function NovedadesModal({ open, onClose, readIds, onMarkRead, onMarkAllRead }) {
               }}
             />
           ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Modal "Acerca del creador": texto fijo pedido tal cual (no reescrito),
+// con el email convertido en enlace mailto clicable. Mismo patrón visual
+// que NovedadesModal (fondo oscuro, click fuera para cerrar, X arriba a la
+// derecha), pero de una sola columna de texto en vez de una cuadrícula.
+function AboutCreatorModal({ open, onClose }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-lg w-full max-h-[85vh] overflow-y-auto rounded-2xl p-6"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-4 right-4 text-[#7c8199] hover:text-white">
+          <X size={20} />
+        </button>
+        <h2 className="font-display text-2xl text-white flex items-center gap-2 mb-4">
+          <Heart size={22} color="#e3350d" /> Acerca del creador
+        </h2>
+        <div className="text-sm text-[#c7cbdb] space-y-3 leading-relaxed">
+          <p>Me llamo Marc y soy el creador de PokéArena. Este proyecto lleva rondándome la cabeza mucho tiempo: siempre quise crear un juego de combates Pokémon con mis propias reglas, y esto es el resultado de ir dándole forma poco a poco.</p>
+          <p>Todavía está en fase beta — soy consciente de que hay mecánicas que seguir puliendo y contenido que seguir añadiendo, así que la app seguirá cambiando y mejorando con el tiempo.</p>
+          <p>
+            Si has llegado hasta aquí es porque el juego te ha gustado o al menos te ha picado la curiosidad, así que gracias de verdad por probarlo. Si encuentras algún error, tienes alguna idea, o simplemente quieres comentarme algo, puedes escribirme a{" "}
+            <a href="mailto:solerfabrega03@gmail.com" className="inline-flex items-center gap-1 underline" style={{ color: "#4a90d9" }}>
+              <Mail size={13} /> solerfabrega03@gmail.com
+            </a>{" "}
+            — leo todos los mensajes.
+          </p>
+          <p>¡Espero que lo disfrutes!</p>
         </div>
       </div>
     </div>
@@ -9310,6 +9346,10 @@ export default function App() {
   // comprobar "¿está leída?" en O(1) tanto en el badge de la cabecera como
   // en cada tarjeta, convirtiendo a/desde array solo al cargar/guardar.
   const [showNovedades, setShowNovedades] = useState(false);
+  // Modal "Acerca del creador" (ver AboutCreatorModal): igual que
+  // Novedades/perfil, no hace falta persistir si está abierto o no, se
+  // abre/cierra desde cero cada sesión.
+  const [showAboutCreator, setShowAboutCreator] = useState(false);
   const [changelogReadIds, setChangelogReadIds] = useState(() => new Set(loadStoredChangelogReadIds()));
   const unreadChangelogCount = CHANGELOG.length - changelogReadIds.size;
   // Perfil del jugador (apodo + avatar): visible en cabecera, clasificación
@@ -9666,7 +9706,16 @@ export default function App() {
         <div className="flex items-center gap-2.5">
           <PokeballIcon size={26} />
           <div>
-            <div className="font-display text-xl text-white leading-none">PokéArena</div>
+            <div className="font-display text-xl text-white leading-none flex items-center gap-2">
+              PokéArena
+              {/* Indicador visual permanente de que el proyecto sigue en
+                  fase beta (ver también AboutCreatorModal) — no
+                  interactivo a propósito, mismo patrón de badge ya usado
+                  en otras partes de la app (rareza, "TU ENTRENADOR"...). */}
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide align-middle" style={{ background: "#f2b70533", color: "#f2b705", border: "1px solid #f2b70566" }}>
+                Beta
+              </span>
+            </div>
             <div className="text-[11px] text-[#6b7086]">Reúne tu equipo, compite en la liga y hazte una leyenda</div>
           </div>
         </div>
@@ -9681,6 +9730,18 @@ export default function App() {
           >
             <PlayerAvatar avatar={playerProfile.avatar} size={22} />
             {playerProfile.nickname}
+          </button>
+          {/* Acceso rápido a "Acerca del creador" (ver AboutCreatorModal):
+              solo icono, para no saturar la cabecera — el punto de acceso
+              principal es el enlace del footer, este es un extra
+              opcional junto a Novedades. */}
+          <button
+            onClick={() => setShowAboutCreator(true)}
+            title="Acerca del creador"
+            className="flex items-center justify-center w-8 h-8 rounded-full shrink-0"
+            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          >
+            <Heart size={14} />
           </button>
           <button
             onClick={() => setShowNovedades(true)}
@@ -9720,6 +9781,7 @@ export default function App() {
         onClose={() => setShowPlayerProfile(false)}
         onSave={setPlayerProfile}
       />
+      <AboutCreatorModal open={showAboutCreator} onClose={() => setShowAboutCreator(false)} />
 
       {collectionSaveError && (
         <div className="mx-5 mt-4 text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3 flex items-start justify-between gap-3">
@@ -9817,6 +9879,25 @@ export default function App() {
           <LogrosTab progress={achievementProgress} derived={achievementDerived} />
         </div>
       </main>
+
+      {/* Footer: siempre visible al final de la página (fuera del contenido
+          de las tabs, así que no depende de cuál esté activa), con los
+          derechos de autor y un enlace a "Acerca del creador" — estilo
+          discreto a propósito, para no competir visualmente con el
+          contenido principal. El año se calcula en cada render (nunca
+          hardcodeado), así que no hace falta tocar esto en año nuevo. */}
+      <footer className="px-5 py-6 mt-8 border-t text-center" style={{ borderColor: "#1e2130" }}>
+        <p className="text-[11px] text-[#5c6178] leading-relaxed">
+          © {new Date().getFullYear()} Marc Soler Fábrega. Proyecto no oficial de fans, sin ánimo de lucro. No afiliado con Nintendo, Game Freak ni The Pokémon Company.
+        </p>
+        <button
+          onClick={() => setShowAboutCreator(true)}
+          className="inline-flex items-center gap-1 mt-2 text-[11px] font-semibold"
+          style={{ color: "#8a8fa3" }}
+        >
+          <Heart size={11} /> Acerca del creador
+        </button>
+      </footer>
 
       <AchievementToastStack toasts={achievementToasts} onDismiss={dismissAchievementToast} />
     </div>

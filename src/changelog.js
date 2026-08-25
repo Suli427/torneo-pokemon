@@ -363,6 +363,13 @@ export const CHANGELOG = [
     detail: "Torre Batalla: \"Primer Ascenso\" (ronda 5), \"Al Límite\" (ronda 15), \"Sin Techo\" (ronda 30) y \"Contra Titanes\" (ganar una ronda contra un rival 100% Pseudolegendario/Legendario), desbloqueados en vivo nada más superar la ronda correspondiente. Draft: \"Coleccionista de Guerra\" (5 victorias seguidas en una misma partida), \"Trueque Constante\" (20 intercambios acumulados entre todas tus partidas) y \"Todo Tiene un Precio\" (perder 3+ Pokémon originales en una partida). Torneo Semanal: \"Especialista Semanal\" (primera victoria), \"Constancia de Hierro\" (ganar en 4 semanas distintas) y \"Maestro de Todas las Semanas\" (ganar las 10 temáticas al menos una vez). El contador de la tab Logros pasa a marcar 60/60, con tres categorías nuevas (Torre Batalla, Draft, Torneo Semanal) que siguen el mismo formato visual que las ya existentes.",
     date: "2026-08-25T19:33:51+02:00",
   },
+  {
+    id: 51,
+    title: "Etiqueta Beta, footer y Acerca del creador",
+    summary: "Nueva etiqueta \"BETA\" junto al nombre en la cabecera, un footer con los derechos de autor, y una sección \"Acerca del creador\" con contacto directo por email.",
+    detail: "La cabecera muestra ahora un pequeño distintivo \"BETA\" junto a \"PokéArena\", como recordatorio visual de que el proyecto sigue en desarrollo activo. Se añade un footer discreto al final de la página con los derechos de autor (año calculado dinámicamente, nunca fijo) y un enlace a la nueva sección \"Acerca del creador\" — también accesible con un icono junto a Novedades en la cabecera —, un modal con unas palabras de Marc, el creador del proyecto, y su email de contacto como enlace mailto clicable.",
+    date: "2026-08-25T19:39:19+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
