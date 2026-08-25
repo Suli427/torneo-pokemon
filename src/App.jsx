@@ -7,6 +7,7 @@ import {
   ACHIEVEMENT_PROGRESS_STORAGE_KEY, loadStoredAchievementProgress, reconstructProgress,
   buildDerivedContext, evaluateAchievements, getProgressCounter,
   applyTournamentResult, applyGachaPull, applyCombatMechanics,
+  applyBattleTowerRoundCleared, applyDraftSwap,
 } from "./achievementProgress";
 import {
   DAILY_REWARDS_STORAGE_KEY, loadDailyRewardsState, getDailyResetDayKey, getPokemonOfTheDay,
@@ -5597,7 +5598,7 @@ function buildPairsAvoidingRematches(ordered, playedPairsSet) {
   return best;
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult, battleTowerBest, onBattleTowerResult }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult, battleTowerBest, onBattleTowerResult, onDraftSwap, onBattleTowerRoundCleared }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
@@ -6244,6 +6245,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               onDraftResult={onDraftResult}
               playerProfile={playerProfile}
               onActiveChange={setDraftInProgress}
+              onSwapCompleted={onDraftSwap}
             />
           ) : mode === "tower" ? (
             <BattleTowerMode
@@ -6258,6 +6260,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               onActiveChange={setTowerInProgress}
               battleTowerBest={battleTowerBest}
               onBattleTowerResult={onBattleTowerResult}
+              onRoundCleared={onBattleTowerRoundCleared}
             />
           ) : (
           <>
@@ -6634,7 +6637,7 @@ const DRAFT_RIVAL_ID = "draft-rival";
 // bucle de estado independiente y solo toma prestado lo genérico del motor
 // (api.simulateMatch vía InteractiveBattle, api.primeMoveset,
 // api.buildCompetitiveMoveset).
-function DraftMode({ api, collection, customTrainer, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile, onActiveChange }) {
+function DraftMode({ api, collection, customTrainer, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile, onActiveChange, onSwapCompleted }) {
   const [phase, setPhase] = useState("confirm"); // confirm, loading, battle, swap, post-swap, summary
 
   // BUG corregido: la cabecera "Elige tu entrenador" y la cuadrícula de
@@ -6846,6 +6849,11 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
     setDraftTeam(newTeam);
     setDuplicateWarning(null);
     setPhase("post-swap");
+    // Logros 55/56 (racha de victorias seguidas e intercambios acumulados
+    // del Draft, ver applyDraftSwap): `roundsWon` ya refleja, en este punto,
+    // las rondas ganadas en ESTA partida hasta ahora (se incrementó en
+    // handleBattleFinish justo antes de pasar a la fase de intercambio).
+    if (onSwapCompleted) onSwapCompleted(roundsWon);
   }
 
   function continueDraft() {
@@ -6883,6 +6891,7 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
       points: 0,
       coinsEarned: coinsAccumulated,
       draftRoundsWon: roundsWon,
+      draftLostOriginalCount: summaryRemovals.length,
     });
     setPhase("confirm");
     setConfirmChecked(false);
@@ -7323,7 +7332,7 @@ function rollDistinctRarityWeighted(pool, allowedRarities, count) {
 // finalizeRound/TOURNAMENT_ROUNDS de TorneoTab) y las mismas piezas
 // genéricas del motor (api.simulateMatch vía InteractiveBattle,
 // api.primeMoveset, api.buildCompetitiveMoveset).
-function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, ownedTrainerMovesets, coins, setCoins, playerProfile, onActiveChange, battleTowerBest, onBattleTowerResult }) {
+function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, ownedTrainerMovesets, coins, setCoins, playerProfile, onActiveChange, battleTowerBest, onBattleTowerResult, onRoundCleared }) {
   const [phase, setPhase] = useState("select"); // select, loading, battle, post-round, summary
 
   // Mismo bug/corrección que en DraftMode: TorneoTab oculta su cabecera y
@@ -7439,7 +7448,12 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
         return { slug: p.slug, moves };
       }));
       await Promise.all(team.map((p) => api.primeMoveset(BATTLE_TOWER_USER_ID, p.slug, p.moves)));
-      setOpponentMeta({ ...identity, team: rivalTeam });
+      // `rarities` (logro 54, ver applyBattleTowerRoundCleared): las de
+      // `rivalPicks` en el mismo orden, guardadas aparte de `rivalTeam`
+      // (que solo lleva slug/moves) para poder comprobar en
+      // handleBattleFinish si esta ronda era 100% Pseudolegendario/
+      // Legendario sin tener que volver a mirar GACHA_POOL.
+      setOpponentMeta({ ...identity, team: rivalTeam, rarities: rivalPicks.map((p) => p.rarity) });
       // Curación completa al empezar un bloque nuevo (6, 11, 16...): se
       // ignora el equipo cargado y se deja `null` para que InteractiveBattle
       // prepare uno nuevo con normalidad (PS máximos, sin estados, PP
@@ -7484,6 +7498,14 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
     setRoundsWon((r) => r + 1);
     setCoinsAccumulated((c) => c + reward);
     setCarriedUserTeam(matchResult.finalUserTeam || null);
+    // Logros 51-54 (ver applyBattleTowerRoundCleared): se avisa en vivo, en
+    // el momento exacto de superar la ronda, con la rareza del equipo rival
+    // que se acaba de vencer.
+    if (onRoundCleared) {
+      const isTopRarityTeam = !!opponentMeta?.rarities?.length
+        && opponentMeta.rarities.every((r) => r === "pseudo-legendary" || r === "legendary");
+      onRoundCleared(currentRound, isTopRarityTeam);
+    }
     setPhase("post-round");
   }
 
@@ -9548,6 +9570,19 @@ export default function App() {
     setAchievementProgress((p) => applyCombatMechanics(p, flags));
   }
 
+  // Logros 51-54 (Torre Batalla): ver applyBattleTowerRoundCleared en
+  // achievementProgress.js — se llama en vivo desde BattleTowerMode cada
+  // vez que se supera una ronda, no solo al terminar la partida.
+  function recordBattleTowerRoundCleared(roundNum, isTopRarityTeam) {
+    setAchievementProgress((p) => applyBattleTowerRoundCleared(p, { roundNum, isTopRarityTeam }));
+  }
+
+  // Logros 55/56 (Draft): ver applyDraftSwap en achievementProgress.js — se
+  // llama en vivo desde DraftMode cada vez que se completa un intercambio.
+  function recordDraftSwap(roundsWonSoFar) {
+    setAchievementProgress((p) => applyDraftSwap(p, { roundsWonSoFar }));
+  }
+
   // Inicializa (si no existe todavía) la copia editable del usuario para
   // CADA Pokémon del equipo de `trainerId`, con el moveset Normal ya
   // existente (nunca el Avanzado, que es solo para la CPU): así, aunque el
@@ -9742,6 +9777,8 @@ export default function App() {
             onDraftResult={applyDraftCollectionResult}
             battleTowerBest={battleTowerBest}
             onBattleTowerResult={addBattleTowerResult}
+            onDraftSwap={recordDraftSwap}
+            onBattleTowerRoundCleared={recordBattleTowerRoundCleared}
           />
         </div>
         <div style={{ display: tab === "personajes" ? "block" : "none" }}>

@@ -1,4 +1,5 @@
 import { ACHIEVEMENTS } from "./achievements";
+import { WEEKLY_THEMES } from "./weeklyTournaments";
 
 // Progreso persistido bajo esta clave (mismo patrón try/catch que el resto
 // de datos guardados en App.jsx). Solo vive aquí lo que NO es derivable de
@@ -36,6 +37,29 @@ export function buildDefaultProgress() {
     hasWonPuttingAllRivalsAsleep: false,
     hasWonWithPerfectMultiHit: false,
     hasWonForcingAllRivalsToSwitch: false,
+    // Torre Batalla (logros 51-54): la mejor ronda ganada EN VIVO, ronda a
+    // ronda (ver applyBattleTowerRoundCleared) — a propósito distinta del
+    // récord personal `battleTowerBest` que ya vive aparte en App.jsx (ese
+    // solo se actualiza al terminar la partida entera, ver
+    // addBattleTowerResult); aquí hace falta saberlo AL MOMENTO de superar
+    // cada ronda, para poder desbloquear el logro sin esperar a que el
+    // usuario decida terminar una partida que podría alargarse mucho.
+    battleTowerBestRound: 0,
+    battleTowerWinAgainstTopRarityTeam: false,
+    // Draft (logros 55-57): mejor racha de victorias SEGUIDAS dentro de UNA
+    // misma partida (nunca se resetea entre partidas, solo guarda el máximo
+    // histórico — ver applyDraftSwap), total de intercambios acumulados
+    // entre todas las partidas, y si alguna partida terminó con 3+ Pokémon
+    // originales perdidos (ver applyTournamentResult, entry.mode==="draft").
+    draftBestConsecutiveWinsInOneRun: 0,
+    draftTotalTradesAccumulated: 0,
+    draftHasLostThreeOrMoreOriginalPokemonInOneRun: false,
+    // Torneo Semanal (logros 58-60): total de victorias RECOMPENSADAS
+    // históricamente (una semana ya completada que se vuelve a jugar no
+    // cuenta una segunda vez, ver applyTournamentResult) y el conjunto de
+    // ids de temática (ver WEEKLY_THEMES) ganados al menos una vez.
+    weeklyTournamentWinsCount: 0,
+    weeklyTournamentThemesWon: [],
     unlockedAchievementIds: [],
     unlockedAt: {},
   };
@@ -136,7 +160,11 @@ function reconstructShinyCount(progress, collection) {
 // reconstruyen: el historial actual no guarda detalle turno a turno de
 // combates pasados ni la composición de rareza exacta de cada torneo ya
 // jugado antes de este cambio, así que se dejan sin desbloquear a
-// propósito en vez de aproximarlos.
+// propósito en vez de aproximarlos. Los 10 nuevos de Torre Batalla/Draft/
+// Torneo Semanal (51-60) tampoco se reconstruyen por el mismo motivo: ni
+// el historial de torneos ni ningún otro dato ya persistido guarda ronda a
+// ronda de la Torre Batalla, intercambios del Draft, o qué temáticas
+// semanales se ganaron en el pasado.
 export function reconstructProgress({ tournamentHistory, collection, purchasedTrainerIds, customTrainer, coins }) {
   let progress = buildDefaultProgress();
   progress = reconstructFromTournamentHistory(progress, tournamentHistory);
@@ -250,6 +278,16 @@ const CONDITIONS = {
   48: (p) => p.hasWonPuttingAllRivalsAsleep === true,
   49: (p) => p.hasWonWithPerfectMultiHit === true,
   50: (p) => p.hasWonForcingAllRivalsToSwitch === true,
+  51: (p) => p.battleTowerBestRound >= 5,
+  52: (p) => p.battleTowerBestRound >= 15,
+  53: (p) => p.battleTowerBestRound >= 30,
+  54: (p) => p.battleTowerWinAgainstTopRarityTeam === true,
+  55: (p) => p.draftBestConsecutiveWinsInOneRun >= 5,
+  56: (p) => p.draftTotalTradesAccumulated >= 20,
+  57: (p) => p.draftHasLostThreeOrMoreOriginalPokemonInOneRun === true,
+  58: (p) => p.weeklyTournamentWinsCount >= 1,
+  59: (p) => p.weeklyTournamentWinsCount >= 4,
+  60: (p) => WEEKLY_THEMES.every((theme) => p.weeklyTournamentThemesWon.includes(theme.id)),
 };
 
 export function isAchievementUnlocked(id, progress, derived) {
@@ -281,6 +319,13 @@ export function getProgressCounter(id, progress, derived) {
     case 39: return { current: Math.min(derived.typesOwnedCount, 18), target: 18 };
     case 40: return { current: Math.min(progress.totalCoinsEarnedHistorically, 5000), target: 5000 };
     case 41: return { current: Math.min(progress.totalCoinsEarnedHistorically, 20000), target: 20000 };
+    case 51: return { current: Math.min(progress.battleTowerBestRound, 5), target: 5 };
+    case 52: return { current: Math.min(progress.battleTowerBestRound, 15), target: 15 };
+    case 53: return { current: Math.min(progress.battleTowerBestRound, 30), target: 30 };
+    case 55: return { current: Math.min(progress.draftBestConsecutiveWinsInOneRun, 5), target: 5 };
+    case 56: return { current: Math.min(progress.draftTotalTradesAccumulated, 20), target: 20 };
+    case 59: return { current: Math.min(progress.weeklyTournamentWinsCount, 4), target: 4 };
+    case 60: return { current: Math.min(progress.weeklyTournamentThemesWon.length, WEEKLY_THEMES.length), target: WEEKLY_THEMES.length };
     default: return null;
   }
 }
@@ -349,10 +394,64 @@ export function applyTournamentResult(progress, entry) {
     if (entry.teamSharedType) next.winsWithSharedTypeTeam += 1;
     if (entry.perfectTournament) next.perfectTournaments += 1;
     if (typeof entry.perfectRoundWins === "number") next.perfectCombatWins += entry.perfectRoundWins;
+    // Torneo Semanal (logros 58-60): solo cuenta como victoria "de verdad"
+    // si de verdad pagó recompensa (coinsEarned > 0) — repetir una semana
+    // ya completada sigue dejando ganar (finalPosition sigue siendo 1),
+    // pero con reward=0 (ver TorneoTab/finalizeRound), así que no debe
+    // sumar una segunda vez la misma semana ni "desbloquear" temáticas que
+    // ya estaban ganadas de antes solo por repetir la partida.
+    if (entry.mode === "weekly" && entry.coinsEarned > 0) {
+      next.weeklyTournamentWinsCount += 1;
+      if (entry.weeklyThemeId && !next.weeklyTournamentThemesWon.includes(entry.weeklyThemeId)) {
+        next.weeklyTournamentThemesWon = [...next.weeklyTournamentThemesWon, entry.weeklyThemeId];
+      }
+    }
   } else {
     next.currentWinStreak = 0;
   }
+  // Draft (logros 55/57): finalPosition siempre es null en las entradas de
+  // Draft (no hay "puesto" en una liga infinita), así que este bloque va
+  // fuera del if/else de arriba — `entry.draftRoundsWon`/
+  // `entry.draftLostOriginalCount` ya vienen en la entrada que construye
+  // DraftMode.applyAndReturn. La mejor racha de la partida ya es, sin más,
+  // el `roundsWon` con el que terminó (dentro de UNA partida de Draft nunca
+  // hay una ronda perdida "en medio": la primera derrota siempre termina la
+  // partida entera), así que tomar el máximo aquí al terminar cada partida
+  // es exactamente equivalente a llevar la cuenta ronda a ronda.
+  if (entry.mode === "draft") {
+    if (typeof entry.draftRoundsWon === "number" && entry.draftRoundsWon > next.draftBestConsecutiveWinsInOneRun) {
+      next.draftBestConsecutiveWinsInOneRun = entry.draftRoundsWon;
+    }
+    if ((entry.draftLostOriginalCount || 0) >= 3) {
+      next.draftHasLostThreeOrMoreOriginalPokemonInOneRun = true;
+    }
+  }
   return next;
+}
+
+// Al completar cada ronda ganada de la Torre Batalla (ver BattleTowerMode/
+// handleBattleFinish): `roundNum` es la ronda que se acaba de superar,
+// `isTopRarityTeam` si el equipo rival de esa ronda era 100% Pseudolegendario
+// o Legendario. Se llama en vivo, ronda a ronda, para que el logro se
+// desbloquee en el momento (no hace falta esperar a que el usuario termine
+// la partida, que en la Torre Batalla puede alargarse indefinidamente).
+export function applyBattleTowerRoundCleared(progress, { roundNum, isTopRarityTeam }) {
+  return {
+    ...progress,
+    battleTowerBestRound: Math.max(progress.battleTowerBestRound, roundNum),
+    battleTowerWinAgainstTopRarityTeam: progress.battleTowerWinAgainstTopRarityTeam || !!isTopRarityTeam,
+  };
+}
+
+// Al completar cada intercambio del Draft (ver DraftMode/performSwap):
+// `roundsWonSoFar` es el número de rondas ganadas en ESTA partida hasta
+// ahora mismo (justo después de la ronda que dio pie a este intercambio).
+export function applyDraftSwap(progress, { roundsWonSoFar }) {
+  return {
+    ...progress,
+    draftTotalTradesAccumulated: progress.draftTotalTradesAccumulated + 1,
+    draftBestConsecutiveWinsInOneRun: Math.max(progress.draftBestConsecutiveWinsInOneRun, roundsWonSoFar || 0),
+  };
 }
 
 // Al hacer una tirada de gacha (nueva especie o repetida, shiny o no).

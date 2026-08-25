@@ -2,10 +2,11 @@ import {
   Trophy, Flame, Crown, Sword, Users, UserPlus, Medal, Dna, Repeat, Shuffle,
   Layers, Target, ShieldCheck, Gem, Sparkles, Star, Coins, PiggyBank,
   CloudRain, Wind, Moon, Zap, Boxes, Compass, Skull, Swords, ShieldHalf, Dices,
+  Building2, ArrowLeftRight, HeartCrack, CalendarCheck, CalendarRange, Landmark,
 } from "lucide-react";
 
-// Las 9 categorías en las que se agrupa visualmente la tab Logros, en el
-// mismo orden en el que se definen los 50 logros más abajo.
+// Las 12 categorías en las que se agrupa visualmente la tab Logros, en el
+// mismo orden en el que se definen los 60 logros más abajo.
 export const ACHIEVEMENT_CATEGORIES = [
   { id: "general", label: "General" },
   { id: "modos", label: "Modos de Torneo" },
@@ -16,9 +17,12 @@ export const ACHIEVEMENT_CATEGORIES = [
   { id: "coleccion", label: "Colección Pokémon" },
   { id: "monedas", label: "Monedas" },
   { id: "mecanicas", label: "Mecánicas de Combate" },
+  { id: "torre", label: "Torre Batalla" },
+  { id: "draft", label: "Draft" },
+  { id: "semanal", label: "Torneo Semanal" },
 ];
 
-// 50 logros. `reward` son monedas de torneo otorgadas UNA sola vez, al
+// 60 logros. `reward` son monedas de torneo otorgadas UNA sola vez, al
 // desbloquearse (ver src/achievementProgress.js para la lógica de
 // desbloqueo/recompensa). Escalados por dificultad de consecución: 30-60
 // triviales, 80-150 progreso moderado, 200-400 exigentes, 100-150 fijas
@@ -92,6 +96,22 @@ export const ACHIEVEMENTS = [
   { id: 48, category: "mecanicas", title: "Duerme Bien", description: "Gana un combate tras dormir a cada uno de los Pokémon rivales.", icon: Moon, reward: 150 },
   { id: 49, category: "mecanicas", title: "Cadena Perfecta", description: "Gana un combate tras conectar los 5 golpes posibles de un movimiento de golpes múltiples en un mismo uso.", icon: Swords, reward: 130 },
   { id: 50, category: "mecanicas", title: "Forzado a Salir", description: "Gana un combate tras forzar el cambio de cada uno de los Pokémon rivales.", icon: Wind, reward: 150 },
+
+  // ---- TORRE BATALLA ----
+  { id: 51, category: "torre", title: "Primer Ascenso", description: "Supera la ronda 5 de la Torre Batalla.", icon: Building2, reward: 100 },
+  { id: 52, category: "torre", title: "Al Límite", description: "Alcanza la ronda 15 de la Torre Batalla, donde la IA rival ya combate en dificultad Maestro.", icon: Building2, reward: 250 },
+  { id: 53, category: "torre", title: "Sin Techo", description: "Alcanza la ronda 30 de la Torre Batalla.", icon: Landmark, reward: 400 },
+  { id: 54, category: "torre", title: "Contra Titanes", description: "Gana una ronda de la Torre Batalla contra un equipo rival formado íntegramente por Pokémon Pseudolegendarios o Legendarios.", icon: Crown, reward: 150 },
+
+  // ---- DRAFT ----
+  { id: 55, category: "draft", title: "Coleccionista de Guerra", description: "Encadena 5 victorias seguidas dentro de una misma partida de Draft.", icon: Flame, reward: 120 },
+  { id: 56, category: "draft", title: "Trueque Constante", description: "Completa 20 intercambios de Pokémon en el modo Draft, sumando todas tus partidas.", icon: ArrowLeftRight, reward: 200 },
+  { id: 57, category: "draft", title: "Todo Tiene un Precio", description: "Termina una partida de Draft habiendo perdido de forma permanente al menos 3 Pokémon que eran originalmente tuyos.", icon: HeartCrack, reward: 100 },
+
+  // ---- TORNEO SEMANAL ----
+  { id: 58, category: "semanal", title: "Especialista Semanal", description: "Gana tu primer torneo semanal con reglas especiales.", icon: CalendarCheck, reward: 60 },
+  { id: 59, category: "semanal", title: "Constancia de Hierro", description: "Gana el torneo semanal en 4 semanas distintas.", icon: CalendarRange, reward: 300 },
+  { id: 60, category: "semanal", title: "Maestro de Todas las Semanas", description: "Gana al menos una vez cada una de las 10 temáticas del torneo semanal.", icon: Trophy, reward: 400 },
 ];
 
 export function getAchievementById(id) {

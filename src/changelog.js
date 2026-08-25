@@ -356,6 +356,13 @@ export const CHANGELOG = [
     detail: "El pool de generación de los equipos rivales (nunca el equipo del propio usuario, que sigue siendo el que él eligió) se restringe según el mismo bloque de 5 rondas ya usado para la dificultad de la IA y el boost de stats: rondas 1-5 cualquier rareza (como antes), 6-10 desde Poco Común, 11-15 desde Raro, 16 en adelante desde Épico (tope fijo, no sigue subiendo más allá). Dentro de cada bloque, el sorteo de rareza sigue las mismas probabilidades ya usadas en el resto del gacha, renormalizadas para sumar 100% solo entre las rarezas permitidas en ese bloque. La interfaz ahora indica el rango de rareza activo de los rivales (\"Rivales: Poco Común o superior\", etc.) junto al resto de información de la partida en curso.",
     date: "2026-08-25T19:17:33+02:00",
   },
+  {
+    id: 50,
+    title: "10 logros nuevos: Torre Batalla, Draft y Torneo Semanal",
+    summary: "El sistema de logros llega a 60: 4 nuevos para la Torre Batalla, 3 para el Draft y 3 para el Torneo Semanal, con sus propias categorías en la tab Logros.",
+    detail: "Torre Batalla: \"Primer Ascenso\" (ronda 5), \"Al Límite\" (ronda 15), \"Sin Techo\" (ronda 30) y \"Contra Titanes\" (ganar una ronda contra un rival 100% Pseudolegendario/Legendario), desbloqueados en vivo nada más superar la ronda correspondiente. Draft: \"Coleccionista de Guerra\" (5 victorias seguidas en una misma partida), \"Trueque Constante\" (20 intercambios acumulados entre todas tus partidas) y \"Todo Tiene un Precio\" (perder 3+ Pokémon originales en una partida). Torneo Semanal: \"Especialista Semanal\" (primera victoria), \"Constancia de Hierro\" (ganar en 4 semanas distintas) y \"Maestro de Todas las Semanas\" (ganar las 10 temáticas al menos una vez). El contador de la tab Logros pasa a marcar 60/60, con tres categorías nuevas (Torre Batalla, Draft, Torneo Semanal) que siguen el mismo formato visual que las ya existentes.",
+    date: "2026-08-25T19:33:51+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
