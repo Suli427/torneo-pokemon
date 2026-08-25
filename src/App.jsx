@@ -7264,6 +7264,53 @@ function battleTowerStartsNewBlock(roundNum) {
   return (roundNum - 1) % 5 === 0;
 }
 
+// Rango de rarezas permitido para el equipo RIVAL según el bloque de 5
+// rondas (mismo escalado que dificultad/boost de stats, ver el pedido):
+// bloque 1 (1-5) cualquier rareza, bloque 2 (6-10) desde Poco Común, bloque
+// 3 (11-15) desde Raro, bloque 4 en adelante (16+) desde Épico — y se queda
+// ahí para todos los bloques posteriores, sin seguir restringiendo más
+// (no quedarían suficientes especies si el corte siguiera subiendo). Nunca
+// afecta al equipo del USUARIO (que sigue siendo el que él mismo eligió),
+// solo al pool de generación de los rivales (ver prepareRound).
+function battleTowerAllowedRarities(roundNum) {
+  let minIndex;
+  if (roundNum <= 5) minIndex = 0; // common
+  else if (roundNum <= 10) minIndex = 1; // uncommon
+  else if (roundNum <= 15) minIndex = 2; // rare
+  else minIndex = 3; // epic
+  return RARITY_ORDER.slice(minIndex);
+}
+
+// Etiqueta legible del filtro de rareza activo, para mostrar en la
+// interfaz (ver towerStatusBar): "Cualquier rareza" en el bloque 1, o
+// "{rareza mínima} o superior" en los siguientes.
+function battleTowerRivalRarityLabel(roundNum) {
+  const allowed = battleTowerAllowedRarities(roundNum);
+  if (allowed.length === RARITY_ORDER.length) return "Cualquier rareza";
+  return `${RARITY_META[allowed[0]].label} o superior`;
+}
+
+// Sortea `count` Pokémon DISTINTOS de `pool`, con la misma rareza
+// ponderada y renormalizada que el resto del gacha (ver rollGachaPokemon/
+// rollRarityAmong), restringida a `allowedRarities`. A diferencia de
+// rollGachaPokemon (pensado para una sola tirada suelta, puede repetir
+// especie entre tiradas distintas), aquí se excluye del pool cada especie
+// ya elegida en ESTA misma llamada según se va sorteando, para garantizar
+// un equipo de `count` especies distintas — mismo resultado que el
+// shuffleInPlace(...).slice(count) que se usaba antes, pero ahora
+// ponderado por rareza en vez de uniforme sobre todo el pool.
+function rollDistinctRarityWeighted(pool, allowedRarities, count) {
+  let remainingPool = pool.filter((p) => allowedRarities.includes(p.rarity));
+  const chosen = [];
+  while (chosen.length < count && remainingPool.length > 0) {
+    const roll = rollGachaPokemon(remainingPool);
+    if (!roll) break;
+    chosen.push(roll.chosen);
+    remainingPool = remainingPool.filter((p) => p.slug !== roll.chosen.slug);
+  }
+  return chosen;
+}
+
 // Torre Batalla: combates infinitos con el equipo de cualquier entrenador
 // desbloqueado/comprado del usuario, o su entrenador propio — a diferencia
 // del Draft, SIN intercambios ni consecuencias permanentes sobre la
@@ -7381,7 +7428,11 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
     setPhase("loading");
     try {
       const identity = nextOpponentIdentity(roundNum, pool);
-      const rivalPicks = shuffleInPlace([...GACHA_POOL]).slice(0, 6);
+      // Rango de rarezas del pool rival según el bloque de 5 rondas (ver
+      // battleTowerAllowedRarities); el sorteo dentro de ese rango sigue
+      // ponderado por las mismas probabilidades del gacha, renormalizadas
+      // entre las rarezas permitidas (ver rollDistinctRarityWeighted).
+      const rivalPicks = rollDistinctRarityWeighted(GACHA_POOL, battleTowerAllowedRarities(roundNum), 6);
       const rivalTeam = await Promise.all(rivalPicks.map(async (p) => {
         const moves = await api.buildCompetitiveMoveset(p.slug);
         await api.primeMoveset(BATTLE_TOWER_RIVAL_ID, p.slug, moves);
@@ -7572,6 +7623,7 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
       <span className="flex items-center gap-1"><Swords size={13} color="#2ec4b6" /> Ronda {currentRound}</span>
       <span className="flex items-center gap-1"><Trophy size={13} color="#f2b705" /> {roundsWon} superadas</span>
       <span className="flex items-center gap-1">Dificultad: <span className="text-white font-semibold">{DIFFICULTY_META[battleTowerCpuDifficulty(currentRound)]?.label}</span></span>
+      <span className="flex items-center gap-1">Rivales: <span className="text-white font-semibold">{battleTowerRivalRarityLabel(currentRound)}</span></span>
       {boostTier > 0 && (
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold" style={{ background: "#e3350d22", color: "#ff8a6a", border: "1px solid #e3350d55" }}>
           Boost rival ×{boostTier} (+{boostTier * 5}%)

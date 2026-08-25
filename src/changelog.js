@@ -349,6 +349,13 @@ export const CHANGELOG = [
     detail: "Nueva sección en la tab Torneo, sin intercambios ni consecuencias sobre tu colección (a diferencia del Draft): eliges con qué entrenador jugar (cualquiera de los desbloqueados/comprados, o tu entrenador propio si lo tienes) y te enfrentas a rivales infinitos generados igual que en el Draft. La dificultad de la IA escala cada bloque de 5 rondas (Normal 1-5, Difícil 6-10, Maestro 11+), y a partir de la ronda 16 se añade además un +5% adicional a las stats del equipo rival por cada bloque de 5 rondas superado, sin límite. Tu equipo mantiene el desgaste (PS, estados, debilitados) dentro de un mismo bloque de 5 rondas y se cura por completo justo al pasar al siguiente. Las monedas por ronda superada también escalan con la dificultad (100/150/200, +50 extra por cada bloque de boost), y puedes retirarte y cobrar después de cualquier ronda ganada. Se guarda un historial propio de partidas y un récord personal (mejor número de rondas superadas), visible antes de empezar y en vivo durante la partida — por ahora es un ranking puramente local/personal; un ranking global entre jugadores sería una ampliación futura que necesitaría infraestructura de servidor.",
     date: "2026-08-25T18:52:50+02:00",
   },
+  {
+    id: 49,
+    title: "La Torre Batalla sube la rareza de los rivales por bloques",
+    summary: "Los rivales de la Torre Batalla ya no se sortean de cualquier rareza por igual: a partir de la ronda 6 se excluyen los Comunes, de la 11 también los Poco Comunes, y desde la 16 solo aparecen especies Épicas, Pseudolegendarias o Legendarias.",
+    detail: "El pool de generación de los equipos rivales (nunca el equipo del propio usuario, que sigue siendo el que él eligió) se restringe según el mismo bloque de 5 rondas ya usado para la dificultad de la IA y el boost de stats: rondas 1-5 cualquier rareza (como antes), 6-10 desde Poco Común, 11-15 desde Raro, 16 en adelante desde Épico (tope fijo, no sigue subiendo más allá). Dentro de cada bloque, el sorteo de rareza sigue las mismas probabilidades ya usadas en el resto del gacha, renormalizadas para sumar 100% solo entre las rarezas permitidas en ese bloque. La interfaz ahora indica el rango de rareza activo de los rivales (\"Rivales: Poco Común o superior\", etc.) junto al resto de información de la partida en curso.",
+    date: "2026-08-25T19:17:33+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
