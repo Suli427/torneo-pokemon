@@ -370,6 +370,13 @@ export const CHANGELOG = [
     detail: "La cabecera muestra ahora un pequeño distintivo \"BETA\" junto a \"PokéArena\", como recordatorio visual de que el proyecto sigue en desarrollo activo. Se añade un footer discreto al final de la página con los derechos de autor (año calculado dinámicamente, nunca fijo) y un enlace a la nueva sección \"Acerca del creador\" — también accesible con un icono junto a Novedades en la cabecera —, un modal con unas palabras de Marc, el creador del proyecto, y su email de contacto como enlace mailto clicable.",
     date: "2026-08-25T19:39:19+02:00",
   },
+  {
+    id: 52,
+    title: "Animaciones en las tiradas del gacha",
+    summary: "Las tiradas del gacha ganan una Pokéball que se sacude antes de abrirse, el sprite aparece con fundido y un ligero rebote, un destello de color según la rareza, y partículas especiales para los shiny.",
+    detail: "Al pulsar \"Tirar\", una Pokéball se tambalea antes de \"abrirse\" con un destello blanco: el número de sacudidas escala con la rareza ya sorteada (1 en Común, 2 en Poco Común/Raro, 3 en Épico/Pseudolegendario, 4 en Legendario), y en Legendario además se oscurece brevemente el fondo justo antes de revelar, para más expectación. El sprite conseguido aparece con un fundido y una escala con ligero rebote (en vez de aparecer de golpe), acompañado de un resplandor radial del color ya asociado a esa rareza, cuyo tamaño también crece cuanto más rara sea la tirada. La duración total de toda la secuencia va de ~0,8s en Común a ~2,4s en Legendario, sin llegar a ser tediosa al tirar varias veces seguidas ni retrasar poder volver a tirar una vez completada la revelación. Los resultados shiny suman, además, un efecto de estrellas cayendo alrededor del sprite junto a la celebración de texto ya existente.",
+    date: "2026-08-27T13:42:37+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

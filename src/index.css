@@ -14,3 +14,77 @@ html, body, #root {
   font-family: 'Rajdhani', sans-serif;
   letter-spacing: 0.01em;
 }
+
+/* Animaciones de la revelación del gacha (ver GACHA_REVEAL_META,
+   GachaRevealOverlay y GachaResultModal en App.jsx). Las duraciones e
+   iteraciones concretas se fijan desde React vía `style` inline (varían
+   según la rareza obtenida); aquí solo viven las curvas/keyframes en sí. */
+
+/* Tambaleo de la Pokéball antes de abrirse: mismo vaivén "tambaleante" que
+   las Pokéballs de los juegos, una oscilación completa por iteración. */
+@keyframes gacha-shake {
+  0%, 100% { transform: rotate(0deg); }
+  20% { transform: rotate(-20deg); }
+  40% { transform: rotate(16deg); }
+  60% { transform: rotate(-12deg); }
+  80% { transform: rotate(7deg); }
+}
+.gacha-shake {
+  animation-name: gacha-shake;
+  animation-timing-function: ease-in-out;
+  transform-origin: 50% 50%;
+}
+
+/* Destello blanco de "apertura" de la Pokéball. */
+@keyframes gacha-flash {
+  0% { opacity: 0; transform: scale(0.4); }
+  40% { opacity: 1; transform: scale(1.5); }
+  100% { opacity: 0; transform: scale(2.4); }
+}
+.gacha-flash {
+  animation-name: gacha-flash;
+  animation-timing-function: ease-out;
+  animation-fill-mode: forwards;
+}
+
+/* Aparición del sprite: fundido + escala con un ligero rebote al final
+   (cubic-bezier con overshoot, en vez de una curva plana). */
+@keyframes gacha-sprite-reveal {
+  0% { opacity: 0; transform: scale(0.3); }
+  70% { opacity: 1; transform: scale(1.08); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.gacha-sprite-reveal {
+  animation-name: gacha-sprite-reveal;
+  animation-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation-fill-mode: both;
+}
+
+/* Destello de fondo según la rareza obtenida: resplandor radial que crece
+   y se desvanece. */
+@keyframes gacha-glow-pulse {
+  0% { opacity: 0; transform: scale(0.5); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+.gacha-glow-pulse {
+  animation-name: gacha-glow-pulse;
+  animation-timing-function: ease-out;
+  animation-fill-mode: forwards;
+}
+
+/* Partículas de un resultado shiny: cada una cae y gira desvaneciéndose,
+   con su propio retraso/duración (ver SHINY_PARTICLES). */
+@keyframes gacha-particle-fall {
+  0% { opacity: 0; transform: translateY(-16px) scale(0.5) rotate(0deg); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(100px) scale(1) rotate(200deg); }
+}
+.gacha-particle {
+  position: absolute;
+  top: -10px;
+  animation-name: gacha-particle-fall;
+  animation-timing-function: ease-in;
+  animation-fill-mode: forwards;
+  pointer-events: none;
+}

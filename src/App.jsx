@@ -442,6 +442,44 @@ const RARITY_META = {
   legendary: { label: "Legendario", chance: 2, color: "#e3b23c" },
 };
 
+// Intensidad de la animación de revelación del gacha (ver GachaRevealOverlay/
+// GachaResultModal), escalada por rareza: más sacudidas de la Pokéball,
+// destello y brillo más grandes, y duración total mayor cuanto más rara sea
+// la tirada. `shakeCount`/`shakeDurationMs` fijan cuántas veces y durante
+// cuánto se tambalea la Pokéball antes de "abrirse" (fase `flash`);
+// `dimMs` (solo Legendario) añade un oscurecimiento breve del fondo justo
+// antes de revelar, para más expectación. `revealDurationMs` es la
+// duración de la aparición del sprite (fundido + escala, ver
+// gacha-sprite-reveal) y también sirve de referencia para el destello de
+// color de fondo (ver gacha-glow-pulse). Duración total aproximada por
+// rareza (shakeCount*shakeDurationMs + flashDurationMs + dimMs):
+// Común ~830ms, Poco Común/Raro ~1250ms, Épico/Pseudolegendario ~1760-1860ms,
+// Legendario ~2430ms — dentro de los rangos pedidos, sin llegar a ser
+// tedioso si se tira varias veces seguidas.
+const GACHA_REVEAL_META = {
+  common: { shakeCount: 1, shakeDurationMs: 260, flashDurationMs: 150, revealDurationMs: 420, dimMs: 0, glowSize: 140 },
+  uncommon: { shakeCount: 2, shakeDurationMs: 300, flashDurationMs: 170, revealDurationMs: 480, dimMs: 0, glowSize: 170 },
+  rare: { shakeCount: 2, shakeDurationMs: 300, flashDurationMs: 170, revealDurationMs: 480, dimMs: 0, glowSize: 190 },
+  epic: { shakeCount: 3, shakeDurationMs: 340, flashDurationMs: 200, revealDurationMs: 540, dimMs: 0, glowSize: 240 },
+  "pseudo-legendary": { shakeCount: 3, shakeDurationMs: 360, flashDurationMs: 220, revealDurationMs: 560, dimMs: 0, glowSize: 270 },
+  legendary: { shakeCount: 4, shakeDurationMs: 350, flashDurationMs: 260, revealDurationMs: 620, dimMs: 150, glowSize: 340 },
+};
+
+// Posiciones/tiempos fijos (no aleatorios: da igual, es puramente
+// decorativo) de las "estrellas" que caen alrededor del sprite en un
+// resultado shiny (ver GachaResultModal) — se suman al destello de rareza
+// normal, nunca lo sustituyen.
+const SHINY_PARTICLES = [
+  { left: "8%", size: 13, delay: 0, duration: 950 },
+  { left: "22%", size: 10, delay: 120, duration: 1050 },
+  { left: "38%", size: 15, delay: 60, duration: 900 },
+  { left: "52%", size: 11, delay: 220, duration: 1000 },
+  { left: "66%", size: 16, delay: 40, duration: 1100 },
+  { left: "80%", size: 12, delay: 170, duration: 950 },
+  { left: "15%", size: 9, delay: 280, duration: 1150 },
+  { left: "60%", size: 9, delay: 320, duration: 1050 },
+];
+
 // Generación numérica (1-9) a partir del nombre que da PokeAPI en
 // /pokemon-species (generation.name), usada solo por la pista de
 // generación del Pokédle.
@@ -8289,19 +8327,60 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
    TAB: GATCHA
 --------------------------------------------------------------- */
 
+// Pokéball "temblando" antes de abrirse, mostrada ENTRE pulsar "Tirar" y
+// que el resultado esté listo (ver GatchaTab): el número de sacudidas y la
+// duración de cada fase escalan con la rareza YA CONOCIDA en ese momento
+// (el sorteo se resuelve antes de mostrar nada, ver handleDraw), para que
+// una tirada más rara se sienta más larga/tensa desde el primer instante,
+// no solo al revelar el sprite. Fases: "shake" (tambaleo), "flash"
+// (destello blanco de apertura) y, solo en Legendario, "dim" (oscurece el
+// fondo un instante justo antes de revelar, para más expectación).
+function GachaRevealOverlay({ phase, rarity }) {
+  if (!phase) return null;
+  const meta = GACHA_REVEAL_META[rarity] || GACHA_REVEAL_META.common;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
+      style={{ background: phase === "dim" ? "rgba(0,0,0,0.88)" : "rgba(0,0,0,0.6)", transition: "background 150ms ease" }}
+    >
+      <div className="relative flex items-center justify-center" style={{ width: 90, height: 90 }}>
+        {phase === "flash" && (
+          <div
+            className="absolute rounded-full gacha-flash"
+            style={{ width: 90, height: 90, background: "#fff", animationDuration: `${meta.flashDurationMs}ms` }}
+          />
+        )}
+        <div
+          className={phase === "shake" ? "gacha-shake" : undefined}
+          style={phase === "shake" ? { animationDuration: `${meta.shakeDurationMs}ms`, animationIterationCount: meta.shakeCount } : undefined}
+        >
+          <PokeballIcon size={90} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Tarjeta de resultado de una tirada de gacha: nuevo Pokémon (con posible
 // celebración shiny) o repetido (con el reembolso obtenido). Si alguna
 // rareza se descartó por no tener candidatos en este pool, lo avisa también.
+// La aparición del sprite (fundido+escala con rebote), el destello de color
+// de fondo según rareza, y las partículas de un resultado shiny (ver
+// SHINY_PARTICLES) se reproducen SIEMPRE que este modal se monta con un
+// resultado nuevo — como `result` pasa por `null` al cerrar el anterior
+// (ver GatchaTab), cada tirada es un montaje limpio y las animaciones CSS
+// (aplicadas sin condición de "ya reproducida") vuelven a arrancar solas.
 function GachaResultModal({ result, onClose }) {
   if (!result) return null;
   const meta = RARITY_META[result.rarity];
+  const revealMeta = GACHA_REVEAL_META[result.rarity] || GACHA_REVEAL_META.common;
   const isNewShiny = !result.repeat && result.shiny;
   const isShinyRepeat = result.repeat && result.shiny;
   const celebrate = isNewShiny || isShinyRepeat;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
+        className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center overflow-hidden"
         style={{
           background: celebrate ? "linear-gradient(160deg,#3a3312,#12141d)" : "linear-gradient(160deg,#1b1e2b,#12141d)",
           border: celebrate ? "1px solid #f2b705" : "1px solid #2c2f42",
@@ -8319,12 +8398,40 @@ function GachaResultModal({ result, onClose }) {
         )}
 
         {result.sprite && (
-          <img
-            src={result.sprite}
-            alt={result.name}
-            className="w-28 h-28 object-contain mx-auto mb-2"
-            style={celebrate ? { filter: "drop-shadow(0 0 10px #f2b705aa)" } : undefined}
-          />
+          <div className="relative flex items-center justify-center mb-2" style={{ minHeight: 120 }}>
+            {/* Destello de fondo según la rareza obtenida: mismo color ya
+                asociado a esa rareza en RARITY_META, tamaño/opacidad
+                creciente con lo rara que sea (ver GACHA_REVEAL_META). */}
+            <div
+              className="absolute rounded-full gacha-glow-pulse"
+              style={{
+                width: revealMeta.glowSize,
+                height: revealMeta.glowSize,
+                background: `radial-gradient(circle, ${meta.color}${celebrate ? "dd" : "99"} 0%, transparent 70%)`,
+                animationDuration: `${revealMeta.revealDurationMs * 2}ms`,
+              }}
+            />
+            {/* Partículas de un resultado shiny: se SUMAN al destello de
+                rareza normal, nunca lo sustituyen (ver el pedido). */}
+            {result.shiny && SHINY_PARTICLES.map((p, i) => (
+              <span
+                key={i}
+                className="gacha-particle"
+                style={{ left: p.left, fontSize: p.size, animationDelay: `${p.delay}ms`, animationDuration: `${p.duration}ms` }}
+              >
+                ✨
+              </span>
+            ))}
+            <img
+              src={result.sprite}
+              alt={result.name}
+              className="relative w-28 h-28 object-contain gacha-sprite-reveal"
+              style={{
+                animationDuration: `${revealMeta.revealDurationMs}ms`,
+                filter: celebrate ? "drop-shadow(0 0 10px #f2b705aa)" : undefined,
+              }}
+            />
+          </div>
         )}
 
         {isNewShiny ? (
@@ -8388,10 +8495,48 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
   const [drawing, setDrawing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  // Fase de la animación de revelación (ver GachaRevealOverlay/
+  // GACHA_REVEAL_META): null fuera de una tirada, "shake" mientras la
+  // Pokéball se tambalea, "flash" en el destello de apertura, y "dim"
+  // (solo Legendario) en el oscurecimiento breve justo antes de revelar.
+  // `revealRarity` se fija ya en cuanto se resuelve el sorteo (antes de
+  // pedir el sprite a la API), porque la rareza decide cuántas sacudidas y
+  // cuánto dura cada fase.
+  const [revealPhase, setRevealPhase] = useState(null);
+  const [revealRarity, setRevealRarity] = useState(null);
+  const revealTimeoutsRef = useRef([]);
+
+  useEffect(() => {
+    return () => { revealTimeoutsRef.current.forEach(clearTimeout); };
+  }, []);
 
   const pool = selectedType ? GACHA_POOL.filter((p) => p.types.includes(selectedType)) : GACHA_POOL;
   const cost = selectedType ? TYPE_GACHA_COST : GENERAL_GACHA_COST;
   const refundTable = selectedType ? TYPE_GACHA_REFUND : GENERAL_GACHA_REFUND;
+
+  // Secuencia de fases visuales (Pokéball temblando -> destello -> [oscuro,
+  // solo Legendario]) para la rareza ya conocida `rarity`, devuelta como
+  // una promesa que se resuelve cuando toca pasar a la revelación en sí —
+  // se espera en paralelo a la petición real de datos del Pokémon (ver
+  // handleDraw), así que la revelación nunca aparece antes de que la
+  // animación mínima haya tenido tiempo de reproducirse, ni se alarga más
+  // de lo necesario si los datos ya estaban en caché.
+  function runRevealSequence(rarity) {
+    const meta = GACHA_REVEAL_META[rarity] || GACHA_REVEAL_META.common;
+    setRevealRarity(rarity);
+    setRevealPhase("shake");
+    return new Promise((resolve) => {
+      const shakeMs = meta.shakeCount * meta.shakeDurationMs;
+      const timeouts = [
+        setTimeout(() => setRevealPhase("flash"), shakeMs),
+        setTimeout(resolve, shakeMs + meta.flashDurationMs + meta.dimMs),
+      ];
+      if (meta.dimMs > 0) {
+        timeouts.push(setTimeout(() => setRevealPhase("dim"), shakeMs + meta.flashDurationMs));
+      }
+      revealTimeoutsRef.current = timeouts;
+    });
+  }
 
   async function handleDraw() {
     if (drawing || coins < cost) return;
@@ -8414,7 +8559,7 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
       // shiny de esa misma especie cuente como repetida, y viceversa).
       const shiny = Math.random() < SHINY_CHANCE;
       const alreadyOwned = collection.some((c) => c.slug === chosen.slug && c.shiny === shiny);
-      const pokeData = await api.getPokemon(chosen.slug);
+      const [pokeData] = await Promise.all([api.getPokemon(chosen.slug), runRevealSequence(rarity)]);
       const sprite = shiny ? (pokeData.shinySprite || pokeData.sprite) : pokeData.sprite;
 
       if (alreadyOwned) {
@@ -8435,6 +8580,9 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
       setError("No se pudo completar la tirada. Comprueba tu conexión e inténtalo de nuevo.");
       setCoins((c) => c + cost); // deshace el coste si la tirada no llegó a resolverse
     }
+    revealTimeoutsRef.current.forEach(clearTimeout);
+    setRevealPhase(null);
+    setRevealRarity(null);
     setDrawing(false);
   }
 
@@ -8508,6 +8656,7 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
         </button>
       </div>
 
+      <GachaRevealOverlay phase={revealPhase} rarity={revealRarity} />
       <GachaResultModal result={result} onClose={() => setResult(null)} />
     </div>
   );
