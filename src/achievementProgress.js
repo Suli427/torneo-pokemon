@@ -165,12 +165,12 @@ function reconstructShinyCount(progress, collection) {
 // el historial de torneos ni ningún otro dato ya persistido guarda ronda a
 // ronda de la Torre Batalla, intercambios del Draft, o qué temáticas
 // semanales se ganaron en el pasado.
-export function reconstructProgress({ tournamentHistory, collection, purchasedTrainerIds, customTrainer, coins }) {
+export function reconstructProgress({ tournamentHistory, collection, purchasedTrainerIds, customTrainers, coins }) {
   let progress = buildDefaultProgress();
   progress = reconstructFromTournamentHistory(progress, tournamentHistory);
   progress = reconstructShinyCount(progress, collection);
   progress = applyCoinsFallback(progress, coins);
-  const derived = buildDerivedContext({ collection, purchasedTrainerIds, customTrainer });
+  const derived = buildDerivedContext({ collection, purchasedTrainerIds, customTrainers });
   // Desbloqueo silencioso: se marca como ya conseguido cualquier logro que
   // ya se cumpla con este progreso reconstruido, pero SIN pasar por
   // evaluateAchievements (que devolvería recompensa/notificación) — aquí
@@ -191,7 +191,7 @@ export function reconstructProgress({ tournamentHistory, collection, purchasedTr
    reutilizando esos datos en vez de duplicarlos en progress)
 --------------------------------------------------------------- */
 
-export function buildDerivedContext({ collection, purchasedTrainerIds, customTrainer, gachaPool }) {
+export function buildDerivedContext({ collection, purchasedTrainerIds, customTrainers, gachaPool }) {
   const distinctSpeciesSlugs = new Set(collection.map((c) => c.slug));
   const distinctShinySlugs = new Set(collection.filter((c) => c.shiny).map((c) => c.slug));
   let typesOwnedCount = 0;
@@ -219,7 +219,7 @@ export function buildDerivedContext({ collection, purchasedTrainerIds, customTra
     generalGachaCompletionPct,
     anyTypeGachaFullyCompleted,
     purchasedTrainerCount: purchasedTrainerIds.length,
-    hasCustomTrainer: !!customTrainer,
+    hasCustomTrainer: Array.isArray(customTrainers) && customTrainers.length > 0,
   };
 }
 

@@ -398,6 +398,13 @@ export const CHANGELOG = [
     detail: "Un nuevo botón en la cabecera abre \"Copia de seguridad\": exporta toda tu partida (monedas, colección, entrenadores, logros, historial...) a un archivo .json descargable, o importa uno guardado previamente, con confirmación explícita antes de sobrescribir la partida actual y sin tocar nada si el archivo está corrupto. Además, desde la pestaña Personajes tu entrenador propio puede generar un código compacto de su equipo (especies + movimientos, sin shiny) con \"Compartir equipo\", y cualquier otra persona puede pegarlo con \"Adoptar equipo compartido\": la app comprueba si ya tiene esas 6 especies en su colección, muestra cuáles le faltan por nombre si no las tiene todas, y si las tiene completas puede adoptar el equipo usando SUS PROPIOS Pokémon de esas especies con los mismos movimientos — nunca transfiere ningún Pokémon ajeno.",
     date: "2026-08-28T17:24:35+02:00",
   },
+  {
+    id: 56,
+    title: "Hasta 5 entrenadores propios, con nombre editable",
+    summary: "Ahora puedes crear hasta 5 entrenadores propios en vez de uno solo, y ya puedes cambiarles el nombre después de creados.",
+    detail: "La pestaña Personajes muestra ahora una tarjeta por cada entrenador propio que hayas creado (hasta 5), cada una con sus propios botones de \"Editar equipo\", \"Editar nombre\" (nuevo), \"Compartir equipo\" y \"Borrar equipo\", más un nuevo \"Eliminar entrenador\" para quitarlo por completo y liberar hueco. Si ya tienes uno guardado de antes de este cambio, se ha migrado automáticamente al primero de la lista sin perder nada. El resto de modos que usaban \"tu entrenador propio\" ahora dejan elegir CUÁL de los tuyos usar: el Modo A del torneo y el Draft muestran un selector cuando tienes más de uno, y la Torre Batalla los lista todos junto al resto de entrenadores desbloqueados. Ninguno de tus entrenadores propios puede aparecer nunca como rival de la CPU, en ningún modo.",
+    date: "2026-08-28T17:54:20+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

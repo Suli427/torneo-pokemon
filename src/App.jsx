@@ -460,38 +460,61 @@ function decodeTeamShareCode(code) {
   return parsed.team;
 }
 
-// Entrenador propio del usuario: { name, team: [6 { slug, shiny }] } o null
-// si aún no se ha creado. Solo puede existir uno. `team` ya no es un array
-// de slugs sueltos (formato antiguo, antes de distinguir shiny en la
-// colección): se normaliza aquí por compatibilidad con partidas guardadas
-// previas. Recibe la colección ya cargada para poder desambiguar esas
-// entradas antiguas: si la colección solo tiene una variante (normal o
-// shiny) de esa especie, se infiere de ahí; si hay ambigüedad (tiene
-// ambas) o ya no la tiene, se asume la normal por defecto.
+const CUSTOM_TRAINERS_STORAGE_KEY = "liga-pokemon:custom-trainers";
+const CUSTOM_TRAINERS_MAX = 5;
+
+// Normaliza UN entrenador propio ya parseado (usado tanto por la migración
+// de la clave antigua como por la carga normal de la nueva): valida
+// name/team, y desambigua entradas antiguas de `team` que fueran solo un
+// slug suelto (formato previo a distinguir shiny en la colección) mirando
+// si la colección solo tiene una variante de esa especie. Devuelve `null`
+// si el objeto no tiene forma válida.
+function normalizeCustomTrainer(obj, collection) {
+  if (!obj || typeof obj.name !== "string" || !Array.isArray(obj.team) || !(obj.team.length === 6 || obj.team.length === 0)) return null;
+  const team = obj.team.map((t) => {
+    if (typeof t !== "string") return { slug: t.slug, shiny: !!t.shiny };
+    const matches = collection.filter((c) => c.slug === t);
+    const shiny = matches.length === 1 ? !!matches[0].shiny : false;
+    return { slug: t, shiny };
+  });
+  const id = typeof obj.id === "string" ? obj.id : generateCustomTrainerId();
+  return { id, name: obj.name, team };
+}
+
+function generateCustomTrainerId() {
+  return `custom-trainer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Entrenadores propios del usuario: hasta CUSTOM_TRAINERS_MAX objetos
+// { id, name, team: [6 { slug, shiny }] }, cada uno independiente (mismo
+// Pokémon de la colección puede estar en el equipo de varios a la vez, sin
+// exclusividad, igual que ya pasa con los entrenadores comprados del
+// roster). `team` puede ser un array VACÍO tras "Borrar equipo" (ver
+// clearCustomTrainerTeam): mantiene el entrenador (nombre incluido) pero
+// sin Pokémon asignados hasta volver a configurarlo.
 //
-// `team` también puede ser un array VACÍO: es el estado tras "Borrar
-// equipo" (ver clearCustomTrainerTeam), que mantiene el entrenador (nombre
-// incluido) pero lo deja sin Pokémon asignados hasta que el usuario vuelva
-// a elegir 6 con el editor ya existente. Cualquier otra longitud (formato
-// corrupto o a medio migrar) se descarta como si no hubiera entrenador,
-// igual que antes.
-function loadStoredCustomTrainer(collection) {
+// MIGRACIÓN: hasta esta versión solo podía existir un entrenador propio,
+// guardado como un único objeto bajo la clave antigua
+// CUSTOM_TRAINER_STORAGE_KEY. Si esa clave existe y la nueva todavía no, se
+// convierte aquí mismo en el primer elemento del nuevo array (una sola vez:
+// en cuanto se guarda algo bajo la clave nueva, la antigua deja de
+// consultarse, ver el useEffect de persistencia en App).
+function loadStoredCustomTrainers(collection) {
   try {
-    const raw = localStorage.getItem(CUSTOM_TRAINER_STORAGE_KEY);
+    const raw = localStorage.getItem(CUSTOM_TRAINERS_STORAGE_KEY);
     if (raw) {
-      const obj = JSON.parse(raw);
-      if (obj && typeof obj.name === "string" && Array.isArray(obj.team) && (obj.team.length === 6 || obj.team.length === 0)) {
-        const team = obj.team.map((t) => {
-          if (typeof t !== "string") return { slug: t.slug, shiny: !!t.shiny };
-          const matches = collection.filter((c) => c.slug === t);
-          const shiny = matches.length === 1 ? !!matches[0].shiny : false;
-          return { slug: t, shiny };
-        });
-        return { name: obj.name, team };
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        return arr.map((t) => normalizeCustomTrainer(t, collection)).filter(Boolean).slice(0, CUSTOM_TRAINERS_MAX);
       }
     }
+    const legacyRaw = localStorage.getItem(CUSTOM_TRAINER_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacy = normalizeCustomTrainer(JSON.parse(legacyRaw), collection);
+      if (legacy) return [legacy];
+    }
   } catch (e) { /* localStorage no disponible */ }
-  return null;
+  return [];
 }
 
 // Un entrenador propio solo se puede JUGAR (Modo A, Draft, aparecer como
@@ -6257,26 +6280,31 @@ function RoundTransitionScreen({ round, total, phase }) {
   );
 }
 
-function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult, battleTowerBest, onBattleTowerResult, onDraftSwap, onBattleTowerRoundCleared }) {
+function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult, battleTowerBest, onBattleTowerResult, onDraftSwap, onBattleTowerRoundCleared }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
   // El torneo está diseñado para exactamente 8 participantes fijos (usuario
-  // + 7 CPU); el entrenador propio nunca se añade como un 9º, sino que
-  // sustituye a Ash (el mismo que el usuario tendría preseleccionado por
-  // defecto si no tuviera uno propio) SOLO cuando decide jugar con él. Ver
-  // `effectiveTrainers` más abajo: el id "ash" se mantiene igual en todo
-  // momento para no tocar la lógica de emparejamientos ni la clasificación,
-  // solo cambia qué nombre/equipo resuelve ese id concreto.
-  const [playAsCustom, setPlayAsCustom] = useState(false);
-  // Modo de torneo: "A" = solo con el entrenador propio (nunca se muestra
-  // el selector, va directo con él); "B" = cualquier entrenador desbloqueado
-  // EXCEPTO el propio (el comportamiento ya existente antes de este
-  // cambio). En ambos modos el entrenador propio nunca puede tocarle a la
-  // CPU: en modo A porque ocupa el único slot "ash" que el propio usuario
-  // usa (se excluye a sí mismo de los rivales, como ya pasaba); en modo B
-  // porque directamente no se ofrece como opción del selector, así que
-  // `playAsCustom` nunca llega a activarse y el slot "ash" sigue
-  // resolviendo al Ash real de toda la vida.
+  // + 7 CPU); ninguno de los hasta 5 entrenadores propios del usuario se
+  // añade nunca como un 9º, sino que uno de ellos (elegido por el usuario,
+  // ver `playAsCustomId`) sustituye a Ash (el mismo que el usuario tendría
+  // preseleccionado por defecto si no tuviera ninguno propio) SOLO en modo
+  // A. Ver `effectiveTrainers` más abajo: el id "ash" se mantiene igual en
+  // todo momento para no tocar la lógica de emparejamientos ni la
+  // clasificación, solo cambia qué nombre/equipo resuelve ese id concreto.
+  // `null` = no se juega con un entrenador propio (modos B/C/weekly);
+  // cualquier otro valor es el `id` de CUÁL de los hasta 5 entrenadores
+  // propios se eligió para esta partida (ver el selector en modo A).
+  const [playAsCustomId, setPlayAsCustomId] = useState(null);
+  // Modo de torneo: "A" = solo con uno de tus entrenadores propios (si hay
+  // más de uno con equipo completo, el usuario elige cuál mediante un
+  // selector, ver más abajo); "B" = cualquier entrenador desbloqueado
+  // EXCEPTO los propios (el comportamiento ya existente antes de este
+  // cambio). En ambos modos ninguno de tus entrenadores propios puede
+  // tocarte a la CPU: en modo A porque ocupa el único slot "ash" que el
+  // propio usuario usa (se excluye a sí mismo de los rivales, como ya
+  // pasaba); en modo B porque directamente no se ofrecen como opción del
+  // selector, así que `playAsCustomId` nunca llega a activarse y el slot
+  // "ash" sigue resolviendo al Ash real de toda la vida.
   const [mode, setMode] = useState("B");
   // Modo C "Ruleta Pokémon": equipo de 6 Pokémon aleatorios (última etapa
   // evolutiva, mismo pool que el gacha) con moveset aleatorio pero
@@ -6384,23 +6412,28 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   }
 
   // Cambiar de modo obliga a recolocar la elección del usuario: en modo A
-  // se fuerza directamente al entrenador propio (mismo truco de "reskin"
-  // del slot ash ya usado); al salir de modo A hay que desactivar
-  // `playAsCustom` para que el slot "ash" vuelva a representar al Ash real
-  // y el selector de modo B muestre correctamente qué tarjeta está elegida.
+  // se fuerza al slot "ash" a resolver uno de los entrenadores propios
+  // jugables (mismo truco de "reskin" ya usado) — si ya había uno elegido
+  // de una vez anterior y sigue siendo jugable, se respeta esa elección; si
+  // no, se elige el primero jugable por defecto (el usuario puede cambiarlo
+  // después con el selector, ver el render de modo A). Al salir de modo A
+  // hay que desactivar `playAsCustomId` para que el slot "ash" vuelva a
+  // representar al Ash real y el selector de modo B muestre correctamente
+  // qué tarjeta está elegida.
   function handleModeChange(newMode) {
     setMode(newMode);
-    if (newMode === "A" && hasCustomTrainerTeam(customTrainer)) {
+    if (newMode === "A" && playableCustomTrainers.length > 0) {
       setUserTrainerId("ash");
-      setPlayAsCustom(true);
+      setPlayAsCustomId((prev) => (prev && playableCustomTrainers.some((t) => t.id === prev)) ? prev : playableCustomTrainers[0].id);
     } else if (newMode === "B") {
-      setPlayAsCustom(false);
+      setPlayAsCustomId(null);
     } else if (newMode === "C") {
       // Mismo truco de "reskin" del slot ash que el modo A, pero con su
       // propio reskin de equipo aleatorio (ver effectiveTrainers): no
-      // reutiliza playAsCustom, que es específico del entrenador propio.
+      // reutiliza playAsCustomId, que es específico de los entrenadores
+      // propios.
       setUserTrainerId("ash");
-      setPlayAsCustom(false);
+      setPlayAsCustomId(null);
     } else if (newMode === "weekly") {
       // Torneo Semanal: mismo truco de reskin del slot ash, y además fuerza
       // SIEMPRE dificultad Maestro y emparejamiento aleatorio (reglas fijas
@@ -6409,7 +6442,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // simplemente los oculta en este modo en vez de necesitar una rama
       // aparte en startTournament/finalizeRound para la dificultad.
       setUserTrainerId("ash");
-      setPlayAsCustom(false);
+      setPlayAsCustomId(null);
       setDifficulty("master");
       setPairMode("random");
     }
@@ -6419,6 +6452,12 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   // nunca reskinada, para poder seguir eligiendo tanto al Ash real como,
   // aparte, "Mi entrenador" si existe uno propio.
   const unlockedTrainers = TRAINERS.filter((t) => isTrainerUnlocked(t, purchasedTrainerIds));
+  // Entrenadores propios JUGABLES (equipo completo de 6) entre los hasta 5
+  // que el usuario puede tener: son los únicos ofrecidos en modo A/Draft.
+  const playableCustomTrainers = customTrainers.filter(hasCustomTrainerTeam);
+  // Cuál de ellos está elegido para ESTA partida (modo A), o `null` si
+  // ninguno (otros modos, o modo A sin ninguno jugable todavía).
+  const selectedCustomTrainer = playAsCustomId ? customTrainers.find((t) => t.id === playAsCustomId) : null;
   // Lista efectiva usada para TODA la simulación/emparejamiento/clasificación:
   // idéntica a TRAINERS salvo que, si el usuario ha elegido jugar con su
   // entrenador propio (modo A) o le ha tocado la Ruleta Pokémon (modo C),
@@ -6459,14 +6498,14 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       })
     : (mode === "weekly" && weeklyTeam)
       ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: `${weeklyTheme.title} (Semanal)`, team: weeklyTeam.map((e) => e.slug), subtitle: "Torneo Semanal", sprite: null } : t)
-      : (playAsCustom && customTrainer)
+      : selectedCustomTrainer
         // `isCustomTrainer: true` es la marca que usan los sitios que
         // renderizan este slot (selector de modo B, clasificación) para
         // pasarle el avatar VIGENTE del perfil del jugador a TrainerAvatar
         // en vez de su `sprite` (que se deja en null): así el avatar del
         // entrenador propio queda sincronizado con el del perfil sin
         // guardar ninguna copia aparte (ver TrainerAvatar/PlayerAvatar).
-        ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: customTrainer.name, team: customTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador", sprite: null, isCustomTrainer: true } : t)
+        ? TRAINERS.map((t) => t.id === "ash" ? { ...t, name: selectedCustomTrainer.name, team: selectedCustomTrainer.team.map((m) => m.slug), subtitle: "Tu entrenador", sprite: null, isCustomTrainer: true } : t)
         : TRAINERS;
 
   async function startTournament() {
@@ -6553,9 +6592,10 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         // Nombre "prestado" (solo cosmético, ver effectiveTrainers) para
         // cada uno de los 7 rivales: un entrenador real del roster
         // completo de 20, sorteado sin repetir entre ellos. No hace falta
-        // excluir al entrenador propio del usuario aquí: `customTrainer`
-        // no forma parte de TRAINERS (es una entidad aparte), así que
-        // nunca podría salir sorteado de este pool de todos modos.
+        // excluir a ninguno de los entrenadores propios del usuario aquí:
+        // `customTrainers` no forma parte de TRAINERS (son entidades
+        // aparte), así que ninguno podría salir sorteado de este pool de
+        // todos modos.
         const namePool = [...TRAINERS.map((t) => t.id)];
         for (let i = namePool.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
@@ -6572,8 +6612,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
           const entry = findCollectionEntry(collection, slug, shiny);
           return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
         }));
-      } else if (playAsCustom && customTrainer) {
-        await Promise.all(customTrainer.team.map(({ slug, shiny }) => {
+      } else if (selectedCustomTrainer) {
+        await Promise.all(selectedCustomTrainer.team.map(({ slug, shiny }) => {
           const entry = findCollectionEntry(collection, slug, shiny);
           return entry ? api.primeMoveset("ash", slug, entry.moves) : Promise.resolve();
         }));
@@ -6673,10 +6713,15 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
       // src/achievementProgress.js): no afectan en nada a la clasificación
       // ni al emparejamiento, que siguen calculándose exactamente igual
       // que antes más arriba (standings/points/reward).
-      const trainerIdentity = mode === "C" ? "roulette" : mode === "weekly" ? "weekly" : (playAsCustom ? "custom" : userTrainerId);
+      // `trainerIdentity` incluye el id del entrenador propio concreto (no
+      // solo "custom" a secas) para que ganar con cada uno de los hasta 5
+      // cuente como una identidad DISTINTA para el logro de "gana con N
+      // identidades distintas" (ver achievementProgress.js) — antes solo
+      // podía existir uno, así que un literal fijo "custom" era suficiente.
+      const trainerIdentity = mode === "C" ? "roulette" : mode === "weekly" ? "weekly" : (playAsCustomId ? `custom:${playAsCustomId}` : userTrainerId);
       const teamSlugs = (mode === "C" && rouletteTeam) ? rouletteTeam.map((e) => e.slug)
         : (mode === "weekly" && weeklyTeam) ? weeklyTeam.map((e) => e.slug)
-        : (playAsCustom && customTrainer) ? customTrainer.team.map((t) => t.slug)
+        : selectedCustomTrainer ? selectedCustomTrainer.team.map((t) => t.slug)
         : (trainer?.team || []);
       // Rareza/tipos del equipo usado, mirando el pool del gacha (única
       // fuente ya existente de rareza/tipos por especie): si alguna especie
@@ -6826,8 +6871,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             </h3>
             <div className="grid sm:grid-cols-3 lg:grid-cols-6 gap-3">
               <button
-                onClick={() => hasCustomTrainerTeam(customTrainer) && handleModeChange("A")}
-                disabled={!hasCustomTrainerTeam(customTrainer)}
+                onClick={() => playableCustomTrainers.length > 0 && handleModeChange("A")}
+                disabled={playableCustomTrainers.length === 0}
                 className="rounded-xl p-4 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50"
                 style={{
                   background: mode === "A" ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
@@ -6836,10 +6881,10 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               >
                 <div className="text-white font-semibold text-sm mb-1">Solo tu entrenador propio</div>
                 <div className="text-[11px] text-[#8a8fa3]">
-                  {hasCustomTrainerTeam(customTrainer)
-                    ? "Juegas únicamente con tu entrenador propio; no puedes elegir otro en este modo."
-                    : customTrainer
-                      ? "Tu entrenador propio no tiene equipo asignado. Configúralo en la pestaña Personajes."
+                  {playableCustomTrainers.length > 0
+                    ? "Juegas únicamente con uno de tus entrenadores propios; no puedes elegir otro en este modo."
+                    : customTrainers.length > 0
+                      ? "Ninguno de tus entrenadores propios tiene equipo asignado. Configura alguno en la pestaña Personajes."
                       : "Necesitas crear tu propio entrenador primero, en la pestaña Personajes."}
                 </div>
               </button>
@@ -6880,8 +6925,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
                 <div className="text-[11px] text-[#8a8fa3]">Dificultad Maestro fija y una temática distinta cada semana. Recompensa única de {WEEKLY_TOURNAMENT_REWARD} monedas la primera vez que ganes.</div>
               </button>
               <button
-                onClick={() => hasCustomTrainerTeam(customTrainer) && handleModeChange("draft")}
-                disabled={!hasCustomTrainerTeam(customTrainer)}
+                onClick={() => playableCustomTrainers.length > 0 && handleModeChange("draft")}
+                disabled={playableCustomTrainers.length === 0}
                 className="rounded-xl p-4 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50"
                 style={{
                   background: mode === "draft" ? "linear-gradient(160deg, #4a90d933, #14161f)" : "#14161f",
@@ -6890,10 +6935,10 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               >
                 <div className="text-white font-semibold text-sm mb-1">Draft</div>
                 <div className="text-[11px] text-[#8a8fa3]">
-                  {hasCustomTrainerTeam(customTrainer)
-                    ? "Rivales infinitos con el equipo de tu entrenador propio. ⚠️ Cambios PERMANENTES: puedes ganar y perder Pokémon para siempre."
-                    : customTrainer
-                      ? "Tu entrenador propio no tiene equipo asignado. Configúralo en la pestaña Personajes."
+                  {playableCustomTrainers.length > 0
+                    ? "Rivales infinitos con el equipo de uno de tus entrenadores propios (eliges cuál al entrar). ⚠️ Cambios PERMANENTES: puedes ganar y perder Pokémon para siempre."
+                    : customTrainers.length > 0
+                      ? "Ninguno de tus entrenadores propios tiene equipo asignado. Configura alguno en la pestaña Personajes."
                       : "Necesitas crear tu propio entrenador primero, en la pestaña Personajes."}
                 </div>
               </button>
@@ -6917,7 +6962,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             <DraftMode
               api={api}
               collection={collection}
-              customTrainer={customTrainer}
+              customTrainers={customTrainers}
               coins={coins}
               setCoins={setCoins}
               onTournamentFinished={onTournamentFinished}
@@ -6931,7 +6976,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
             <BattleTowerMode
               api={api}
               collection={collection}
-              customTrainer={customTrainer}
+              customTrainers={customTrainers}
               purchasedTrainerIds={purchasedTrainerIds}
               ownedTrainerMovesets={ownedTrainerMovesets}
               coins={coins}
@@ -6949,11 +6994,11 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               {unlockedTrainers.map((t) => (
                 <button
                   key={t.id}
-                  onClick={() => { setUserTrainerId(t.id); setPlayAsCustom(false); }}
+                  onClick={() => { setUserTrainerId(t.id); setPlayAsCustomId(null); }}
                   className="rounded-xl p-4 text-left transition-all"
                   style={{
-                    background: (userTrainerId === t.id && !playAsCustom) ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
-                    border: (userTrainerId === t.id && !playAsCustom) ? `1.5px solid ${t.color}` : "1px solid #262a3a",
+                    background: (userTrainerId === t.id && !playAsCustomId) ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
+                    border: (userTrainerId === t.id && !playAsCustomId) ? `1.5px solid ${t.color}` : "1px solid #262a3a",
                   }}
                 >
                   <TrainerAvatar trainer={t} size={36} className="text-sm mb-2" />
@@ -6963,17 +7008,41 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
               ))}
             </div>
           ) : mode === "A" ? (
-            hasCustomTrainerTeam(customTrainer) ? (
-              <div className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#2ecc7114", border: "1px solid #2ecc7155" }}>
-                <PlayerAvatar avatar={playerProfile.avatar} size={44} color="#2ecc71" />
-                <div>
-                  <div className="text-white font-semibold text-sm">Jugarás con {customTrainer.name}</div>
-                  <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+            playableCustomTrainers.length > 0 ? (
+              <div className="rounded-xl p-4" style={{ background: "#2ecc7114", border: "1px solid #2ecc7155" }}>
+                <div className="flex items-center gap-3 mb-3">
+                  <PlayerAvatar avatar={playerProfile.avatar} size={44} color="#2ecc71" />
+                  <div>
+                    <div className="text-white font-semibold text-sm">Jugarás con {selectedCustomTrainer?.name ?? playableCustomTrainers[0].name}</div>
+                    <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+                  </div>
                 </div>
+                {/* Selector de CUÁL de los entrenadores propios jugables usar
+                    esta partida: solo hace falta mostrarlo si hay más de
+                    uno, ya que con exactamente uno handleModeChange ya lo
+                    eligió automáticamente. */}
+                {playableCustomTrainers.length > 1 && (
+                  <div className="flex flex-wrap gap-2">
+                    {playableCustomTrainers.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => setPlayAsCustomId(t.id)}
+                        className="text-xs px-3 py-1.5 rounded-full font-semibold"
+                        style={{
+                          background: playAsCustomId === t.id ? "#2ecc7133" : "#14161f",
+                          border: playAsCustomId === t.id ? "1px solid #2ecc71" : "1px solid #262a3a",
+                          color: playAsCustomId === t.id ? "#2ecc71" : "#c7cbdb",
+                        }}
+                      >
+                        {t.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            ) : customTrainer ? (
+            ) : customTrainers.length > 0 ? (
               <div className="rounded-xl p-4 text-sm text-[#ff8a8a]" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
-                {customTrainer.name} no tiene equipo asignado. Ve a la pestaña Personajes para configurar 6 Pokémon.
+                Ninguno de tus entrenadores propios tiene equipo asignado. Ve a la pestaña Personajes para configurar alguno con 6 Pokémon.
               </div>
             ) : null
           ) : mode === "weekly" ? (
@@ -7107,7 +7176,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
 
           <button
             onClick={startTournament}
-            disabled={(mode === "A" && !hasCustomTrainerTeam(customTrainer)) || (mode === "weekly" && (weeklyCompleted || !weeklyTeamValid))}
+            disabled={(mode === "A" && !selectedCustomTrainer) || (mode === "weekly" && (weeklyCompleted || !weeklyTeamValid))}
             className="flex items-center gap-2 px-6 py-3 rounded-xl font-display text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
           >
@@ -7321,7 +7390,7 @@ const DRAFT_RIVAL_ID = "draft-rival";
 // bucle de estado independiente y solo toma prestado lo genérico del motor
 // (api.simulateMatch vía InteractiveBattle, api.primeMoveset,
 // api.buildCompetitiveMoveset).
-function DraftMode({ api, collection, customTrainer, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile, onActiveChange, onSwapCompleted }) {
+function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournamentFinished, onCombatMechanics, onDraftResult, playerProfile, onActiveChange, onSwapCompleted }) {
   const [phase, setPhase] = useState("confirm"); // confirm, loading, battle, swap, post-swap, summary
 
   // BUG corregido: la cabecera "Elige tu entrenador" y la cuadrícula de
@@ -7390,24 +7459,40 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
     return { id: DRAFT_RIVAL_ID, name: opponentMeta.name, color: opponentMeta.color, subtitle: opponentMeta.subtitle, team: opponentMeta.team.map((p) => p.slug) };
   }, [opponentMeta]);
 
+  // Entrenadores propios JUGABLES (equipo completo) entre los hasta 5 que
+  // el usuario puede tener: son los únicos que se pueden elegir para jugar
+  // esta partida de Draft.
+  const playableCustomTrainers = customTrainers.filter(hasCustomTrainerTeam);
+  // Cuál de ellos se usa en ESTA partida: por defecto el primero jugable,
+  // pero el usuario puede cambiarlo en la pantalla de confirmación si tiene
+  // más de uno (ver el selector más abajo). Si el elegido deja de ser
+  // válido (se borró su equipo entretanto) se recalcula al primero jugable
+  // disponible.
+  const [selectedTrainerId, setSelectedTrainerId] = useState(null);
+  useEffect(() => {
+    if (selectedTrainerId && playableCustomTrainers.some((t) => t.id === selectedTrainerId)) return;
+    setSelectedTrainerId(playableCustomTrainers[0]?.id ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customTrainers]);
+  const selectedTrainer = customTrainers.find((t) => t.id === selectedTrainerId) || null;
+
   // Equipo "candidato" mostrado en la pantalla de confirmación: siempre el
-  // equipo ACTUAL del entrenador propio, resuelto contra la colección real
-  // para sacar sus movesets ya asignados — se recalcula solo si
-  // customTrainer/collection cambian de verdad (por ejemplo, tras aplicar
-  // el resultado de un Draft anterior, ver applyAndReturn/onDraftResult en
-  // App), no en cada render. `null` si todavía no hay entrenador propio CON
-  // equipo completo (no debería poder llegarse aquí sin uno — ver el botón
-  // de modo "Draft" en TorneoTab, deshabilitado sin hasCustomTrainerTeam —
-  // pero se comprueba igualmente por seguridad, incluyendo el caso de un
-  // entrenador que existe pero al que se le ha vaciado el equipo con
-  // "Borrar equipo").
+  // equipo ACTUAL del entrenador propio elegido, resuelto contra la
+  // colección real para sacar sus movesets ya asignados — se recalcula solo
+  // si selectedTrainer/collection cambian de verdad (por ejemplo, tras
+  // aplicar el resultado de un Draft anterior, ver applyAndReturn/
+  // onDraftResult en App), no en cada render. `null` si todavía no hay
+  // ningún entrenador propio CON equipo completo (no debería poder
+  // llegarse aquí sin uno — ver el botón de modo "Draft" en TorneoTab,
+  // deshabilitado sin playableCustomTrainers.length>0 — pero se comprueba
+  // igualmente por seguridad).
   const confirmTeamPreview = useMemo(() => {
-    if (!hasCustomTrainerTeam(customTrainer)) return null;
-    return customTrainer.team.map(({ slug, shiny }) => {
+    if (!hasCustomTrainerTeam(selectedTrainer)) return null;
+    return selectedTrainer.team.map(({ slug, shiny }) => {
       const entry = findCollectionEntry(collection, slug, shiny);
       return { slug, shiny: !!shiny, moves: entry?.moves || [], origin: "collection", originalKey: collectionEntryKey({ slug, shiny }) };
     });
-  }, [customTrainer, collection]);
+  }, [selectedTrainer, collection]);
 
   // Sprites del equipo candidato/actual, y según la fase también del
   // equipo del rival — se piden todos los slugs relevantes cada vez que
@@ -7564,7 +7649,7 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
   }
 
   function applyAndReturn() {
-    onDraftResult(draftTeam, originalKeys);
+    onDraftResult(selectedTrainerId, draftTeam, originalKeys);
     setCoins((c) => c + coinsAccumulated);
     onTournamentFinished({
       date: Date.now(),
@@ -7593,11 +7678,11 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
   const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
 
   if (phase === "confirm") {
-    if (!hasCustomTrainerTeam(customTrainer)) {
+    if (!hasCustomTrainerTeam(selectedTrainer)) {
       return (
         <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">
-          {customTrainer
-            ? "Tu entrenador propio no tiene equipo asignado. Ve a la pestaña Personajes para configurar 6 Pokémon."
+          {customTrainers.length > 0
+            ? "Ninguno de tus entrenadores propios tiene equipo asignado. Ve a la pestaña Personajes para configurar alguno con 6 Pokémon."
             : "Necesitas crear tu propio entrenador primero, en la pestaña Personajes."}
         </div>
       );
@@ -7608,7 +7693,28 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
           <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
             <Users size={18} color="#4a90d9" /> Tu equipo Draft
           </h3>
-          <p className="text-[11px] text-[#8a8fa3] mb-2">El Draft se juega con el equipo actual de {customTrainer.name}, con los movimientos que ya tiene asignados.</p>
+          <p className="text-[11px] text-[#8a8fa3] mb-2">El Draft se juega con el equipo actual de {selectedTrainer.name}, con los movimientos que ya tiene asignados.</p>
+          {/* Selector de CUÁL de los entrenadores propios jugables usar en
+              esta partida: solo hace falta si hay más de uno, ya que con
+              exactamente uno ya se eligió automáticamente arriba. */}
+          {playableCustomTrainers.length > 1 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {playableCustomTrainers.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setSelectedTrainerId(t.id)}
+                  className="text-xs px-3 py-1.5 rounded-full font-semibold"
+                  style={{
+                    background: selectedTrainerId === t.id ? "#4a90d933" : "#14161f",
+                    border: selectedTrainerId === t.id ? "1px solid #4a90d9" : "1px solid #262a3a",
+                    color: selectedTrainerId === t.id ? "#4a90d9" : "#c7cbdb",
+                  }}
+                >
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {(confirmTeamPreview || []).map((c, i) => {
               const p = sprites[c.slug];
@@ -7658,7 +7764,7 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
         <div className="rounded-xl p-4" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
           <div className="text-white font-display text-lg mb-2 flex items-center gap-2">⚠️ Los cambios del Draft son PERMANENTES</div>
           <ul className="text-sm text-[#c7cbdb] space-y-1.5 list-disc pl-5">
-            <li>El Draft se juega con el equipo actual de <span className="text-white font-semibold">{customTrainer.name}</span>. Al terminar, ese equipo se <span className="text-[#ff8a8a] font-semibold">sustituirá directamente</span> por el equipo final del Draft.</li>
+            <li>El Draft se juega con el equipo actual de <span className="text-white font-semibold">{selectedTrainer.name}</span>. Al terminar, ese equipo se <span className="text-[#ff8a8a] font-semibold">sustituirá directamente</span> por el equipo final del Draft.</li>
             <li>Los Pokémon de tu equipo que acaben <span className="text-[#ff8a8a] font-semibold">fuera</span> de tu equipo al terminar el Draft se <span className="text-[#ff8a8a] font-semibold">perderán de tu colección para siempre</span> y dejarán de estar en el equipo de tu entrenador.</li>
             <li>Los Pokémon que ganes de tus rivales y conserves al terminar se <span className="text-[#5fae5f] font-semibold">añadirán a tu colección para siempre</span> y pasarán a formar parte del equipo de tu entrenador.</li>
             <li>Puedes retirarte después de cualquier ronda ganada para aplicar el resultado cuando quieras, o seguir hasta que pierdas.</li>
@@ -7845,7 +7951,7 @@ function DraftMode({ api, collection, customTrainer, coins, setCoins, onTourname
           <div className="text-white font-display text-lg mb-2">Fin del Draft</div>
           <div className="text-sm text-[#c7cbdb] mb-1">Rondas ganadas: <span className="font-bold text-white">{roundsWon}</span></div>
           <div className="text-sm text-[#c7cbdb] mb-1">Monedas obtenidas: <span className="font-bold text-[#f2b705]">+{coinsAccumulated}</span></div>
-          {customTrainer && <div className="text-sm text-[#c7cbdb]">El equipo de <span className="font-bold text-white">{customTrainer.name}</span> se ha actualizado con este resultado.</div>}
+          {selectedTrainer && <div className="text-sm text-[#c7cbdb]">El equipo de <span className="font-bold text-white">{selectedTrainer.name}</span> se ha actualizado con este resultado.</div>}
         </div>
         <div className={`grid gap-3 ${summaryExcludedDuplicates.length > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
           <div className="rounded-lg p-3" style={{ background: "#5fae5f14", border: "1px solid #5fae5f55" }}>
@@ -8016,7 +8122,7 @@ function rollDistinctRarityWeighted(pool, allowedRarities, count) {
 // finalizeRound/TOURNAMENT_ROUNDS de TorneoTab) y las mismas piezas
 // genéricas del motor (api.simulateMatch vía InteractiveBattle,
 // api.primeMoveset, api.buildCompetitiveMoveset).
-function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, ownedTrainerMovesets, coins, setCoins, playerProfile, onActiveChange, battleTowerBest, onBattleTowerResult, onRoundCleared }) {
+function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds, ownedTrainerMovesets, coins, setCoins, playerProfile, onActiveChange, battleTowerBest, onBattleTowerResult, onRoundCleared }) {
   const [phase, setPhase] = useState("select"); // select, loading, battle, post-round, summary
 
   // Mismo bug/corrección que en DraftMode: TorneoTab oculta su cabecera y
@@ -8028,7 +8134,7 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
     if (onActiveChange) onActiveChange(phase !== "select");
   }, [phase, onActiveChange]);
 
-  const [towerTrainerId, setTowerTrainerId] = useState(null); // "custom" | id de TRAINERS | null
+  const [towerTrainerId, setTowerTrainerId] = useState(null); // `custom:${id}` de uno de tus entrenadores propios | id de TRAINERS | null
   const [towerTeam, setTowerTeam] = useState(null); // [{ slug, shiny, moves }] instantánea al empezar
   const [currentRound, setCurrentRound] = useState(0);
   const [roundsWon, setRoundsWon] = useState(0);
@@ -8061,15 +8167,19 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
   }, [opponentMeta]);
 
   // Equipo "candidato" mostrado en la pantalla de selección: el equipo
-  // ACTUAL del entrenador elegido (propio o del roster), resuelto con sus
-  // movimientos reales — mismo criterio que confirmTeamPreview en
-  // DraftMode para el entrenador propio; para un entrenador del roster,
-  // mismo criterio que Modo B en TorneoTab (moveset editado por el usuario
-  // si existe, si no el fijo de TRAINER_MOVESETS).
+  // ACTUAL del entrenador elegido (uno de los propios o uno del roster),
+  // resuelto con sus movimientos reales — mismo criterio que
+  // confirmTeamPreview en DraftMode para un entrenador propio; para un
+  // entrenador del roster, mismo criterio que Modo B en TorneoTab (moveset
+  // editado por el usuario si existe, si no el fijo de TRAINER_MOVESETS).
+  // `towerTrainerId` distingue ambos casos por prefijo: `custom:${id}`
+  // identifica a CUÁL de los hasta 5 entrenadores propios se eligió (antes,
+  // con uno solo, bastaba el literal fijo "custom").
   const selectedTeamPreview = useMemo(() => {
-    if (towerTrainerId === "custom") {
-      if (!hasCustomTrainerTeam(customTrainer)) return null;
-      return customTrainer.team.map(({ slug, shiny }) => {
+    if (towerTrainerId?.startsWith("custom:")) {
+      const trainer = customTrainers.find((t) => t.id === towerTrainerId.slice("custom:".length));
+      if (!hasCustomTrainerTeam(trainer)) return null;
+      return trainer.team.map(({ slug, shiny }) => {
         const entry = findCollectionEntry(collection, slug, shiny);
         return { slug, shiny: !!shiny, moves: entry?.moves || [] };
       });
@@ -8082,7 +8192,7 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
       const moves = ownedTrainerMovesets[key] || TRAINER_MOVESETS[key] || [];
       return { slug, shiny: false, moves };
     });
-  }, [towerTrainerId, customTrainer, collection, ownedTrainerMovesets]);
+  }, [towerTrainerId, customTrainers, collection, ownedTrainerMovesets]);
 
   // Sprites del equipo candidato/actual y, según la fase, del rival —
   // mismo patrón que DraftMode.
@@ -8244,20 +8354,21 @@ function BattleTowerMode({ api, collection, customTrainer, purchasedTrainerIds, 
             <Users size={18} color="#2ec4b6" /> Elige con qué equipo jugar
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {hasCustomTrainerTeam(customTrainer) && (
+            {customTrainers.filter(hasCustomTrainerTeam).map((ct) => (
               <button
-                onClick={() => setTowerTrainerId("custom")}
+                key={ct.id}
+                onClick={() => setTowerTrainerId(`custom:${ct.id}`)}
                 className="rounded-xl p-4 text-left transition-all"
                 style={{
-                  background: towerTrainerId === "custom" ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
-                  border: towerTrainerId === "custom" ? "1.5px solid #2ecc71" : "1px solid #262a3a",
+                  background: towerTrainerId === `custom:${ct.id}` ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
+                  border: towerTrainerId === `custom:${ct.id}` ? "1.5px solid #2ecc71" : "1px solid #262a3a",
                 }}
               >
                 <PlayerAvatar avatar={playerProfile.avatar} size={36} color="#2ecc71" />
-                <div className="text-white font-semibold text-sm mt-2">{customTrainer.name}</div>
+                <div className="text-white font-semibold text-sm mt-2">{ct.name}</div>
                 <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
               </button>
-            )}
+            ))}
             {unlockedTrainers.map((t) => (
               <button
                 key={t.id}
@@ -8687,15 +8798,20 @@ function ShareTeamModal({ open, code, onClose }) {
 // cambio (ver adoptSharedTeam en App); este componente solo valida, muestra
 // el resumen especie a especie, y pide la confirmación explícita antes de
 // llamarlo.
-function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreateTrainer, onAdopt }) {
+function AdoptTeamModal({ open, onClose, collection, customTrainers, onGoCreateTrainer, onAdopt }) {
   const [code, setCode] = useState("");
   const [check, setCheck] = useState(null); // [{slug, moves, owned}] | null
   const [error, setError] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [done, setDone] = useState(false);
+  // A CUÁL de los (posiblemente varios) entrenadores propios del usuario se
+  // adoptaría el equipo: si solo tiene uno, no hace falta elegir; si tiene
+  // varios, un selector (ver más abajo) deja cambiarlo antes de confirmar.
+  const [targetId, setTargetId] = useState(null);
 
   useEffect(() => {
-    if (open) { setCode(""); setCheck(null); setError(null); setConfirming(false); setDone(false); }
+    if (open) { setCode(""); setCheck(null); setError(null); setConfirming(false); setDone(false); setTargetId(customTrainers[0]?.id ?? null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   if (!open) return null;
@@ -8713,7 +8829,7 @@ function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreat
   }
 
   function handleAdopt() {
-    onAdopt(check.map(({ slug, moves }) => ({ slug, moves })));
+    onAdopt(targetId, check.map(({ slug, moves }) => ({ slug, moves })));
     setConfirming(false);
     setDone(true);
     setCheck(null);
@@ -8722,6 +8838,7 @@ function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreat
 
   const allOwned = !!check && check.every((t) => t.owned);
   const missing = check ? check.filter((t) => !t.owned) : [];
+  const targetTrainer = customTrainers.find((t) => t.id === targetId) || null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
@@ -8733,15 +8850,36 @@ function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreat
         <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white"><X size={18} /></button>
         <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2"><ClipboardCheck size={20} color="#e3350d" /> Adoptar equipo compartido</h3>
         <p className="text-sm text-[#9aa0b4] mb-4 leading-relaxed">
-          Pega el código que te han compartido. Si ya tienes en tu colección las 6 especies de ese equipo, podrás configurar tu entrenador propio con TUS PROPIOS Pokémon de esas especies y los mismos movimientos — no se transfiere ningún Pokémon ajeno.
+          Pega el código que te han compartido. Si ya tienes en tu colección las 6 especies de ese equipo, podrás configurar uno de tus entrenadores propios con TUS PROPIOS Pokémon de esas especies y los mismos movimientos — no se transfiere ningún Pokémon ajeno.
         </p>
 
-        {!hasCustomTrainer && (
+        {customTrainers.length === 0 ? (
           <div className="rounded-lg p-3 text-xs text-[#ff8a8a] mb-3 leading-relaxed" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
-            Todavía no tienes un entrenador propio. Créalo primero para poder adoptar un equipo compartido.
+            Todavía no tienes ningún entrenador propio. Créalo primero para poder adoptar un equipo compartido.
             <button type="button" onClick={onGoCreateTrainer} className="block mt-1.5 underline font-semibold text-[#ff8a8a]">
               Crear mi entrenador
             </button>
+          </div>
+        ) : customTrainers.length > 1 && (
+          <div className="mb-3">
+            <label className="block text-xs font-semibold text-[#8a8fa3] mb-1.5">Adoptar en cuál de tus entrenadores</label>
+            <div className="flex flex-wrap gap-2">
+              {customTrainers.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTargetId(t.id)}
+                  className="text-xs px-3 py-1.5 rounded-full font-semibold"
+                  style={{
+                    background: targetId === t.id ? "#e3350d22" : "#1c1f2c",
+                    border: targetId === t.id ? "1px solid #e3350d" : "1px solid #2c2f42",
+                    color: targetId === t.id ? "#ff6b4a" : "#c7cbdb",
+                  }}
+                >
+                  {t.name}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -8786,7 +8924,7 @@ function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreat
             )}
             <button
               onClick={() => setConfirming(true)}
-              disabled={!allOwned || !hasCustomTrainer}
+              disabled={!allOwned || !targetTrainer}
               className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
             >
@@ -8797,7 +8935,7 @@ function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreat
 
         {done && (
           <div className="mt-3 rounded-lg p-3 text-xs text-[#7ee08c]" style={{ background: "#2ecc7118", border: "1px solid #2ecc7155" }}>
-            Equipo adoptado: tu entrenador ya usa tus Pokémon de esas especies con los movimientos del código.
+            Equipo adoptado: ese entrenador ya usa tus Pokémon de esas especies con los movimientos del código.
           </div>
         )}
       </div>
@@ -8813,7 +8951,7 @@ function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreat
             <div className="flex justify-center mb-3"><ClipboardCheck size={28} color="#f2b705" /></div>
             <h3 className="font-display text-xl text-white mb-1">Adoptar equipo compartido</h3>
             <p className="text-sm text-[#9aa0b4] leading-relaxed mb-4">
-              Esto sustituirá el equipo actual de tu entrenador propio, y sobrescribirá los movimientos de tus Pokémon de estas 6 especies por los del código. El resto de tu colección no se ve afectado.
+              Esto sustituirá el equipo actual de <span className="text-white font-semibold">{targetTrainer?.name}</span>, y sobrescribirá los movimientos de tus Pokémon de estas 6 especies por los del código. El resto de tu colección no se ve afectado.
             </p>
             <div className="flex gap-2 justify-center">
               <button
@@ -8838,14 +8976,62 @@ function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreat
   );
 }
 
-function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, onClearCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves, onEnsureTrainerMovesetsInitialized, onAdoptSharedTeam, playerProfile }) {
+// Edición del NOMBRE de un entrenador propio ya creado (nuevo: antes no era
+// editable tras la creación). Mismo límite de 20 caracteres y "no puede
+// quedar vacío" que el formulario de creación (TeamSelectorModal), en un
+// formulario mínimo aparte porque aquí no hace falta tocar el equipo.
+function EditTrainerNameModal({ open, trainer, onConfirm, onClose }) {
+  const [name, setName] = useState("");
+  useEffect(() => { if (open && trainer) setName(trainer.name); }, [open, trainer]);
+  if (!open || !trainer) return null;
+  const trimmed = name.trim();
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-sm w-full rounded-2xl p-6"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white"><X size={18} /></button>
+        <h3 className="font-display text-xl text-white mb-3">Editar nombre</h3>
+        <label className="block text-xs font-semibold text-[#8a8fa3] mb-1.5">Nombre del entrenador</label>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value.slice(0, 20))}
+          placeholder="Ej. Rojo"
+          maxLength={20}
+          className="w-full mb-4 px-3 py-2 rounded-lg text-sm text-white outline-none"
+          style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+        />
+        <button
+          onClick={() => trimmed && onConfirm(trimmed)}
+          disabled={!trimmed}
+          className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          Guardar nombre
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainers, onCreateCustomTrainer, onUpdateCustomTrainerName, onUpdateCustomTrainerTeam, onClearCustomTrainerTeam, onDeleteCustomTrainer, ownedTrainerMovesets, onUpdateOwnedTrainerMoves, onEnsureTrainerMovesetsInitialized, onAdoptSharedTeam, playerProfile }) {
   const [sprites, setSprites] = useState({});
   const [confirmTrainer, setConfirmTrainer] = useState(null);
   const [successName, setSuccessName] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showClearTeamConfirm, setShowClearTeamConfirm] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
+  // El resto de acciones (editar equipo/nombre, compartir, borrar equipo,
+  // eliminar entrenador) actúan sobre UNO concreto de los hasta 5
+  // entrenadores propios: se guarda su `id` (o `null` si el modal/confirm
+  // correspondiente está cerrado) en vez de un simple booleano, ya que
+  // antes solo podía existir un entrenador y no hacía falta distinguir
+  // cuál.
+  const [editingTeamTrainerId, setEditingTeamTrainerId] = useState(null);
+  const [editingNameTrainerId, setEditingNameTrainerId] = useState(null);
+  const [clearTeamTrainerId, setClearTeamTrainerId] = useState(null);
+  const [deleteTrainerId, setDeleteTrainerId] = useState(null);
+  const [shareTrainerId, setShareTrainerId] = useState(null);
   const [showAdoptModal, setShowAdoptModal] = useState(false);
   // Edición de movimientos de UN Pokémon de un entrenador COMPRADO (las
   // especies son fijas; solo esto se edita): { trainerId, slug } o null.
@@ -8860,8 +9046,8 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
           if (!cancelled) setSprites((s) => ({ ...s, [slug]: p }));
         }
       }
-      if (customTrainer) {
-        for (const { slug } of customTrainer.team) {
+      for (const ct of customTrainers) {
+        for (const { slug } of ct.team) {
           const p = await api.getPokemon(slug);
           if (!cancelled) setSprites((s) => ({ ...s, [slug]: p }));
         }
@@ -8869,7 +9055,7 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [purchasedTrainerIds, customTrainer]);
+  }, [purchasedTrainerIds, customTrainers]);
 
   function handleCreateTrainer(name, team) {
     onCreateCustomTrainer(name, team);
@@ -8877,13 +9063,23 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
   }
 
   function handleUpdateTeam(team) {
-    onUpdateCustomTrainerTeam(team);
-    setShowEditModal(false);
+    onUpdateCustomTrainerTeam(editingTeamTrainerId, team);
+    setEditingTeamTrainerId(null);
+  }
+
+  function handleUpdateName(name) {
+    onUpdateCustomTrainerName(editingNameTrainerId, name);
+    setEditingNameTrainerId(null);
   }
 
   function handleClearTeam() {
-    onClearCustomTrainerTeam();
-    setShowClearTeamConfirm(false);
+    onClearCustomTrainerTeam(clearTeamTrainerId);
+    setClearTeamTrainerId(null);
+  }
+
+  function handleDeleteTrainer() {
+    onDeleteCustomTrainer(deleteTrainerId);
+    setDeleteTrainerId(null);
   }
 
   function handleConfirmPurchase() {
@@ -8977,87 +9173,117 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
         })}
       </div>
 
-      {customTrainer ? (
-        <div className="w-full rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <div className="flex items-center gap-3">
-              <PlayerAvatar avatar={playerProfile.avatar} size={44} color="#2ecc71" />
-              <div>
-                <div className="text-white font-semibold flex items-center gap-2">
-                  {customTrainer.name}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
+      {/* Hasta CUSTOM_TRAINERS_MAX entrenadores propios, cada uno como su
+          propia tarjeta (antes había como mucho uno, mostrado aparte del
+          resto en un ternario) — el resto de acciones (editar equipo/
+          nombre, compartir, borrar equipo, eliminar entrenador) actúan
+          sobre el `id` concreto de la tarjeta pulsada. */}
+      <div className="grid sm:grid-cols-2 gap-4">
+        {customTrainers.map((ct) => (
+          <div key={ct.id} className="w-full rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <PlayerAvatar avatar={playerProfile.avatar} size={44} color="#2ecc71" />
+                <div className="min-w-0">
+                  <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
+                    <span className="truncate">{ct.name}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
+                  </div>
+                  <div className="text-[11px] text-[#8a8fa3]">Creado a partir de tu colección de gacha</div>
                 </div>
-                <div className="text-[11px] text-[#8a8fa3]">Creado a partir de tu colección de gacha</div>
               </div>
             </div>
-            <div className="flex gap-2 shrink-0">
+            <div className="flex flex-wrap gap-2 mb-3">
               <button
-                onClick={() => setShowEditModal(true)}
+                onClick={() => setEditingTeamTrainerId(ct.id)}
                 disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
                 className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
               >
-                {customTrainer.team.length === 0 ? "Configurar equipo" : "Editar equipo"}
+                {ct.team.length === 0 ? "Configurar equipo" : "Editar equipo"}
               </button>
               <button
-                onClick={() => setShowShareModal(true)}
-                disabled={customTrainer.team.length !== 6}
-                title={customTrainer.team.length !== 6 ? "Necesitas el equipo completo (6 Pokémon) para compartirlo" : "Genera un código para compartir este equipo"}
+                onClick={() => setEditingNameTrainerId(ct.id)}
+                className="text-xs px-3 py-1.5 rounded-full font-semibold"
+                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              >
+                Editar nombre
+              </button>
+              <button
+                onClick={() => setShareTrainerId(ct.id)}
+                disabled={ct.team.length !== 6}
+                title={ct.team.length !== 6 ? "Necesitas el equipo completo (6 Pokémon) para compartirlo" : "Genera un código para compartir este equipo"}
                 className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
               >
                 <Share2 size={12} /> Compartir equipo
               </button>
               <button
-                onClick={() => setShowClearTeamConfirm(true)}
-                disabled={customTrainer.team.length === 0}
+                onClick={() => setClearTeamTrainerId(ct.id)}
+                disabled={ct.team.length === 0}
                 title="Vacía el equipo sin borrar al entrenador"
                 className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
               >
                 <Trash2 size={12} /> Borrar equipo
               </button>
+              <button
+                onClick={() => setDeleteTrainerId(ct.id)}
+                title="Elimina este entrenador por completo (libera un hueco)"
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold"
+                style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
+              >
+                <X size={12} /> Eliminar entrenador
+              </button>
             </div>
+            {ct.team.length === 0 ? (
+              <div className="rounded-lg p-3 text-xs text-[#ff8a8a]" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+                Sin equipo asignado. Configúralo para poder jugar con {ct.name}.
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {ct.team.map(({ slug, shiny }, i) => {
+                  const p = sprites[slug];
+                  const sprite = shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
+                  return (
+                    <div key={`${slug}-${i}`} className="relative w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: shiny ? "1px solid #f2b70588" : "1px solid #22263a" }} title={displayName(slug) + (shiny ? " (shiny)" : "")}>
+                      {sprite ? <img src={sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                      {shiny && <Star size={10} fill="#f2b705" color="#f2b705" className="absolute top-0.5 right-0.5" />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          {customTrainer.team.length === 0 ? (
-            <div className="rounded-lg p-3 text-xs text-[#ff8a8a]" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
-              Sin equipo asignado. Configúralo para poder jugar con {customTrainer.name}.
+        ))}
+
+        {customTrainers.length < CUSTOM_TRAINERS_MAX ? (
+          <button
+            onClick={() => collection.length >= CUSTOM_TRAINER_MIN_POKEMON && setShowCreateModal(true)}
+            disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
+            className="w-full rounded-xl p-5 text-left disabled:opacity-60 disabled:cursor-not-allowed"
+            style={{ background: "#14161f", border: "1px dashed #3a3f57" }}
+          >
+            <Sparkles size={20} color="#e3350d" className="mb-2" />
+            <div className="text-white font-semibold">Crear nuevo entrenador ({customTrainers.length}/{CUSTOM_TRAINERS_MAX})</div>
+            <div className="text-xs text-[#8a8fa3] mt-1">
+              {collection.length >= CUSTOM_TRAINER_MIN_POKEMON
+                ? "Diseña tu personaje y arma tu propio equipo Pokémon."
+                : `Necesitas ${CUSTOM_TRAINER_MIN_POKEMON} Pokémon del gacha · te faltan ${CUSTOM_TRAINER_MIN_POKEMON - collection.length}`}
             </div>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {customTrainer.team.map(({ slug, shiny }, i) => {
-                const p = sprites[slug];
-                const sprite = shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
-                return (
-                  <div key={`${slug}-${i}`} className="relative w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: shiny ? "1px solid #f2b70588" : "1px solid #22263a" }} title={displayName(slug) + (shiny ? " (shiny)" : "")}>
-                    {sprite ? <img src={sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
-                    {shiny && <Star size={10} fill="#f2b705" color="#f2b705" className="absolute top-0.5 right-0.5" />}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      ) : (
-        <button
-          onClick={() => collection.length >= CUSTOM_TRAINER_MIN_POKEMON && setShowCreateModal(true)}
-          disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
-          className="w-full rounded-xl p-5 text-left disabled:opacity-60 disabled:cursor-not-allowed"
-          style={{ background: "#14161f", border: "1px dashed #3a3f57" }}
-        >
-          <Sparkles size={20} color="#e3350d" className="mb-2" />
-          <div className="text-white font-semibold">Crea tu propio entrenador</div>
-          <div className="text-xs text-[#8a8fa3] mt-1">
-            {collection.length >= CUSTOM_TRAINER_MIN_POKEMON
-              ? "Diseña tu personaje y arma tu propio equipo Pokémon."
-              : `Necesitas ${CUSTOM_TRAINER_MIN_POKEMON} Pokémon del gacha · te faltan ${CUSTOM_TRAINER_MIN_POKEMON - collection.length}`}
+          </button>
+        ) : (
+          <div className="w-full rounded-xl p-5" style={{ background: "#14161f", border: "1px dashed #3a3f57", opacity: 0.7 }}>
+            <Lock size={20} color="#8a8fa3" className="mb-2" />
+            <div className="text-white font-semibold">Máximo de entrenadores alcanzado ({CUSTOM_TRAINERS_MAX}/{CUSTOM_TRAINERS_MAX})</div>
+            <div className="text-xs text-[#8a8fa3] mt-1">Elimina uno existente ("Eliminar entrenador") para hacer sitio a otro nuevo.</div>
           </div>
-        </button>
-      )}
+        )}
+      </div>
 
       {/* Entrada a "adoptar" un equipo que otra persona ha compartido (ver
-          AdoptTeamModal): siempre visible, tenga o no ya un entrenador
-          propio, porque el propio modal explica y enlaza a la creación si
+          AdoptTeamModal): siempre visible, tengas o no ya entrenadores
+          propios, porque el propio modal explica y enlaza a la creación si
           hace falta. */}
       <button
         onClick={() => setShowAdoptModal(true)}
@@ -9072,18 +9298,28 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
       </button>
 
       <ShareTeamModal
-        open={showShareModal}
-        code={customTrainer && customTrainer.team.length === 6 ? encodeTeamShareCode(customTrainer.team, collection) : ""}
-        onClose={() => setShowShareModal(false)}
+        open={!!shareTrainerId}
+        code={(() => {
+          const ct = customTrainers.find((t) => t.id === shareTrainerId);
+          return ct && ct.team.length === 6 ? encodeTeamShareCode(ct.team, collection) : "";
+        })()}
+        onClose={() => setShareTrainerId(null)}
       />
 
       <AdoptTeamModal
         open={showAdoptModal}
         onClose={() => setShowAdoptModal(false)}
         collection={collection}
-        hasCustomTrainer={!!customTrainer}
+        customTrainers={customTrainers}
         onGoCreateTrainer={() => { setShowAdoptModal(false); setShowCreateModal(true); }}
-        onAdopt={(team) => onAdoptSharedTeam(team)}
+        onAdopt={(id, team) => onAdoptSharedTeam(id, team)}
+      />
+
+      <EditTrainerNameModal
+        open={!!editingNameTrainerId}
+        trainer={customTrainers.find((t) => t.id === editingNameTrainerId) || null}
+        onConfirm={handleUpdateName}
+        onClose={() => setEditingNameTrainerId(null)}
       />
 
       <TeamSelectorModal
@@ -9095,15 +9331,15 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
         onClose={() => setShowCreateModal(false)}
       />
 
-      {customTrainer && (
+      {editingTeamTrainerId && (
         <TeamSelectorModal
-          open={showEditModal}
+          open={!!editingTeamTrainerId}
           mode="edit"
           collection={collection}
           api={api}
-          initialSelectedKeys={customTrainer.team.map(collectionEntryKey)}
+          initialSelectedKeys={(customTrainers.find((t) => t.id === editingTeamTrainerId)?.team || []).map(collectionEntryKey)}
           onConfirm={handleUpdateTeam}
-          onClose={() => setShowEditModal(false)}
+          onClose={() => setEditingTeamTrainerId(null)}
         />
       )}
 
@@ -9115,24 +9351,24 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
         onClose={closeModal}
       />
 
-      {showClearTeamConfirm && customTrainer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setShowClearTeamConfirm(false)}>
+      {clearTeamTrainerId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setClearTeamTrainerId(null)}>
           <div
             className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
             style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button onClick={() => setShowClearTeamConfirm(false)} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+            <button onClick={() => setClearTeamTrainerId(null)} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
               <X size={18} />
             </button>
             <div className="flex justify-center mb-3"><Trash2 size={28} color="#ff8a8a" /></div>
             <h3 className="font-display text-xl text-white mb-1">Borrar equipo</h3>
             <p className="text-sm text-[#9aa0b4] leading-relaxed mb-4">
-              ¿Seguro que quieres vaciar el equipo de {customTrainer.name}? Tendrás que volver a elegir {CUSTOM_TRAINER_MIN_POKEMON} Pokémon antes de poder jugar con él. Tu colección no se ve afectada.
+              ¿Seguro que quieres vaciar el equipo de {customTrainers.find((t) => t.id === clearTeamTrainerId)?.name}? Tendrás que volver a elegir {CUSTOM_TRAINER_MIN_POKEMON} Pokémon antes de poder jugar con él. Tu colección no se ve afectada.
             </p>
             <div className="flex gap-2 justify-center">
               <button
-                onClick={() => setShowClearTeamConfirm(false)}
+                onClick={() => setClearTeamTrainerId(null)}
                 className="px-4 py-2 rounded-lg text-sm font-semibold"
                 style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
               >
@@ -9144,6 +9380,46 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                 style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
               >
                 Borrar equipo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* "Eliminar entrenador": a diferencia de "Borrar equipo" (que solo
+          vacía el equipo, ver arriba), esta acción quita la entrada entera
+          del array (nombre incluido) y libera uno de los CUSTOM_TRAINERS_MAX
+          huecos — merece su propia confirmación explícita al ser más
+          destructiva. */}
+      {deleteTrainerId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setDeleteTrainerId(null)}>
+          <div
+            className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
+            style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => setDeleteTrainerId(null)} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
+              <X size={18} />
+            </button>
+            <div className="flex justify-center mb-3"><Trash2 size={28} color="#ff8a8a" /></div>
+            <h3 className="font-display text-xl text-white mb-1">Eliminar entrenador</h3>
+            <p className="text-sm text-[#9aa0b4] leading-relaxed mb-4">
+              ¿Seguro que quieres eliminar a {customTrainers.find((t) => t.id === deleteTrainerId)?.name} por completo? Se borrará su nombre y su equipo, liberando un hueco para crear otro entrenador. Los Pokémon de tu colección no se ven afectados: siguen disponibles para cualquier otro entrenador.
+            </p>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => setDeleteTrainerId(null)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDeleteTrainer}
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+              >
+                Eliminar entrenador
               </button>
             </div>
           </div>
@@ -10311,7 +10587,7 @@ export default function App() {
   // cualquier reducción NO relacionada con Draft (un bug, una corrupción de
   // estado) sigue quedando bloqueada como hasta ahora.
   const allowCollectionShrinkRef = useRef(false);
-  const [customTrainer, setCustomTrainer] = useState(() => loadStoredCustomTrainer(loadStoredCollection()));
+  const [customTrainers, setCustomTrainers] = useState(() => loadStoredCustomTrainers(loadStoredCollection()));
   const [ownedTrainerMovesets, setOwnedTrainerMovesets] = useState(loadStoredOwnedTrainerMovesets);
   const [tournamentHistory, setTournamentHistory] = useState(loadStoredTournamentHistory);
   const [battleTowerHistory, setBattleTowerHistory] = useState(loadStoredBattleTowerHistory);
@@ -10324,7 +10600,7 @@ export default function App() {
   // progreso reconstruido queda desbloqueado EN SILENCIO — sin toast ni
   // monedas, es una carga inicial, no un evento en vivo. Se relee
   // localStorage de forma independiente (mismo patrón que
-  // `loadStoredCustomTrainer(loadStoredCollection())` más abajo) porque
+  // `loadStoredCustomTrainers(loadStoredCollection())` más abajo) porque
   // este useState se ejecuta antes de que el resto de useState de arriba
   // "compartan" su valor ya cargado.
   const [achievementProgress, setAchievementProgress] = useState(() => {
@@ -10334,7 +10610,7 @@ export default function App() {
       tournamentHistory: loadStoredTournamentHistory(),
       collection: loadStoredCollection(),
       purchasedTrainerIds: loadStoredPurchasedTrainers(),
-      customTrainer: loadStoredCustomTrainer(loadStoredCollection()),
+      customTrainers: loadStoredCustomTrainers(loadStoredCollection()),
       coins: loadStoredCoins(),
     });
   });
@@ -10432,11 +10708,17 @@ export default function App() {
     } catch (e) { /* localStorage no disponible */ }
   }, [collection]);
 
+  // Escribe siempre bajo la clave NUEVA (incluso con el array vacío, a
+  // diferencia de la clave antigua que nunca se borraba): en cuanto se
+  // guarda algo aquí, loadStoredCustomTrainers ya encuentra la clave nueva
+  // en la siguiente carga y no vuelve a mirar la antigua (ver su
+  // comentario), así que la migración de un solo entrenador antiguo a un
+  // array de hasta 5 solo puede ocurrir una vez.
   useEffect(() => {
     try {
-      if (customTrainer) localStorage.setItem(CUSTOM_TRAINER_STORAGE_KEY, JSON.stringify(customTrainer));
+      localStorage.setItem(CUSTOM_TRAINERS_STORAGE_KEY, JSON.stringify(customTrainers));
     } catch (e) { /* localStorage no disponible */ }
-  }, [customTrainer]);
+  }, [customTrainers]);
 
   useEffect(() => {
     try { localStorage.setItem(OWNED_TRAINER_MOVESETS_STORAGE_KEY, JSON.stringify(ownedTrainerMovesets)); } catch (e) { /* localStorage no disponible */ }
@@ -10463,7 +10745,7 @@ export default function App() {
   // Contexto derivado en vivo (colección/entrenadores comprados/entrenador
   // propio) para las condiciones de logros que no hace falta duplicar como
   // contador aparte en achievementProgress (ver buildDerivedContext).
-  const achievementDerived = buildDerivedContext({ collection, purchasedTrainerIds, customTrainer, gachaPool: GACHA_POOL });
+  const achievementDerived = buildDerivedContext({ collection, purchasedTrainerIds, customTrainers, gachaPool: GACHA_POOL });
 
   // Reevalúa los 50 logros cada vez que cambia el progreso o cualquiera de
   // los datos de los que dependen las condiciones derivadas en vivo
@@ -10483,7 +10765,7 @@ export default function App() {
       ...newlyUnlocked.map((a) => ({ key: `${a.id}-${Date.now()}-${Math.random()}`, title: a.title, reward: a.reward, icon: a.icon })),
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [achievementProgress, collection, purchasedTrainerIds, customTrainer]);
+  }, [achievementProgress, collection, purchasedTrainerIds, customTrainers]);
 
   function dismissAchievementToast(key) {
     setAchievementToasts((prev) => prev.filter((t) => t.key !== key));
@@ -10559,7 +10841,7 @@ export default function App() {
   // se toca. Marca `allowCollectionShrinkRef` porque esta es la única vía
   // legítima de la app para reducir la colección a propósito (ver su
   // declaración y el useEffect de persistencia que lo consume).
-  function applyDraftCollectionResult(finalTeam, originalKeys) {
+  function applyDraftCollectionResult(customTrainerId, finalTeam, originalKeys) {
     allowCollectionShrinkRef.current = true;
     const finalCollectionKeys = new Set(
       finalTeam.filter((p) => p.origin === "collection").map((p) => p.originalKey)
@@ -10571,14 +10853,16 @@ export default function App() {
         .map((p) => ({ slug: p.slug, moves: p.moves, obtainedAt: Date.now(), shiny: false }));
       return [...kept, ...additions];
     });
-    // El equipo del entrenador propio se sustituye por el equipo final del
-    // Draft, en el mismo golpe que la colección: así nunca puede quedar
-    // apuntando a un Pokémon que la colección acaba de perder. Para los
+    // El equipo del entrenador propio CONCRETO que jugó este Draft
+    // (customTrainerId, elegido al entrar al modo — ver DraftMode/TorneoTab)
+    // se sustituye por el equipo final, en el mismo golpe que la colección:
+    // así nunca puede quedar apuntando a un Pokémon que la colección acaba
+    // de perder. El resto de entrenadores propios no se tocan. Para los
     // slots excludedFromReward (especie duplicada, no se añade una segunda
     // entrada) se referencia la entrada YA EXISTENTE de esa especie, leída
     // de `collection` (congelada durante todo el Draft, ver DraftMode).
-    setCustomTrainer((prevTrainer) => {
-      if (!prevTrainer) return prevTrainer;
+    setCustomTrainers((prev) => prev.map((t) => {
+      if (t.id !== customTrainerId) return t;
       const team = finalTeam.map((p) => {
         if (p.origin === "collection") return { slug: p.slug, shiny: !!p.shiny };
         if (p.excludedFromReward) {
@@ -10587,8 +10871,8 @@ export default function App() {
         }
         return { slug: p.slug, shiny: false };
       });
-      return { ...prevTrainer, team };
-    });
+      return { ...t, team };
+    }));
   }
 
   // Marca una entrada de Novedades como leída (al expandirla, ver
@@ -10669,41 +10953,61 @@ export default function App() {
     setOwnedTrainerMovesets((prev) => ({ ...prev, [`${trainerId}:${slug}`]: moves }));
   }
 
-  // Solo puede haber un entrenador propio en total: si ya existe, esta
-  // función no debería poder llamarse de nuevo (la tarjeta de creación deja
-  // de ofrecer el formulario en cuanto customTrainer no es null). `team` es
-  // un array de 6 { slug, shiny }.
+  // Hasta CUSTOM_TRAINERS_MAX entrenadores propios en total: si ya se
+  // alcanzó el máximo, esta función no debería poder llamarse de nuevo (la
+  // tarjeta de creación deja de ofrecerse en cuanto customTrainers.length
+  // llega al máximo, ver PersonajesTab). `team` es un array de 6
+  // { slug, shiny }; un mismo Pokémon de la colección puede formar parte
+  // del equipo de varios entrenadores propios a la vez, sin exclusividad
+  // (igual que ya pasa con los entrenadores comprados del roster).
   function createCustomTrainer(name, team) {
-    if (customTrainer) return;
-    setCustomTrainer({ name, team });
+    if (customTrainers.length >= CUSTOM_TRAINERS_MAX) return;
+    setCustomTrainers((prev) => [...prev, { id: generateCustomTrainerId(), name, team }]);
   }
 
-  // Edición del equipo del entrenador propio ya creado: el nombre no
-  // cambia, solo el array de 6 { slug, shiny }. El próximo torneo que se
-  // inicie con este entrenador ya usa el equipo nuevo (startTournament
-  // vuelve a precargar movesetCache con primeMoveset en ese momento).
-  function updateCustomTrainerTeam(team) {
-    setCustomTrainer((prev) => (prev ? { ...prev, team } : prev));
+  // Edición del NOMBRE de un entrenador propio ya creado (nuevo: antes no
+  // se podía cambiar tras crearlo). No toca el equipo.
+  function updateCustomTrainerName(id, name) {
+    setCustomTrainers((prev) => prev.map((t) => (t.id === id ? { ...t, name } : t)));
   }
 
-  // "Borrar equipo": vacía el equipo del entrenador propio sin borrar al
-  // entrenador (nombre/id se mantienen). NO toca `collection` — este botón
-  // solo desvincula al entrenador de sus 6 Pokémon, nunca los elimina de la
-  // colección real del usuario. Mientras el equipo esté vacío,
-  // hasCustomTrainerTeam(customTrainer) es false, así que todos los puntos
-  // que dependían de "el entrenador propio siempre tiene 6 Pokémon" (Modo
-  // A, Draft) quedan deshabilitados hasta que se vuelva a configurar con el
-  // mismo editor de equipo ya existente.
-  function clearCustomTrainerTeam() {
-    setCustomTrainer((prev) => (prev ? { ...prev, team: [] } : prev));
+  // Edición del equipo de un entrenador propio ya creado: el nombre no
+  // cambia, solo el array de 6 { slug, shiny } del entrenador `id`. El
+  // próximo torneo que se inicie con este entrenador ya usa el equipo nuevo
+  // (startTournament vuelve a precargar movesetCache con primeMoveset en
+  // ese momento).
+  function updateCustomTrainerTeam(id, team) {
+    setCustomTrainers((prev) => prev.map((t) => (t.id === id ? { ...t, team } : t)));
   }
 
-  // Adopta un equipo compartido (ver AdoptTeamModal, ya validó que las 6
-  // especies están en la colección antes de poder llamar a esto): `team` es
-  // [{slug, moves}], SIN shiny (el código nunca lo lleva, ver
-  // encodeTeamShareCode). Para cada especie se elige la entrada de la
-  // colección a usar con este criterio, de mayor a menor prioridad:
-  //   1. la que YA estuviera en el equipo previo del entrenador para esa
+  // "Borrar equipo": vacía el equipo de un entrenador propio sin borrar al
+  // entrenador (nombre/id se mantienen, y sigue contando para el máximo de
+  // CUSTOM_TRAINERS_MAX). NO toca `collection` — este botón solo desvincula
+  // al entrenador de sus 6 Pokémon, nunca los elimina de la colección real
+  // del usuario. Mientras el equipo esté vacío, hasCustomTrainerTeam(...)
+  // es false para ESE entrenador, así que todos los puntos que dependían de
+  // "tiene 6 Pokémon" (Modo A, Draft) lo excluyen de sus selectores hasta
+  // que se vuelva a configurar con el mismo editor de equipo ya existente.
+  function clearCustomTrainerTeam(id) {
+    setCustomTrainers((prev) => prev.map((t) => (t.id === id ? { ...t, team: [] } : t)));
+  }
+
+  // "Eliminar entrenador": a diferencia de "Borrar equipo", esta SÍ quita
+  // la entrada entera del array (nombre incluido), liberando uno de los
+  // CUSTOM_TRAINERS_MAX huecos para poder crear uno nuevo. No toca
+  // `collection`: los Pokémon que formaban parte de su equipo siguen en la
+  // colección real del usuario, disponibles para cualquier otro entrenador.
+  function deleteCustomTrainer(id) {
+    setCustomTrainers((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  // Adopta un equipo compartido en el entrenador propio `id` (ver
+  // AdoptTeamModal, ya validó que las 6 especies están en la colección
+  // antes de poder llamar a esto): `team` es [{slug, moves}], SIN shiny (el
+  // código nunca lo lleva, ver encodeTeamShareCode). Para cada especie se
+  // elige la entrada de la colección a usar con este criterio, de mayor a
+  // menor prioridad:
+  //   1. la que YA estuviera en el equipo previo de ESE entrenador para esa
   //      especie (si el usuario tenía normal Y shiny y ya había elegido una
   //      de las dos, se respeta esa elección en vez de reasignarla),
   //   2. si no, la primera entrada de esa especie que haya en la colección
@@ -10711,11 +11015,13 @@ export default function App() {
   //      recorre — no hay ningún criterio "mejor" objetivo entre ambas).
   // Los movimientos de las entradas elegidas se SOBRESCRIBEN con los del
   // código (mismo patrón que handleUpdateMoves en PokemonTab: emparejar por
-  // slug+shiny sobre el array de collection ya existente), y el equipo del
-  // entrenador pasa a ser esas 6 entradas.
-  function adoptSharedTeam(team) {
-    if (!customTrainer) return;
-    const currentBySlug = new Map(customTrainer.team.map((t) => [t.slug, t]));
+  // slug+shiny sobre el array de collection ya existente), y el equipo de
+  // ESE entrenador pasa a ser esas 6 entradas. El resto de entrenadores
+  // propios no se ven afectados.
+  function adoptSharedTeam(id, team) {
+    const target = customTrainers.find((t) => t.id === id);
+    if (!target) return;
+    const currentBySlug = new Map(target.team.map((t) => [t.slug, t]));
     const usedKeys = new Set();
     const newTeam = [];
     for (const { slug } of team) {
@@ -10735,7 +11041,7 @@ export default function App() {
       const source = team.find((t) => t.slug === match.slug);
       return { ...e, moves: source.moves };
     }));
-    setCustomTrainer((prev) => (prev ? { ...prev, team: newTeam } : prev));
+    setCustomTrainers((prev) => prev.map((t) => (t.id === id ? { ...t, team: newTeam } : t)));
   }
 
   const tabs = [
@@ -10886,7 +11192,7 @@ export default function App() {
             coins={coins}
             setCoins={setCoins}
             purchasedTrainerIds={purchasedTrainerIds}
-            customTrainer={customTrainer}
+            customTrainers={customTrainers}
             collection={collection}
             ownedTrainerMovesets={ownedTrainerMovesets}
             tournamentHistory={tournamentHistory}
@@ -10909,10 +11215,12 @@ export default function App() {
             purchasedTrainerIds={purchasedTrainerIds}
             onPurchase={purchaseTrainer}
             collection={collection}
-            customTrainer={customTrainer}
+            customTrainers={customTrainers}
             onCreateCustomTrainer={createCustomTrainer}
+            onUpdateCustomTrainerName={updateCustomTrainerName}
             onUpdateCustomTrainerTeam={updateCustomTrainerTeam}
             onClearCustomTrainerTeam={clearCustomTrainerTeam}
+            onDeleteCustomTrainer={deleteCustomTrainer}
             ownedTrainerMovesets={ownedTrainerMovesets}
             onUpdateOwnedTrainerMoves={updateOwnedTrainerMoves}
             onEnsureTrainerMovesetsInitialized={ensureOwnedTrainerMovesetsInitialized}
