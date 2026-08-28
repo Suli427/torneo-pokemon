@@ -88,3 +88,97 @@ html, body, #root {
   animation-fill-mode: forwards;
   pointer-events: none;
 }
+
+/* Animaciones de inicio/entrada de combate (ver BattleVersusScreen y
+   BattlerCard en App.jsx) y de la barra de PS (ver HpBar). Misma curva con
+   "overshoot" ya usada en las animaciones del gacha (cubic-bezier con
+   rebote), para mantener coherencia visual entre ambas mejoras. */
+
+/* Pantalla de "VS": el avatar del usuario entra desde la izquierda, el del
+   rival desde la derecha, y el texto "VS" aparece con un ligero efecto de
+   escala en el centro. */
+@keyframes battle-vs-slide-left {
+  from { transform: translateX(-140%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes battle-vs-slide-right {
+  from { transform: translateX(140%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes battle-vs-pop {
+  0% { transform: scale(0.2); opacity: 0; }
+  70% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes battle-vs-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.battle-vs-slide-left {
+  animation: battle-vs-slide-left 450ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.battle-vs-slide-right {
+  animation: battle-vs-slide-right 450ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.battle-vs-pop {
+  animation: battle-vs-pop 500ms cubic-bezier(0.34, 1.56, 0.64, 1) 150ms both;
+}
+.battle-vs-fadeout {
+  animation: battle-vs-fade-out 300ms ease-in forwards;
+}
+
+/* Entrada deslizante de un Pokémon al campo (salida inicial del combate tras
+   la pantalla de VS, o cualquier cambio/reemplazo posterior): desde la
+   izquierda para el lado del usuario, desde la derecha para el rival, con
+   el mismo rebote con overshoot. El destello es mucho más sutil que el del
+   gacha a propósito (esto ocurre muy a menudo durante un combate). */
+@keyframes battle-sprite-enter-left {
+  from { transform: translateX(-60px) scale(0.6); opacity: 0; }
+  70% { transform: translateX(4px) scale(1.05); opacity: 1; }
+  to { transform: translateX(0) scale(1); opacity: 1; }
+}
+@keyframes battle-sprite-enter-right {
+  from { transform: translateX(60px) scale(0.6); opacity: 0; }
+  70% { transform: translateX(-4px) scale(1.05); opacity: 1; }
+  to { transform: translateX(0) scale(1); opacity: 1; }
+}
+.battle-sprite-enter-left {
+  animation: battle-sprite-enter-left 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.battle-sprite-enter-right {
+  animation: battle-sprite-enter-right 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes battle-sprite-flash {
+  0% { opacity: 0; }
+  25% { opacity: 0.5; }
+  100% { opacity: 0; }
+}
+.battle-sprite-flash {
+  background: radial-gradient(circle, #ffffff 0%, transparent 70%);
+  animation: battle-sprite-flash 380ms ease-out both;
+  pointer-events: none;
+}
+
+/* Barra de PS: la propia anchura interpola con una transición CSS normal
+   (ver hp-bar-fill, aplicada siempre sobre el MISMO elemento para no
+   perder la animación al re-renderizar cada turno); el parpadeo de PS
+   bajos es un overlay APARTE que sí puede remontarse sin afectar a esa
+   transición (ver HpBar: se le da un `key` distinto cada vez que cambian
+   los PS estando por debajo del 20%, para que se repita en cada golpe). */
+.hp-bar-fill {
+  transition: width 500ms ease-out, background-color 400ms ease;
+}
+@keyframes hp-bar-low-flash {
+  0% { opacity: 0; }
+  25% { opacity: 0.8; }
+  50% { opacity: 0; }
+  75% { opacity: 0.8; }
+  100% { opacity: 0; }
+}
+.hp-bar-low-flash {
+  position: absolute;
+  inset: 0;
+  background: #ff3b3b;
+  animation: hp-bar-low-flash 1000ms ease-in-out 1;
+  pointer-events: none;
+}

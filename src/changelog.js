@@ -377,6 +377,13 @@ export const CHANGELOG = [
     detail: "Al pulsar \"Tirar\", una Pokéball se tambalea antes de \"abrirse\" con un destello blanco: el número de sacudidas escala con la rareza ya sorteada (1 en Común, 2 en Poco Común/Raro, 3 en Épico/Pseudolegendario, 4 en Legendario), y en Legendario además se oscurece brevemente el fondo justo antes de revelar, para más expectación. El sprite conseguido aparece con un fundido y una escala con ligero rebote (en vez de aparecer de golpe), acompañado de un resplandor radial del color ya asociado a esa rareza, cuyo tamaño también crece cuanto más rara sea la tirada. La duración total de toda la secuencia va de ~0,8s en Común a ~2,4s en Legendario, sin llegar a ser tediosa al tirar varias veces seguidas ni retrasar poder volver a tirar una vez completada la revelación. Los resultados shiny suman, además, un efecto de estrellas cayendo alrededor del sprite junto a la celebración de texto ya existente.",
     date: "2026-08-27T13:42:37+02:00",
   },
+  {
+    id: 53,
+    title: "Animaciones de inicio de combate y barra de PS",
+    summary: "Cada combate empieza ahora con una pantalla de \"VS\", los Pokémon entran deslizándose al campo, y la barra de PS interpola suavemente en vez de saltar de golpe.",
+    detail: "Justo al elegir el Pokémon inicial de cada combate (Draft, Torre Batalla, Torneo Semanal y los modos A/B/C, ya que todos comparten el mismo componente de combate), aparece una pantalla de \"cara a cara\": tu entrenador entra desde la izquierda, el rival desde la derecha, y un \"VS\" aparece en el centro con un efecto de escala, antes de desvanecerse y dar paso al combate real — una sola vez por combate, nunca se repite turno a turno. El sprite de cualquier Pokémon que sale al campo (al empezar el combate o tras un cambio voluntario, un debilitamiento, o cualquier entrada forzada) se desliza desde su lateral correspondiente con un ligero rebote y un destello sutil, con la misma curva de animación con rebote ya usada en las animaciones del gacha. La barra de PS ahora interpola su anchura con una transición suave (tanto al bajar como al subir) en vez de saltar al instante, y parpadea brevemente en rojo si el resultado deja al Pokémon por debajo del 20% de sus PS.",
+    date: "2026-08-28T16:19:46+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

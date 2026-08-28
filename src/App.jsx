@@ -4370,16 +4370,26 @@ function battleTurnLine(turn) {
   return `${turn.pokemon} usa ${turn.move} → ${turn.damage} de daño a ${turn.target}${turn.crit ? " (¡Golpe crítico!)" : ""}${effectSuffix}`;
 }
 
+// La barra en sí (`.hp-bar-fill`) es SIEMPRE el mismo elemento entre
+// renders (nunca se le cambia `key`), para que la transición CSS de su
+// anchura pueda interpolar de verdad desde el ancho anterior al nuevo, en
+// vez de saltar de golpe — tanto al bajar (daño) como al subir (curación).
+// El parpadeo de PS bajos es un overlay APARTE (`.hp-bar-low-flash`) que sí
+// se remonta (con `key={hp}`) cada vez que los PS cambian estando por
+// debajo del 20%, para que se repita en cada golpe recibido en ese estado
+// sin tocar ni reiniciar la transición de la barra de debajo.
 function HpBar({ hp, maxHp }) {
   const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
   const color = pct > 50 ? "#5fae5f" : pct > 20 ? "#f2b705" : "#e3350d";
+  const low = pct > 0 && pct <= 20;
   return (
     <div className="w-full">
       <div className="flex justify-between text-[10px] text-[#8a8fa3] mb-0.5">
         <span>PS</span><span>{Math.max(0, hp)} / {maxHp}</span>
       </div>
-      <div className="h-2 rounded-full overflow-hidden bg-[#0e1018] border border-[#22263a]">
-        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+      <div className="relative h-2 rounded-full overflow-hidden bg-[#0e1018] border border-[#22263a]">
+        <div className="hp-bar-fill h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+        {low && <div key={hp} className="hp-bar-low-flash" style={{ width: `${pct}%` }} />}
       </div>
     </div>
   );
@@ -4437,11 +4447,29 @@ function StatStageBadges({ statStages }) {
   );
 }
 
-function BattlerCard({ poke, label }) {
+// `side` ("left" el usuario, "right" el rival) decide desde qué lateral
+// entra deslizándose el sprite; `activeIndex` es el índice del equipo que
+// está activo en ese lado (userIdx/aiIdx en InteractiveBattle) — se usa
+// como `key` del envoltorio del sprite para que, cada vez que cambia
+// (nuevo Pokémon activo: inicio de combate, cambio voluntario, reemplazo
+// tras debilitamiento...), React lo remonte y la animación de entrada
+// vuelva a reproducirse desde cero. Nunca se aplica ese `key` al resto de
+// la tarjeta (nombre, tipos, StatusBadges, HpBar): así la interpolación de
+// la barra de PS entre turnos no se ve afectada por esto.
+function BattlerCard({ poke, label, side, activeIndex }) {
   return (
     <div className="rounded-xl p-3 flex-1" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
       <div className="flex items-center gap-3 mb-2">
-        {poke.sprite && <img src={poke.sprite} alt={poke.name} className="w-14 h-14 object-contain" />}
+        {poke.sprite && (
+          <div key={activeIndex} className="relative shrink-0 w-14 h-14">
+            <div className="absolute inset-0 rounded-full battle-sprite-flash" />
+            <img
+              src={poke.sprite}
+              alt={poke.name}
+              className={`relative w-14 h-14 object-contain ${side === "right" ? "battle-sprite-enter-right" : "battle-sprite-enter-left"}`}
+            />
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="text-[10px] uppercase tracking-wide text-[#8a8fa3]">{label}</div>
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -4455,6 +4483,32 @@ function BattlerCard({ poke, label }) {
       </div>
       <HpBar hp={poke.hp} maxHp={poke.maxHp} />
       <StatStageBadges statStages={poke.statStages} />
+    </div>
+  );
+}
+
+// Pantalla de "cara a cara" mostrada UNA vez justo al elegir el Pokémon
+// inicial de cada combate (ver InteractiveBattle/versusPhase), antes de dar
+// paso a la interfaz de combate real: el avatar del usuario entra desde la
+// izquierda, el del rival desde la derecha, y "VS" aparece en el centro con
+// un efecto de escala. Reutiliza TrainerAvatar (sprite real si existe, o el
+// círculo de iniciales de siempre) para que se vea igual sea cual sea el
+// modo (Draft, Torre Batalla, Torneo Semanal, A/B/C), ya que todos pasan
+// por este mismo componente para resolver sus combates.
+function BattleVersusScreen({ phase, userTrainer, aiTrainer }) {
+  return (
+    <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/85 ${phase === "out" ? "battle-vs-fadeout" : ""}`}>
+      <div className="flex items-center gap-6 sm:gap-10">
+        <div className="flex flex-col items-center gap-2 battle-vs-slide-left">
+          <TrainerAvatar trainer={userTrainer} size={84} className="text-3xl" />
+          <div className="text-white font-display text-base sm:text-lg text-center max-w-[7rem] truncate">{userTrainer.name}</div>
+        </div>
+        <div className="font-display text-5xl sm:text-6xl battle-vs-pop" style={{ color: "#e3350d" }}>VS</div>
+        <div className="flex flex-col items-center gap-2 battle-vs-slide-right">
+          <TrainerAvatar trainer={aiTrainer} size={84} className="text-3xl" />
+          <div className="text-white font-display text-base sm:text-lg text-center max-w-[7rem] truncate">{aiTrainer.name}</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -4476,6 +4530,23 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   // completo entre combates). El lado de la IA sigue empezando siempre con
   // el primero de la fila (idxA/idxB ya inician en 0), sin tocar nada ahí.
   const [starterChosen, setStarterChosen] = useState(false);
+  // Pantalla de "VS" (ver BattleVersusScreen): null fuera de esa pantalla,
+  // "in" mientras aparece/se mantiene, "out" durante su fundido de salida.
+  // Se dispara UNA sola vez por combate, justo al elegir el Pokémon inicial
+  // (ver chooseStarter) — nunca se repite turno a turno, ya que
+  // `starterChosen` (y por tanto esto) solo cambia una vez por partida de
+  // InteractiveBattle (se desmonta y remonta entero entre combates). Los
+  // dos temporizadores se programan directamente en chooseStarter (no en
+  // un useEffect con `[versusPhase]` como dependencia): ese patrón parecía
+  // más "React", pero al cambiar versusPhase de "in" a "out" el propio
+  // efecto se re-ejecuta y su cleanup cancela el SEGUNDO timeout (el que
+  // pondría la fase a null) antes de que llegue a dispararse, dejando la
+  // pantalla de VS encallada en "out" para siempre.
+  const [versusPhase, setVersusPhase] = useState(null);
+  const versusTimeoutsRef = useRef([]);
+  useEffect(() => {
+    return () => { versusTimeoutsRef.current.forEach(clearTimeout); };
+  }, []);
   // 'a' | 'b' | null: el lado del usuario tiene que elegir un nuevo Pokémon
   // activo aunque el actual siga con vida (Cola Dragón lo forzó a
   // retirarse, o el propio usuario usó Cambio de Voltios/U-turn).
@@ -4614,6 +4685,10 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     );
   }
 
+  if (versusPhase) {
+    return <BattleVersusScreen phase={versusPhase} userTrainer={userTrainer} aiTrainer={aiTrainer} />;
+  }
+
   const userIdx = userSide === "a" ? idxA : idxB;
   const aiIdx = userSide === "a" ? idxB : idxA;
 
@@ -4737,6 +4812,11 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     if (userSide === "a") setIdxA(idx); else setIdxB(idx);
     setLog((l) => [...l, { type: "statusText", text: `¡Adelante, ${userTeam[idx].name}!` }]);
     setStarterChosen(true);
+    setVersusPhase("in");
+    versusTimeoutsRef.current = [
+      setTimeout(() => setVersusPhase("out"), 1000),
+      setTimeout(() => setVersusPhase(null), 1300),
+    ];
   }
 
   // Reemplazo obligatorio tras un debilitamiento: a diferencia del cambio
@@ -4983,9 +5063,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       </div>
 
       <div className="flex items-center gap-3">
-        <BattlerCard poke={userPoke} label={`Tú (${userTrainer.name})`} />
+        <BattlerCard poke={userPoke} label={`Tú (${userTrainer.name})`} side="left" activeIndex={userIdx} />
         <div className="text-[10px] text-[#5c6178] font-display">VS</div>
-        <BattlerCard poke={aiPoke} label={aiTrainer.name} />
+        <BattlerCard poke={aiPoke} label={aiTrainer.name} side="right" activeIndex={aiIdx} />
       </div>
 
       <div className="rounded-lg p-3 bg-[#0e1018] border border-[#1e2130] text-[12px] text-[#9aa0b4] h-40 overflow-y-auto space-y-0.5">
