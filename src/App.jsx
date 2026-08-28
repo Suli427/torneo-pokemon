@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -143,6 +143,79 @@ const TRAINERS = [
 // combinando ambas fuentes donde haga falta.
 function isTrainerUnlocked(trainer, purchasedTrainerIds) {
   return !trainer.locked || purchasedTrainerIds.includes(trainer.id);
+}
+
+// Prefijo común a TODAS las claves de localStorage de la app (ver cada
+// *_STORAGE_KEY más abajo: ninguna se desvía de este prefijo). Exportar/
+// importar la partida completa (ver BackupModal) se apoya en esto para no
+// tener que mantener una lista manual de claves que se desincronice si se
+// añade una nueva más adelante: recorre localStorage y se queda con
+// cualquier clave que empiece así.
+const STORAGE_PREFIX = "liga-pokemon:";
+const APP_VERSION = "1.0.0";
+
+// Recopila TODAS las claves de localStorage de la app (ver STORAGE_PREFIX)
+// en un único objeto exportable, y dispara la descarga como archivo .json
+// mediante un Blob + un enlace <a download> temporal (nunca insertado de
+// forma visible ni permanente en el DOM). Los valores se guardan tal cual
+// están en localStorage (ya son JSON serializado), sin volver a parsearlos:
+// así importar es una simple reescritura 1:1, sin tener que saber reconstruir
+// la forma de cada clave individual.
+function exportSaveData() {
+  const data = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(STORAGE_PREFIX)) {
+      data[key] = localStorage.getItem(key);
+    }
+  }
+  const payload = { exportedAt: Date.now(), appVersion: APP_VERSION, data };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const dateStr = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `pokearena-partida-${dateStr}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Valida que un objeto ya parseado desde JSON tiene la forma mínima de un
+// archivo exportado por exportSaveData: no comprueba el contenido de cada
+// clave (eso ya lo hace cada loadStoredX al leerla tras la recarga), solo
+// que la envoltura es razonable, para poder rechazar un archivo cualquiera
+// sin tocar localStorage.
+function isValidSaveDataShape(parsed) {
+  return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    && parsed.data && typeof parsed.data === "object" && !Array.isArray(parsed.data)
+    && Object.keys(parsed.data).length > 0;
+}
+
+// Sobrescribe localStorage con el contenido de un archivo ya validado
+// (isValidSaveDataShape). Guarda el valor previo de cada clave que va a
+// tocar ANTES de escribir nada; si algo falla a mitad (p. ej. cuota de
+// localStorage excedida), deshace exactamente esas escrituras para dejar
+// localStorage como estaba antes de empezar, en vez de a medio importar.
+// Ignora silenciosamente cualquier clave del archivo que no lleve el
+// prefijo de la app (defensivo: un archivo manipulado a mano no debería
+// poder escribir claves arbitrarias).
+function importSaveData(parsed) {
+  const previous = {};
+  try {
+    for (const [key, value] of Object.entries(parsed.data)) {
+      if (!key.startsWith(STORAGE_PREFIX)) continue;
+      previous[key] = localStorage.getItem(key);
+      localStorage.setItem(key, value);
+    }
+  } catch (e) {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    }
+    throw e;
+  }
 }
 
 const COINS_STORAGE_KEY = "liga-pokemon:coins";
@@ -352,6 +425,39 @@ function collectionEntryKey(entry) {
 }
 function findCollectionEntry(collection, slug, shiny) {
   return collection.find((c) => c.slug === slug && !!c.shiny === !!shiny);
+}
+
+// Código compartible de un equipo (ver ShareTeamModal/AdoptTeamModal):
+// Base64 de un JSON minimalista con solo especie + movimientos de cada uno
+// de los 6 puestos, SIN shiny (adoptar se basa en qué especie ya posee el
+// receptor, sea o no shiny la suya) y sin ningún otro dato del Pokémon
+// original (nivel, apodo...). No transfiere ningún Pokémon real: es solo la
+// receta de especies+movimientos que el receptor aplica sobre SUS PROPIAS
+// entradas de colección (ver adoptSharedTeam en App).
+function encodeTeamShareCode(team, collection) {
+  const payload = team.map(({ slug, shiny }) => {
+    const entry = findCollectionEntry(collection, slug, shiny);
+    return { slug, moves: entry?.moves || [] };
+  });
+  return btoa(JSON.stringify({ v: 1, team: payload }));
+}
+
+// Decodifica y valida un código generado por encodeTeamShareCode. Lanza si
+// el código no es Base64 válido, no es JSON, o no tiene la forma esperada
+// (versión conocida, exactamente 6 puestos, cada uno con slug string y 4
+// movimientos string) — quien la llama debe capturar el error y mostrar un
+// mensaje claro sin tocar ningún estado.
+function decodeTeamShareCode(code) {
+  const parsed = JSON.parse(atob(code.trim()));
+  if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.team) || parsed.team.length !== 6) {
+    throw new Error("Formato de código inválido");
+  }
+  for (const entry of parsed.team) {
+    if (!entry || typeof entry.slug !== "string" || !Array.isArray(entry.moves) || entry.moves.length !== 4 || entry.moves.some((m) => typeof m !== "string")) {
+      throw new Error("Formato de código inválido");
+    }
+  }
+  return parsed.team;
 }
 
 // Entrenador propio del usuario: { name, team: [6 { slug, shiny }] } o null
@@ -4211,6 +4317,137 @@ function AboutCreatorModal({ open, onClose }) {
           <p>¡Espero que lo disfrutes!</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Exportar/importar la partida completa (ver exportSaveData/importSaveData):
+// un único punto de entrada desde la cabecera (ver botón "Copia de
+// seguridad" en App) que agrupa ambas acciones, ya que son la cara y la cruz
+// de la misma funcionalidad y así no hace falta un botón más en una
+// cabecera que ya tiene varios.
+function BackupModal({ open, onClose }) {
+  const fileInputRef = useRef(null);
+  const [pendingImport, setPendingImport] = useState(null); // objeto ya parseado y validado, a la espera de confirmación
+  const [error, setError] = useState(null);
+  const [importedOk, setImportedOk] = useState(false);
+
+  useEffect(() => {
+    if (open) { setPendingImport(null); setError(null); setImportedOk(false); }
+  }, [open]);
+
+  if (!open) return null;
+
+  function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permite volver a elegir el mismo archivo más tarde
+    if (!file) return;
+    setError(null);
+    setImportedOk(false);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        if (!isValidSaveDataShape(parsed)) throw new Error("shape");
+        setPendingImport(parsed);
+      } catch (err) {
+        setError("El archivo no es una partida válida de PokéArena, o está corrupto. No se ha modificado tu partida actual.");
+      }
+    };
+    reader.onerror = () => setError("No se pudo leer el archivo.");
+    reader.readAsText(file);
+  }
+
+  function confirmImport() {
+    try {
+      importSaveData(pendingImport);
+      setPendingImport(null);
+      setImportedOk(true);
+      // Recarga completa para que TODO el estado de React (docenas de
+      // useState inicializados una sola vez desde localStorage al montar)
+      // se reconstruya desde los datos recién importados, en vez de tener
+      // que sincronizar a mano cada pieza de estado ya en memoria.
+      setTimeout(() => window.location.reload(), 700);
+    } catch (err) {
+      setError("No se pudo importar la partida (almacenamiento lleno o bloqueado). No se han aplicado cambios.");
+      setPendingImport(null);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-md w-full rounded-2xl p-6"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white"><X size={18} /></button>
+        <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2"><Download size={20} color="#e3350d" /> Copia de seguridad</h3>
+        <p className="text-sm text-[#9aa0b4] mb-4 leading-relaxed">
+          Exporta toda tu partida (monedas, colección, entrenadores, logros, historial...) a un archivo para guardarla o pasarla a otro navegador, o importa una copia exportada anteriormente.
+        </p>
+
+        <button
+          onClick={exportSaveData}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold text-white mb-3"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          <Download size={16} /> Exportar partida
+        </button>
+
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold"
+          style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+        >
+          <Upload size={16} /> Importar partida
+        </button>
+        <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleFileChange} />
+
+        {error && (
+          <div className="mt-3 rounded-lg p-3 text-xs text-[#ff8a8a]" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+            {error}
+          </div>
+        )}
+        {importedOk && (
+          <div className="mt-3 rounded-lg p-3 text-xs text-[#7ee08c]" style={{ background: "#2ecc7118", border: "1px solid #2ecc7155" }}>
+            Partida importada. Recargando la página...
+          </div>
+        )}
+      </div>
+
+      {pendingImport && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setPendingImport(null)}>
+          <div
+            className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
+            style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => setPendingImport(null)} className="absolute top-3 right-3 text-[#7c8199] hover:text-white"><X size={18} /></button>
+            <div className="flex justify-center mb-3"><Upload size={28} color="#ff8a8a" /></div>
+            <h3 className="font-display text-xl text-white mb-1">Sobrescribir partida actual</h3>
+            <p className="text-sm text-[#9aa0b4] leading-relaxed mb-4">
+              Esto sustituirá TODA tu partida actual en este navegador (monedas, colección, entrenadores, logros, historial...) por la del archivo importado. Esta acción no se puede deshacer.
+            </p>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => setPendingImport(null)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmImport}
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+              >
+                Sobrescribir e importar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -8399,13 +8636,217 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, f
   );
 }
 
-function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, onClearCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves, onEnsureTrainerMovesetsInitialized, playerProfile }) {
+// Muestra el código de un equipo ya generado (ver encodeTeamShareCode en
+// PersonajesTab) con un botón de copiar al portapapeles. Deja explícito que
+// esto NO transfiere ningún Pokémon: el receptor solo podrá "adoptar" el
+// equipo usando SUS PROPIOS Pokémon ya obtenidos de esas especies (ver
+// AdoptTeamModal).
+function ShareTeamModal({ open, code, onClose }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { if (open) setCopied(false); }, [open]);
+  if (!open) return null;
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+    } catch (e) { /* portapapeles no disponible: el usuario puede seleccionar el texto a mano */ }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="relative max-w-md w-full rounded-2xl p-6" style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }} onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white"><X size={18} /></button>
+        <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2"><Share2 size={20} color="#e3350d" /> Compartir equipo</h3>
+        <p className="text-sm text-[#9aa0b4] mb-4 leading-relaxed">
+          Envía este código a otra persona. Podrá "adoptarlo" usando sus PROPIOS Pokémon de esas mismas especies (con estos mismos movimientos) si ya las tiene en su colección — esto no le transfiere ningún Pokémon tuyo, que se queda tal cual en tu partida.
+        </p>
+        <textarea
+          readOnly
+          value={code}
+          onClick={(e) => e.target.select()}
+          rows={4}
+          className="w-full px-3 py-2 rounded-lg text-[11px] text-white outline-none font-mono resize-none mb-3 break-all"
+          style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+        />
+        <button
+          onClick={handleCopy}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold text-white"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          <Copy size={16} /> {copied ? "¡Copiado!" : "Copiar código"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Pega y comprueba un código de equipo compartido (ver decodeTeamShareCode),
+// y permite adoptarlo si el usuario tiene las 6 especies en su colección.
+// `onAdopt(team)` (team = [{slug, moves}]) es quien de verdad aplica el
+// cambio (ver adoptSharedTeam en App); este componente solo valida, muestra
+// el resumen especie a especie, y pide la confirmación explícita antes de
+// llamarlo.
+function AdoptTeamModal({ open, onClose, collection, hasCustomTrainer, onGoCreateTrainer, onAdopt }) {
+  const [code, setCode] = useState("");
+  const [check, setCheck] = useState(null); // [{slug, moves, owned}] | null
+  const [error, setError] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (open) { setCode(""); setCheck(null); setError(null); setConfirming(false); setDone(false); }
+  }, [open]);
+
+  if (!open) return null;
+
+  function handleCheck() {
+    setError(null);
+    setDone(false);
+    try {
+      const team = decodeTeamShareCode(code);
+      setCheck(team.map((t) => ({ ...t, owned: collection.some((c) => c.slug === t.slug) })));
+    } catch (e) {
+      setCheck(null);
+      setError("Ese código no es válido o está corrupto. Comprueba que lo has pegado completo.");
+    }
+  }
+
+  function handleAdopt() {
+    onAdopt(check.map(({ slug, moves }) => ({ slug, moves })));
+    setConfirming(false);
+    setDone(true);
+    setCheck(null);
+    setCode("");
+  }
+
+  const allOwned = !!check && check.every((t) => t.owned);
+  const missing = check ? check.filter((t) => !t.owned) : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div
+        className="relative max-w-md w-full rounded-2xl p-6 max-h-[85vh] overflow-y-auto"
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white"><X size={18} /></button>
+        <h3 className="font-display text-xl text-white mb-1 flex items-center gap-2"><ClipboardCheck size={20} color="#e3350d" /> Adoptar equipo compartido</h3>
+        <p className="text-sm text-[#9aa0b4] mb-4 leading-relaxed">
+          Pega el código que te han compartido. Si ya tienes en tu colección las 6 especies de ese equipo, podrás configurar tu entrenador propio con TUS PROPIOS Pokémon de esas especies y los mismos movimientos — no se transfiere ningún Pokémon ajeno.
+        </p>
+
+        {!hasCustomTrainer && (
+          <div className="rounded-lg p-3 text-xs text-[#ff8a8a] mb-3 leading-relaxed" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+            Todavía no tienes un entrenador propio. Créalo primero para poder adoptar un equipo compartido.
+            <button type="button" onClick={onGoCreateTrainer} className="block mt-1.5 underline font-semibold text-[#ff8a8a]">
+              Crear mi entrenador
+            </button>
+          </div>
+        )}
+
+        <textarea
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="Pega aquí el código de equipo..."
+          rows={4}
+          className="w-full px-3 py-2 rounded-lg text-[11px] text-white outline-none font-mono resize-none mb-3 break-all"
+          style={{ background: "#0e1018", border: "1px solid #262a3a" }}
+        />
+
+        <button
+          onClick={handleCheck}
+          disabled={!code.trim()}
+          className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+        >
+          Comprobar equipo
+        </button>
+
+        {error && (
+          <div className="mt-3 rounded-lg p-3 text-xs text-[#ff8a8a]" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+            {error}
+          </div>
+        )}
+
+        {check && (
+          <div className="mt-4">
+            <div className="space-y-1.5 mb-3">
+              {check.map((t, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  {t.owned ? <Check size={14} color="#2ecc71" /> : <X size={14} color="#ff8a8a" />}
+                  <span className={t.owned ? "text-white" : "text-[#ff8a8a]"}>{displayName(t.slug)}</span>
+                </div>
+              ))}
+            </div>
+            {!allOwned && (
+              <p className="text-xs text-[#9aa0b4] mb-3 leading-relaxed">
+                Te faltan: {missing.map((t) => displayName(t.slug)).join(", ")}. Consigue estas especies en el Gatcha para poder adoptar el equipo completo.
+              </p>
+            )}
+            <button
+              onClick={() => setConfirming(true)}
+              disabled={!allOwned || !hasCustomTrainer}
+              className="w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+            >
+              Adoptar este equipo
+            </button>
+          </div>
+        )}
+
+        {done && (
+          <div className="mt-3 rounded-lg p-3 text-xs text-[#7ee08c]" style={{ background: "#2ecc7118", border: "1px solid #2ecc7155" }}>
+            Equipo adoptado: tu entrenador ya usa tus Pokémon de esas especies con los movimientos del código.
+          </div>
+        )}
+      </div>
+
+      {confirming && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setConfirming(false)}>
+          <div
+            className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center"
+            style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => setConfirming(false)} className="absolute top-3 right-3 text-[#7c8199] hover:text-white"><X size={18} /></button>
+            <div className="flex justify-center mb-3"><ClipboardCheck size={28} color="#f2b705" /></div>
+            <h3 className="font-display text-xl text-white mb-1">Adoptar equipo compartido</h3>
+            <p className="text-sm text-[#9aa0b4] leading-relaxed mb-4">
+              Esto sustituirá el equipo actual de tu entrenador propio, y sobrescribirá los movimientos de tus Pokémon de estas 6 especies por los del código. El resto de tu colección no se ve afectado.
+            </p>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => setConfirming(false)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleAdopt}
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+              >
+                Adoptar equipo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection, customTrainer, onCreateCustomTrainer, onUpdateCustomTrainerTeam, onClearCustomTrainerTeam, ownedTrainerMovesets, onUpdateOwnedTrainerMoves, onEnsureTrainerMovesetsInitialized, onAdoptSharedTeam, playerProfile }) {
   const [sprites, setSprites] = useState({});
   const [confirmTrainer, setConfirmTrainer] = useState(null);
   const [successName, setSuccessName] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showClearTeamConfirm, setShowClearTeamConfirm] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [showAdoptModal, setShowAdoptModal] = useState(false);
   // Edición de movimientos de UN Pokémon de un entrenador COMPRADO (las
   // especies son fijas; solo esto se edita): { trainerId, slug } o null.
   const [editingTrainerMon, setEditingTrainerMon] = useState(null);
@@ -8559,6 +9000,15 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                 {customTrainer.team.length === 0 ? "Configurar equipo" : "Editar equipo"}
               </button>
               <button
+                onClick={() => setShowShareModal(true)}
+                disabled={customTrainer.team.length !== 6}
+                title={customTrainer.team.length !== 6 ? "Necesitas el equipo completo (6 Pokémon) para compartirlo" : "Genera un código para compartir este equipo"}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              >
+                <Share2 size={12} /> Compartir equipo
+              </button>
+              <button
                 onClick={() => setShowClearTeamConfirm(true)}
                 disabled={customTrainer.team.length === 0}
                 title="Vacía el equipo sin borrar al entrenador"
@@ -8604,6 +9054,37 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
           </div>
         </button>
       )}
+
+      {/* Entrada a "adoptar" un equipo que otra persona ha compartido (ver
+          AdoptTeamModal): siempre visible, tenga o no ya un entrenador
+          propio, porque el propio modal explica y enlaza a la creación si
+          hace falta. */}
+      <button
+        onClick={() => setShowAdoptModal(true)}
+        className="w-full flex items-center gap-2 rounded-xl p-3 text-left"
+        style={{ background: "#14161f", border: "1px dashed #3a3f57" }}
+      >
+        <ClipboardCheck size={18} color="#e3350d" />
+        <div>
+          <div className="text-white text-sm font-semibold">Adoptar equipo compartido</div>
+          <div className="text-[11px] text-[#8a8fa3]">Pega un código de equipo que te hayan compartido.</div>
+        </div>
+      </button>
+
+      <ShareTeamModal
+        open={showShareModal}
+        code={customTrainer && customTrainer.team.length === 6 ? encodeTeamShareCode(customTrainer.team, collection) : ""}
+        onClose={() => setShowShareModal(false)}
+      />
+
+      <AdoptTeamModal
+        open={showAdoptModal}
+        onClose={() => setShowAdoptModal(false)}
+        collection={collection}
+        hasCustomTrainer={!!customTrainer}
+        onGoCreateTrainer={() => { setShowAdoptModal(false); setShowCreateModal(true); }}
+        onAdopt={(team) => onAdoptSharedTeam(team)}
+      />
 
       <TeamSelectorModal
         open={showCreateModal}
@@ -9872,6 +10353,10 @@ export default function App() {
   // Novedades/perfil, no hace falta persistir si está abierto o no, se
   // abre/cierra desde cero cada sesión.
   const [showAboutCreator, setShowAboutCreator] = useState(false);
+  // Modal de exportar/importar partida completa (ver BackupModal): mismo
+  // criterio que Novedades/Acerca del creador, no se persiste si está
+  // abierto.
+  const [showBackup, setShowBackup] = useState(false);
   const [changelogReadIds, setChangelogReadIds] = useState(() => new Set(loadStoredChangelogReadIds()));
   const unreadChangelogCount = CHANGELOG.length - changelogReadIds.size;
   // Perfil del jugador (apodo + avatar): visible en cabecera, clasificación
@@ -10213,6 +10698,46 @@ export default function App() {
     setCustomTrainer((prev) => (prev ? { ...prev, team: [] } : prev));
   }
 
+  // Adopta un equipo compartido (ver AdoptTeamModal, ya validó que las 6
+  // especies están en la colección antes de poder llamar a esto): `team` es
+  // [{slug, moves}], SIN shiny (el código nunca lo lleva, ver
+  // encodeTeamShareCode). Para cada especie se elige la entrada de la
+  // colección a usar con este criterio, de mayor a menor prioridad:
+  //   1. la que YA estuviera en el equipo previo del entrenador para esa
+  //      especie (si el usuario tenía normal Y shiny y ya había elegido una
+  //      de las dos, se respeta esa elección en vez de reasignarla),
+  //   2. si no, la primera entrada de esa especie que haya en la colección
+  //      (normal antes que shiny, por el orden en que collection.find las
+  //      recorre — no hay ningún criterio "mejor" objetivo entre ambas).
+  // Los movimientos de las entradas elegidas se SOBRESCRIBEN con los del
+  // código (mismo patrón que handleUpdateMoves en PokemonTab: emparejar por
+  // slug+shiny sobre el array de collection ya existente), y el equipo del
+  // entrenador pasa a ser esas 6 entradas.
+  function adoptSharedTeam(team) {
+    if (!customTrainer) return;
+    const currentBySlug = new Map(customTrainer.team.map((t) => [t.slug, t]));
+    const usedKeys = new Set();
+    const newTeam = [];
+    for (const { slug } of team) {
+      const preferred = currentBySlug.get(slug);
+      let chosen = preferred && !usedKeys.has(collectionEntryKey(preferred)) ? preferred : null;
+      if (!chosen) {
+        const candidate = collection.find((c) => c.slug === slug && !usedKeys.has(collectionEntryKey(c)));
+        if (candidate) chosen = { slug: candidate.slug, shiny: !!candidate.shiny };
+      }
+      if (!chosen) return; // no debería pasar: AdoptTeamModal ya comprobó que las 6 especies están en la colección
+      usedKeys.add(collectionEntryKey(chosen));
+      newTeam.push(chosen);
+    }
+    setCollection((c) => c.map((e) => {
+      const match = newTeam.find((t) => t.slug === e.slug && !!t.shiny === !!e.shiny);
+      if (!match) return e;
+      const source = team.find((t) => t.slug === match.slug);
+      return { ...e, moves: source.moves };
+    }));
+    setCustomTrainer((prev) => (prev ? { ...prev, team: newTeam } : prev));
+  }
+
   const tabs = [
     { id: "torneo", label: "Torneo", icon: Swords },
     { id: "personajes", label: "Personajes", icon: Users },
@@ -10265,6 +10790,17 @@ export default function App() {
           >
             <Heart size={14} />
           </button>
+          {/* Exportar/importar partida completa (ver BackupModal): solo
+              icono, mismo criterio que "Acerca del creador" de arriba, para
+              no saturar más una cabecera que ya tiene varios botones. */}
+          <button
+            onClick={() => setShowBackup(true)}
+            title="Exportar/importar partida"
+            className="flex items-center justify-center w-8 h-8 rounded-full shrink-0"
+            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          >
+            <Download size={14} />
+          </button>
           <button
             onClick={() => setShowNovedades(true)}
             className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
@@ -10304,6 +10840,7 @@ export default function App() {
         onSave={setPlayerProfile}
       />
       <AboutCreatorModal open={showAboutCreator} onClose={() => setShowAboutCreator(false)} />
+      <BackupModal open={showBackup} onClose={() => setShowBackup(false)} />
 
       {collectionSaveError && (
         <div className="mx-5 mt-4 text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3 flex items-start justify-between gap-3">
@@ -10379,6 +10916,7 @@ export default function App() {
             ownedTrainerMovesets={ownedTrainerMovesets}
             onUpdateOwnedTrainerMoves={updateOwnedTrainerMoves}
             onEnsureTrainerMovesetsInitialized={ensureOwnedTrainerMovesetsInitialized}
+            onAdoptSharedTeam={adoptSharedTeam}
             playerProfile={playerProfile}
           />
         </div>

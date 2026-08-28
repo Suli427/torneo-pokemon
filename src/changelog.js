@@ -391,6 +391,13 @@ export const CHANGELOG = [
     detail: "Antes, aunque el motor ya resolvía correctamente quién actuaba primero según la velocidad, la interfaz aplicaba de una vez todo el resultado del turno (ambos golpes, cambios de PS y log), dando la sensación de que ocurrían a la vez. Ahora se reproduce en pasos: primero la acción de quien va más rápido, una pausa breve, luego la del más lento (si llegó a ejecutarse), y por último los efectos de fin de turno (veneno, quemadura, clima...) si los hubo, con un botón de \"Saltar animación\" para quien prefiera verlo todo de golpe. Además, el Pokémon que recibe un golpe se sacude y destella (verde si es supereficaz, gris si es poco eficaz), un golpe crítico añade un destello dorado y el texto \"¡CRÍTICO!\", y debilitarse ahora es una caída con fundido en vez de un cambio brusco a 0 PS. Entre una ronda y la siguiente del torneo (modos A/B/C y Semanal) aparece también un breve rótulo \"Ronda X de Y\" antes de mostrar la clasificación actualizada.",
     date: "2026-08-28T17:03:49+02:00",
   },
+  {
+    id: 55,
+    title: "Copia de seguridad y equipos compartidos",
+    summary: "Exporta e importa tu partida completa como archivo, y comparte tu equipo con un código que otra persona puede adoptar con sus propios Pokémon.",
+    detail: "Un nuevo botón en la cabecera abre \"Copia de seguridad\": exporta toda tu partida (monedas, colección, entrenadores, logros, historial...) a un archivo .json descargable, o importa uno guardado previamente, con confirmación explícita antes de sobrescribir la partida actual y sin tocar nada si el archivo está corrupto. Además, desde la pestaña Personajes tu entrenador propio puede generar un código compacto de su equipo (especies + movimientos, sin shiny) con \"Compartir equipo\", y cualquier otra persona puede pegarlo con \"Adoptar equipo compartido\": la app comprueba si ya tiene esas 6 especies en su colección, muestra cuáles le faltan por nombre si no las tiene todas, y si las tiene completas puede adoptar el equipo usando SUS PROPIOS Pokémon de esas especies con los mismos movimientos — nunca transfiere ningún Pokémon ajeno.",
+    date: "2026-08-28T17:24:35+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
