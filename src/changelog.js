@@ -384,6 +384,13 @@ export const CHANGELOG = [
     detail: "Justo al elegir el Pokémon inicial de cada combate (Draft, Torre Batalla, Torneo Semanal y los modos A/B/C, ya que todos comparten el mismo componente de combate), aparece una pantalla de \"cara a cara\": tu entrenador entra desde la izquierda, el rival desde la derecha, y un \"VS\" aparece en el centro con un efecto de escala, antes de desvanecerse y dar paso al combate real — una sola vez por combate, nunca se repite turno a turno. El sprite de cualquier Pokémon que sale al campo (al empezar el combate o tras un cambio voluntario, un debilitamiento, o cualquier entrada forzada) se desliza desde su lateral correspondiente con un ligero rebote y un destello sutil, con la misma curva de animación con rebote ya usada en las animaciones del gacha. La barra de PS ahora interpola su anchura con una transición suave (tanto al bajar como al subir) en vez de saltar al instante, y parpadea brevemente en rojo si el resultado deja al Pokémon por debajo del 20% de sus PS.",
     date: "2026-08-28T16:19:46+02:00",
   },
+  {
+    id: 54,
+    title: "Turnos secuenciados y nuevas animaciones de combate",
+    summary: "Los dos golpes de un turno ya no se ven de golpe: se reproducen uno detrás de otro, con sacudida al impactar, un efecto especial en los críticos y una caída al debilitarse.",
+    detail: "Antes, aunque el motor ya resolvía correctamente quién actuaba primero según la velocidad, la interfaz aplicaba de una vez todo el resultado del turno (ambos golpes, cambios de PS y log), dando la sensación de que ocurrían a la vez. Ahora se reproduce en pasos: primero la acción de quien va más rápido, una pausa breve, luego la del más lento (si llegó a ejecutarse), y por último los efectos de fin de turno (veneno, quemadura, clima...) si los hubo, con un botón de \"Saltar animación\" para quien prefiera verlo todo de golpe. Además, el Pokémon que recibe un golpe se sacude y destella (verde si es supereficaz, gris si es poco eficaz), un golpe crítico añade un destello dorado y el texto \"¡CRÍTICO!\", y debilitarse ahora es una caída con fundido en vez de un cambio brusco a 0 PS. Entre una ronda y la siguiente del torneo (modos A/B/C y Semanal) aparece también un breve rótulo \"Ronda X de Y\" antes de mostrar la clasificación actualizada.",
+    date: "2026-08-28T17:03:49+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

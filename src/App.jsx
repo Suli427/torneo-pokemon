@@ -3166,7 +3166,12 @@ function useApiCache() {
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
       if (thrashEvent) events.push(thrashEvent);
-      return { hit: true, damage: totalDamage, crit: anyCrit, status: false, events, hitCount: hitsLanded };
+      // `mult` (multiplicador de tipo del último golpe) se expone sin más
+      // aquí, solo para que la interfaz pueda pintar el flash de
+      // efectividad al reproducir esta acción (ver hitFlashKind en
+      // InteractiveBattle) — no participa en ningún cálculo, ya se usó
+      // arriba para el daño en sí.
+      return { hit: true, damage: totalDamage, crit: anyCrit, status: false, events, hitCount: hitsLanded, mult: lastMult };
     }
 
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) {
@@ -3339,7 +3344,9 @@ function useApiCache() {
     if (isRecharge && mult > 0) attacker.mustRecharge = true;
     const thrashEvent = updateThrashLock();
     if (thrashEvent) events.push(thrashEvent);
-    return { hit: true, damage, crit: isCrit, status: false, events };
+    // `mult`: mismo motivo que en la rama de golpes múltiples de arriba,
+    // solo para el flash de efectividad de la interfaz.
+    return { hit: true, damage, crit: isCrit, status: false, events, mult };
   }, [computeDamage]);
 
   // Envoltorio de executeMove que resuelve la excepción de Pulso Terrestre
@@ -3429,6 +3436,13 @@ function useApiCache() {
     const resolveMidTurnSwitch = options.resolveMidTurnSwitch || null;
     const turns = [];
     const switchSignals = { a: null, b: null };
+    // Puntos de control de PS tras cada mover (ver InteractiveBattle: la
+    // interfaz los usa para reproducir el turno EN SECUENCIA, una acción
+    // detrás de otra, en vez de aplicar todo de golpe en cuanto vuelve esta
+    // función). Solo OBSERVAN el estado ya calculado en ese instante
+    // (activePa.hp/activePb.hp) — no participan en ningún cálculo ni
+    // cambian el resultado del turno.
+    const checkpoints = [];
     // Qué lado inflige el golpe que deja al RIVAL a 0 PS primero: si más
     // tarde en este mismo turno el retroceso de ese mismo golpe (u otra
     // fuente de daño) deja también al propio atacante a 0, el ganador sigue
@@ -3496,6 +3510,11 @@ function useApiCache() {
         ohkoSuccess: !!move.isOHKO && defender.hp <= 0,
         protectSuccess: PROTECT_MOVES.has(move.name) && attacker.protected === true,
         attackerFainted: attacker.hp <= 0,
+        // Solo para el flash de efectividad al reproducir esta acción en la
+        // interfaz (ver hitFlashKind): multiplicador de tipo ya calculado,
+        // `undefined` para movimientos de estado (result.mult no existe en
+        // esas ramas de executeMove, ver más arriba).
+        effectivenessMult: result.mult,
       });
       if (defenderWasFrozen && defender.status !== "freeze") {
         turns.push({ type: "statusText", text: `¡${defender.name} se ha descongelado!` });
@@ -3614,6 +3633,7 @@ function useApiCache() {
         pushFaintOnce(attacker, turns);
       }
     }
+    checkpoints.push({ at: turns.length, hpA: activePa.hp, hpB: activePb.hp });
 
     // --- Segundo mover: usa el estado YA actualizado (si el primero se
     // autocambió, su objetivo ahora es quien ha entrado; si el primero lo
@@ -3685,6 +3705,7 @@ function useApiCache() {
         pushFaintOnce(attacker, turns);
       }
     }
+    checkpoints.push({ at: turns.length, hpA: activePa.hp, hpB: activePb.hp });
 
     applyResidualStatusDamage(activePa, turns);
     applyResidualStatusDamage(activePb, turns);
@@ -3721,7 +3742,7 @@ function useApiCache() {
     activePa.flinched = false;
     activePb.flinched = false;
 
-    return { turns, switchSignals, decisiveWinnerSide };
+    return { turns, switchSignals, decisiveWinnerSide, checkpoints };
   }, [executeMove, executeMoveWithSelfKO]);
 
   // Resuelve un turno en el que el usuario cambia de Pokémon en vez de
@@ -3804,6 +3825,7 @@ function useApiCache() {
         ohkoSuccess: !!opponentMove.isOHKO && target.hp <= 0,
         protectSuccess: PROTECT_MOVES.has(opponentMove.name) && opponent.protected === true,
         attackerFainted: opponent.hp <= 0,
+        effectivenessMult: result.mult,
       });
       if (targetWasFrozen && target.status !== "freeze") {
         turns.push({ type: "statusText", text: `¡${target.name} se ha descongelado!` });
@@ -4215,6 +4237,18 @@ function effectivenessMeta(mult) {
   return null;
 }
 
+// Clasifica ese mismo multiplicador de tipo en las 3 variantes de flash de
+// impacto (ver .battle-hit-flash-* en index.css): blanco/neutro para daño
+// normal, verde para supereficaz (2x o 4x), gris apagado para poco eficaz
+// (0.25x/0.5x). `null` si el golpe no debería tener flash en absoluto
+// (inmune del todo, o `mult` ausente — movimiento de estado o fallo).
+function hitFlashKind(mult) {
+  if (mult == null || mult === 0) return null;
+  if (mult === 2 || mult === 4) return "super";
+  if (mult === 0.25 || mult === 0.5) return "weak";
+  return "normal";
+}
+
 // Fila compacta con los 6 miembros del equipo de un entrenador: el activo
 // destacado, los debilitados en gris/opacidad reducida con una marca.
 function TeamStatusRow({ team, activeIndex }) {
@@ -4353,6 +4387,28 @@ function TeamPicker({ team, onChoose, showHp, disabled, excludeIndex }) {
    TAB: TORNEO
 --------------------------------------------------------------- */
 
+// Corta el log plano de un turno normal (turns[], devuelto por resolveTurn)
+// en "pasos" de revelación secuenciada: uno por cada mover ya resuelto por
+// completo (usando los `checkpoints` que resolveTurn ya anota SIN tocar
+// ningún cálculo, ver su definición), y un último paso opcional con los
+// efectos de fin de turno (veneno/quemadura/clima...) si los hubo. Los
+// pasos sin ninguna entrada de log (p. ej. el segundo mover cuando se saltó
+// entero por un cambio forzado) se descartan: no hay nada que mostrar para
+// una acción que no llegó a ejecutarse. `finalHpA`/`finalHpB` son los PS ya
+// REALES tras aplicar el turno entero (para el paso final, que cubre
+// cualquier efecto de fin de turno posterior al último checkpoint).
+function buildAttackTurnSteps(turns, checkpoints, finalHpA, finalHpB) {
+  const steps = [];
+  let prevAt = 0;
+  for (const cp of checkpoints) {
+    steps.push({ entries: turns.slice(prevAt, cp.at), hpA: cp.hpA, hpB: cp.hpB });
+    prevAt = cp.at;
+  }
+  const trailing = turns.slice(prevAt);
+  if (trailing.length > 0) steps.push({ entries: trailing, hpA: finalHpA, hpB: finalHpB });
+  return steps.filter((s) => s.entries.length > 0);
+}
+
 function battleTurnLine(turn) {
   if (turn.type === "faint") return `☠️ ${turn.pokemon} se debilita`;
   if (turn.type === "statusText") return turn.text;
@@ -4456,17 +4512,71 @@ function StatStageBadges({ statStages }) {
 // vuelva a reproducirse desde cero. Nunca se aplica ese `key` al resto de
 // la tarjeta (nombre, tipos, StatusBadges, HpBar): así la interpolación de
 // la barra de PS entre turnos no se ve afectada por esto.
-function BattlerCard({ poke, label, side, activeIndex }) {
+//
+// `hpOverride` (opcional): PS a MOSTRAR en vez de `poke.hp` — usado durante
+// la reproducción secuenciada de un turno (ver buildAttackTurnSteps en
+// InteractiveBattle) para poder enseñar el PS "a mitad de turno" (tras solo
+// la primera acción) aunque el motor ya haya aplicado el turno entero de
+// una vez. `hitFx` (opcional): `{ kind: "normal"|"super"|"weak"|null, crit,
+// token }` — dispara la sacudida + el flash de efectividad (y el de golpe
+// crítico, sumado) en el momento de esa acción; `token` cambia en cada
+// golpe para que la animación se reinicie de verdad incluso si dos golpes
+// seguidos tuvieran exactamente la misma clasificación.
+function BattlerCard({ poke, label, side, activeIndex, hpOverride, hitFx }) {
+  const effectiveHp = hpOverride ?? poke.hp;
+
+  // Animación de debilitamiento: se dispara sola en cuanto el PS
+  // EFECTIVAMENTE MOSTRADO (no necesariamente el real ya mutado por el
+  // motor) cruza a 0, comparando contra el valor del render anterior — así
+  // funciona igual de bien en un turno secuenciado (el cruce a 0 ocurre en
+  // el paso que corresponda) que en un cambio de Pokémon instantáneo (sin
+  // secuenciar). Se resetea al entrar un Pokémon nuevo en este slot
+  // (`activeIndex` cambia), para que no herede la caída ya reproducida por
+  // el anterior.
+  const [fainted, setFainted] = useState(false);
+  const prevHpRef = useRef(effectiveHp);
+  useEffect(() => {
+    if (prevHpRef.current > 0 && effectiveHp <= 0) setFainted(true);
+    prevHpRef.current = effectiveHp;
+  }, [effectiveHp]);
+  useEffect(() => {
+    setFainted(false);
+    prevHpRef.current = effectiveHp;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex]);
+
+  // Reinicio fiable de la sacudida/flash: en vez de fiarse de que quitar y
+  // volver a poner la misma clase CSS entre un golpe y el siguiente baste
+  // para reiniciar la animación (React puede aplicar ambos cambios en el
+  // mismo commit, sin que el navegador llegue a pintar el estado "sin
+  // clase" de por medio), se limpia `shakeToken` a `null` y se vuelve a
+  // poner al valor de `hitFx.token` en el siguiente frame (rAF): así
+  // siempre hay un render intermedio sin la clase antes de reaplicarla,
+  // incluso si dos golpes seguidos tuvieran el mismo `kind`/`crit`.
+  const [shakeToken, setShakeToken] = useState(null);
+  useEffect(() => {
+    if (!hitFx) { setShakeToken(null); return; }
+    setShakeToken(null);
+    const raf = requestAnimationFrame(() => setShakeToken(hitFx.token));
+    return () => cancelAnimationFrame(raf);
+  }, [hitFx]);
+  const showFx = !!hitFx && shakeToken === hitFx.token;
+
   return (
     <div className="rounded-xl p-3 flex-1" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
       <div className="flex items-center gap-3 mb-2">
         {poke.sprite && (
           <div key={activeIndex} className="relative shrink-0 w-14 h-14">
             <div className="absolute inset-0 rounded-full battle-sprite-flash" />
+            {showFx && hitFx.kind && <div className={`battle-hit-flash battle-hit-flash-${hitFx.kind}`} />}
+            {showFx && hitFx.crit && <div className="battle-crit-flash" />}
+            {showFx && hitFx.crit && (
+              <div className="battle-crit-text font-display text-xs font-bold" style={{ color: "#f2b705" }}>¡CRÍTICO!</div>
+            )}
             <img
               src={poke.sprite}
               alt={poke.name}
-              className={`relative w-14 h-14 object-contain ${side === "right" ? "battle-sprite-enter-right" : "battle-sprite-enter-left"}`}
+              className={`relative w-14 h-14 object-contain ${side === "right" ? "battle-sprite-enter-right" : "battle-sprite-enter-left"} ${showFx ? "battle-hit-shake" : ""} ${fainted ? "battle-sprite-faint" : ""}`}
             />
           </div>
         )}
@@ -4481,7 +4591,7 @@ function BattlerCard({ poke, label, side, activeIndex }) {
           </div>
         </div>
       </div>
-      <HpBar hp={poke.hp} maxHp={poke.maxHp} />
+      <HpBar hp={effectiveHp} maxHp={poke.maxHp} />
       <StatStageBadges statStages={poke.statStages} />
     </div>
   );
@@ -4547,6 +4657,119 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   useEffect(() => {
     return () => { versusTimeoutsRef.current.forEach(clearTimeout); };
   }, []);
+
+  // Reproducción secuenciada de un turno normal (ver buildAttackTurnSteps y
+  // el pedido: "no mostrar ambas acciones de golpe"). `revealSteps` es la
+  // lista de pasos del turno en curso (o `null` fuera de una revelación);
+  // `revealIndex` el paso que toca mostrar ahora. `revealDisplayHp`
+  // sobreescribe temporalmente el PS mostrado en las BattlerCard mientras
+  // se revela (ver hpOverride) — sin esto, el PS "real" ya mutado por el
+  // motor se vería de golpe desde el primer instante, aunque el log se
+  // fuera revelando poco a poco. Todo esto vive con claves "user"/"ai" (no
+  // "a"/"b" del motor), resueltas una única vez al construir los pasos
+  // (ver handleUserMove), para no tener que volver a mapear `userSide` en
+  // cada paso.
+  const [revealSteps, setRevealSteps] = useState(null);
+  const [revealIndex, setRevealIndex] = useState(0);
+  const [revealDisplayHp, setRevealDisplayHp] = useState(null); // {user, ai} | null
+  const [revealHitFx, setRevealHitFx] = useState({ user: null, ai: null });
+  const revealTimeoutRef = useRef(null);
+  const revealFinishRef = useRef(null); // callback diferido: finalizeIndices + setBusy(false)
+  const revealTokenRef = useRef(0);
+  const revealNamesRef = useRef({ user: null, ai: null });
+
+  // Arranca la reproducción de `steps`: `onDone` es lo que ANTES se
+  // ejecutaba justo después de aplicar el turno entero de golpe
+  // (finalizeIndices + setBusy(false), ver handleUserMove) — se difiere
+  // hasta que termine de revelarse todo el turno, para que el usuario no
+  // pueda elegir su siguiente movimiento a mitad de la secuencia.
+  function startReveal(steps, userName, aiName, onDone) {
+    revealNamesRef.current = { user: userName, ai: aiName };
+    revealFinishRef.current = onDone;
+    setRevealSteps(steps);
+    setRevealIndex(0);
+  }
+
+  // Salta el resto de la secuencia YA (botón "Saltar animación"): aplica de
+  // golpe todos los pasos que faltaban (el actual, revealIndex, ya se
+  // aplicó en el efecto de abajo) y termina igual que si hubiera llegado
+  // sola al final.
+  function skipReveal() {
+    if (!revealSteps) return;
+    clearTimeout(revealTimeoutRef.current);
+    const remaining = revealSteps.slice(revealIndex + 1);
+    const last = revealSteps[revealSteps.length - 1];
+    if (remaining.length > 0) setLog((l) => [...l, ...remaining.flatMap((s) => s.entries)]);
+    setRevealDisplayHp({ user: last.hpUser, ai: last.hpAi });
+    setRevealHitFx({ user: null, ai: null });
+    setRevealSteps(null);
+    setRevealIndex(0);
+    const finish = revealFinishRef.current;
+    revealFinishRef.current = null;
+    if (finish) finish();
+  }
+
+  // Motor de la secuencia: cada vez que `revealIndex` avanza (un solo
+  // temporizador programado por pasada, nunca varios a la vez — el mismo
+  // patrón ya corregido para versusPhase, para no arriesgarse al mismo bug
+  // de cancelación cruzada), muestra el paso correspondiente (log + PS +
+  // sacudida/flash) y programa el siguiente tras una pausa breve. Al llegar
+  // al final, limpia todo y dispara el callback diferido.
+  useEffect(() => {
+    if (!revealSteps) return;
+    if (revealIndex >= revealSteps.length) {
+      setRevealSteps(null);
+      setRevealIndex(0);
+      setRevealDisplayHp(null);
+      setRevealHitFx({ user: null, ai: null });
+      const finish = revealFinishRef.current;
+      revealFinishRef.current = null;
+      if (finish) finish();
+      return;
+    }
+    const step = revealSteps[revealIndex];
+    setLog((l) => [...l, ...step.entries]);
+    setRevealDisplayHp({ user: step.hpUser, ai: step.hpAi });
+
+    // Sacudida + flash de efectividad (y de crítico, si aplica): se busca
+    // la primera acción de este paso que impactó de verdad (hit y
+    // damage>0), y se decide el lado que la recibe comparando el nombre
+    // del objetivo contra los nombres capturados al empezar la revelación
+    // (ver startReveal). Un cambio de Pokémon a mitad de turno puede hacer
+    // que esa comparación ya no encaje para una acción posterior del mismo
+    // turno — en ese caso, sencillamente no se dispara ningún efecto para
+    // ella en vez de arriesgarse a animar el lado equivocado.
+    const hitEntry = step.entries.find((e) => e.type === "move" && e.hit && e.damage > 0);
+    let nextFx = { user: null, ai: null };
+    if (hitEntry) {
+      revealTokenRef.current += 1;
+      const fx = { kind: hitFlashKind(hitEntry.effectivenessMult), crit: !!hitEntry.crit, token: revealTokenRef.current };
+      if (hitEntry.target === revealNamesRef.current.user) nextFx = { user: fx, ai: null };
+      else if (hitEntry.target === revealNamesRef.current.ai) nextFx = { user: null, ai: fx };
+    }
+    setRevealHitFx(nextFx);
+
+    revealTimeoutRef.current = setTimeout(() => setRevealIndex((i) => i + 1), 750);
+    return () => clearTimeout(revealTimeoutRef.current);
+  }, [revealSteps, revealIndex]);
+
+  // Mismo disparador "de un solo golpe" (sin secuenciar) para los turnos de
+  // cambio de Pokémon (resolveSwitchTurn, ver handleUserSwitch y la rama de
+  // cambio de la IA en handleUserMove): no se sequencian por completo (el
+  // cambio en sí ya es narrativamente secuencial: "vuelve" → "adelante" →
+  // el ataque libre del rival), pero sí merece la misma sacudida/flash en
+  // el momento del golpe, en vez de ninguna.
+  function triggerOneShotHitFx(turns, userName, aiName) {
+    const hitEntry = [...turns].reverse().find((e) => e.type === "move" && e.hit && e.damage > 0);
+    if (!hitEntry) return;
+    const targetIsUser = hitEntry.target === userName;
+    const targetIsAi = hitEntry.target === aiName;
+    if (!targetIsUser && !targetIsAi) return;
+    revealTokenRef.current += 1;
+    const fx = { kind: hitFlashKind(hitEntry.effectivenessMult), crit: !!hitEntry.crit, token: revealTokenRef.current };
+    setRevealHitFx(targetIsUser ? { user: fx, ai: null } : { user: null, ai: fx });
+    setTimeout(() => setRevealHitFx({ user: null, ai: null }), 500);
+  }
   // 'a' | 'b' | null: el lado del usuario tiene que elegir un nuevo Pokémon
   // activo aunque el actual siga con vida (Cola Dragón lo forzó a
   // retirarse, o el propio usuario usó Cambio de Voltios/U-turn).
@@ -4899,6 +5122,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       const { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch } = await api.resolveSwitchTurn(aiPoke, incoming, userPoke, move, userTrainer.id, weather);
       recordMechanics(turns, weatherWasActive, terrainWasActive);
       setLog((l) => [...l, ...turns]);
+      triggerOneShotHitFx(turns, userPoke.name, aiPoke.name);
       const decisiveWinnerSide = decisiveWinnerIsOpponent ? userSide : null;
       // BUG corregido: si el rival cambió de Pokémon este turno Y el
       // movimiento del usuario (el "ataque libre" tras ese cambio) era
@@ -4954,11 +5178,26 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     }
 
     const weatherWasActive = !!weather.type, terrainWasActive = !!weather.terrainType;
-    const { turns, switchSignals, decisiveWinnerSide } = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id, weather, { benchAlive, resolveMidTurnSwitch });
+    const { turns, switchSignals, decisiveWinnerSide, checkpoints } = await api.resolveTurn(pa, pb, moveA, moveB, trainerA.id, trainerB.id, weather, { benchAlive, resolveMidTurnSwitch });
     recordMechanics(turns, weatherWasActive, terrainWasActive);
-    setLog((l) => [...l, ...turns]);
-    finalizeIndices(midTurnIdxA, midTurnIdxB, switchSignals, decisiveWinnerSide);
-    setBusy(false);
+
+    // Turno normal (sin cambios de por medio): en vez de aplicar el log y
+    // los PS finales de golpe (lo que antes daba la sensación de que ambos
+    // golpes ocurrían a la vez), se reproduce en pasos, uno detrás de otro
+    // (ver buildAttackTurnSteps/startReveal). finalizeIndices y setBusy(false)
+    // —que antes se llamaban aquí mismo— se difieren hasta que termine de
+    // reproducirse el turno entero, para que el usuario no pueda elegir su
+    // siguiente acción a mitad de la secuencia.
+    const rawSteps = buildAttackTurnSteps(turns, checkpoints, pa.hp, pb.hp);
+    const steps = rawSteps.map((s) => ({
+      entries: s.entries,
+      hpUser: userSide === "a" ? s.hpA : s.hpB,
+      hpAi: userSide === "a" ? s.hpB : s.hpA,
+    }));
+    startReveal(steps, userPoke.name, aiPoke.name, () => {
+      finalizeIndices(midTurnIdxA, midTurnIdxB, switchSignals, decisiveWinnerSide);
+      setBusy(false);
+    });
   }
 
   async function handleUserSwitch(targetIdx) {
@@ -4977,6 +5216,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
     const { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch } = await api.resolveSwitchTurn(outgoing, incoming, opponent, aiMove, opponentTrainerId, weather);
     recordMechanics(turns, weatherWasActive, terrainWasActive);
     setLog((l) => [...l, ...turns]);
+    triggerOneShotHitFx(turns, incoming.name, opponent.name);
 
     // El elegido pasa a ser el candidato a activo del usuario; si el rival
     // lo debilita antes de que pueda actuar, finalizeIndices ya se encarga
@@ -5063,9 +5303,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       </div>
 
       <div className="flex items-center gap-3">
-        <BattlerCard poke={userPoke} label={`Tú (${userTrainer.name})`} side="left" activeIndex={userIdx} />
+        <BattlerCard poke={userPoke} label={`Tú (${userTrainer.name})`} side="left" activeIndex={userIdx} hpOverride={revealDisplayHp?.user} hitFx={revealHitFx.user} />
         <div className="text-[10px] text-[#5c6178] font-display">VS</div>
-        <BattlerCard poke={aiPoke} label={aiTrainer.name} side="right" activeIndex={aiIdx} />
+        <BattlerCard poke={aiPoke} label={aiTrainer.name} side="right" activeIndex={aiIdx} hpOverride={revealDisplayHp?.ai} hitFx={revealHitFx.ai} />
       </div>
 
       <div className="rounded-lg p-3 bg-[#0e1018] border border-[#1e2130] text-[12px] text-[#9aa0b4] h-40 overflow-y-auto space-y-0.5">
@@ -5073,6 +5313,18 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
         {log.map((t, i) => <div key={i}>{battleTurnLine(t)}</div>)}
         <div ref={logEndRef} />
       </div>
+
+      {revealSteps && (
+        <div className="flex justify-end">
+          <button
+            onClick={skipReveal}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-[#9aa0b4] hover:text-white"
+            style={{ background: "#14161f", border: "1px solid #1e2130" }}
+          >
+            Saltar animación
+          </button>
+        </div>
+      )}
 
       {midTurnChoice ? (
         <div className="rounded-lg p-4" style={{ background: "#14161f", border: "1px solid #e3350d55" }}>
@@ -5752,6 +6004,22 @@ function buildPairsAvoidingRematches(ordered, playedPairsSet) {
   return best;
 }
 
+// Transición breve entre rondas del torneo (ver triggerRoundTransition en
+// TorneoTab): reutiliza las mismas clases .battle-vs-pop/.battle-vs-fadeout
+// ya usadas por la pantalla de "VS" inicial de un combate, para mantener la
+// misma coherencia visual entre ambas animaciones de entrada.
+function RoundTransitionScreen({ round, total, phase }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-24">
+      <div className={phase === "out" ? "battle-vs-fadeout" : "battle-vs-pop"}>
+        <div className="font-display text-4xl text-white text-center">
+          Ronda {round} de {total}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, collection, ownedTrainerMovesets, tournamentHistory, onTournamentFinished, onCombatMechanics, playerProfile, weeklyTournamentState, setWeeklyTournamentState, onDraftResult, battleTowerBest, onBattleTowerResult, onDraftSwap, onBattleTowerRoundCleared }) {
   const [phase, setPhase] = useState("setup"); // setup, loading, ready, finished
   const [userTrainerId, setUserTrainerId] = useState("ash");
@@ -5825,6 +6093,25 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
   const [pendingRoundResults, setPendingRoundResults] = useState(null);
   const [tournamentReward, setTournamentReward] = useState(null); // { amount, before, after }
   const [showHistory, setShowHistory] = useState(false);
+
+  // Transición "Ronda X de Y" entre una ronda del torneo y la siguiente (ver
+  // triggerRoundTransition/finalizeRound y RoundTransitionScreen más abajo):
+  // { round, phase: "in"|"out" } mientras está en pantalla, null el resto
+  // del tiempo. Mismo patrón "se programa directamente en la función que lo
+  // dispara" que versusTimeoutsRef en InteractiveBattle, para no repetir el
+  // bug ya corregido de la pantalla de VS (un solo useEffect reactivo
+  // reprogramando dos timeouts a la vez podía cancelarse a sí mismo).
+  const [roundTransition, setRoundTransition] = useState(null);
+  const roundTransitionTimeoutsRef = useRef([]);
+  useEffect(() => {
+    return () => { roundTransitionTimeoutsRef.current.forEach(clearTimeout); };
+  }, []);
+  function triggerRoundTransition(newRound) {
+    setRoundTransition({ round: newRound, phase: "in" });
+    const t1 = setTimeout(() => setRoundTransition({ round: newRound, phase: "out" }), 1300);
+    const t2 = setTimeout(() => setRoundTransition(null), 1600);
+    roundTransitionTimeoutsRef.current.push(t1, t2);
+  }
 
   // Semana activa y su temática determinista (ver selectWeeklyTheme):
   // recalculado en cada render, es barato (un hash + recorrido de 10
@@ -6196,6 +6483,8 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         perfectTournament,
         perfectRoundWins,
       });
+    } else {
+      triggerRoundTransition(newRound);
     }
   }
 
@@ -6612,7 +6901,11 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         </div>
       )}
 
-      {phase === "ready" && interactiveMatch && (
+      {roundTransition && (
+        <RoundTransitionScreen round={roundTransition.round} total={TOURNAMENT_ROUNDS} phase={roundTransition.phase} />
+      )}
+
+      {!roundTransition && phase === "ready" && interactiveMatch && (
         <div className="space-y-4">
           <h2 className="font-display text-2xl text-white flex items-center gap-2">
             <Swords size={22} color="#e3350d" /> Tu combate — Ronda {round + 1}
@@ -6628,7 +6921,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainer, c
         </div>
       )}
 
-      {(phase === "ready" || phase === "finished") && !interactiveMatch && (
+      {!roundTransition && (phase === "ready" || phase === "finished") && !interactiveMatch && (
         <div className="space-y-6">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <h2 className="font-display text-2xl text-white flex items-center gap-2">

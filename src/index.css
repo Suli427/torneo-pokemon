@@ -182,3 +182,72 @@ html, body, #root {
   animation: hp-bar-low-flash 1000ms ease-in-out 1;
   pointer-events: none;
 }
+
+/* Secuencia de un turno (ver InteractiveBattle: buildAttackTurnSteps y el
+   motor de revelación): sacudida + flash de efectividad al recibir un
+   golpe, efecto de golpe crítico, y caída al debilitarse. */
+@keyframes battle-hit-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(5px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(2px); }
+}
+.battle-hit-shake {
+  animation: battle-hit-shake 380ms ease-in-out;
+}
+@keyframes battle-hit-flash {
+  0% { opacity: 0; }
+  35% { opacity: 0.65; }
+  100% { opacity: 0; }
+}
+.battle-hit-flash {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  animation: battle-hit-flash 420ms ease-out both;
+  pointer-events: none;
+}
+.battle-hit-flash-normal { background: radial-gradient(circle, #ffffff 0%, transparent 70%); }
+.battle-hit-flash-super { background: radial-gradient(circle, #5fae5f 0%, transparent 70%); }
+.battle-hit-flash-weak { background: radial-gradient(circle, #6c7a89 0%, transparent 70%); }
+
+/* Golpe crítico: destello dorado más intenso (se SUMA al de efectividad de
+   arriba, no lo sustituye) y un pequeño texto "¡CRÍTICO!" flotante. */
+@keyframes battle-crit-flash {
+  0% { opacity: 0; }
+  30% { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+.battle-crit-flash {
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, #f2b705 0%, transparent 75%);
+  animation: battle-crit-flash 520ms ease-out both;
+  pointer-events: none;
+}
+@keyframes battle-crit-text {
+  0% { opacity: 0; transform: translate(-50%, 4px) scale(0.6); }
+  30% { opacity: 1; transform: translate(-50%, -6px) scale(1.1); }
+  70% { opacity: 1; transform: translate(-50%, -10px) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -18px) scale(1); }
+}
+.battle-crit-text {
+  position: absolute;
+  left: 50%;
+  top: -14px;
+  white-space: nowrap;
+  animation: battle-crit-text 900ms ease-out both;
+  pointer-events: none;
+}
+
+/* Debilitamiento: fundido + caída (desplazamiento hacia abajo) con una
+   ligera inclinación, en vez de desaparecer de golpe o quedarse estático. */
+@keyframes battle-sprite-faint {
+  0% { opacity: 1; transform: translateY(0) rotate(0deg); }
+  100% { opacity: 0; transform: translateY(22px) rotate(18deg); }
+}
+.battle-sprite-faint {
+  animation: battle-sprite-faint 600ms ease-in forwards;
+}
