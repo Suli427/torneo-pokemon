@@ -769,8 +769,9 @@ function accuracyStageMultiplier(stage) {
 
 // Precisión efectiva de un movimiento: su % base modulado por los stages de
 // Precisión del atacante y Evasión del defensor.
-function getEffectiveAccuracy(attacker, defender, move) {
-  const baseAcc = move.accuracy == null ? 100 : move.accuracy;
+function getEffectiveAccuracy(attacker, defender, move, weather) {
+  const weatherAcc = weatherAdjustedBaseAccuracy(move, weather);
+  const baseAcc = weatherAcc != null ? weatherAcc : (move.accuracy == null ? 100 : move.accuracy);
   const stage = Math.max(-6, Math.min(6, (attacker.statStages?.accuracy ?? 0) - (defender.statStages?.evasion ?? 0)));
   return baseAcc * accuracyStageMultiplier(stage);
 }
@@ -1308,6 +1309,163 @@ const FURY_CUTTER_MOVES = new Set(["fury-cutter"]);
 // duplicación extra de Rizo Defensa (Defense Curl) previo, fuera de alcance.
 const ROLLOUT_MOVES = new Set(["rollout", "ice-ball"]);
 
+// Reserva (Stockpile): sube un contador propio (0-3, falla al llegar a 3) y,
+// por cada uso, sube también la propia Defensa y Defensa Especial una etapa.
+// Tragar (Swallow) y Escupir (Spit Up) consumen TODO el contador de golpe (no
+// se puede gastar parcialmente): Tragar cura 25/50/100% del PS máximo según
+// el nivel acumulado (1/2/3) y revierte esas mismas etapas de Defensa/Defensa
+// Especial ganadas; Escupir hace lo mismo con las etapas pero en vez de curar
+// hace daño con potencia 100/200/300 según el nivel (ver
+// SPIT_UP_MOVES/specialDamage="spit-up" más abajo). Ambos fallan sin
+// contador acumulado.
+const STOCKPILE_MOVES = new Set(["stockpile"]);
+const SWALLOW_MOVES = new Set(["swallow"]);
+const SPIT_UP_MOVES = new Set(["spit-up"]);
+
+// Destino Ligado (Destiny Bond): si quien lo usó se debilita por un golpe
+// directo del rival antes de volver a actuar, ese rival también se debilita
+// con él. Alcance deliberadamente limitado (como otras mecánicas de este
+// archivo con un punto de enganche único): solo se comprueba en el golpe
+// directo de UN SOLO objetivo del bloque genérico final de executeMove (el
+// caso de uso real más común); no cubre golpes múltiples, movimientos
+// fulminantes, ni debilitamiento por daño residual/retroceso. Se limpia en
+// cuanto quien lo activó vuelve a actuar (cualquier movimiento que no sea
+// Destino Ligado), igual de duradero que en los juegos reales.
+const DESTINY_BOND_MOVES = new Set(["destiny-bond"]);
+
+// Cántico Mortal (Perish Song): pone una cuenta atrás de 3 turnos completos a
+// AMBOS Pokémon activos (los dos únicos "en el campo" en este motor 1 contra
+// 1) que no la tuvieran ya; al llegar a 0 se debilitan, salvo que hayan
+// salido del campo antes (se cancela al cambiar, ver resetPokemonOnSwitchOut,
+// igual que en los juegos reales).
+const PERISH_SONG_MOVES = new Set(["perish-song"]);
+
+// Alma Cúmulo (Stored Power) y Rey de la Cúspide (Power Trip): potencia base
+// 20 + 20 por CADA etapa positiva acumulada entre TODOS los stats del propio
+// usuario (ataque, defensa, ambos especiales, velocidad, precisión y
+// evasión — se suman todas las etapas positivas de poke.statStages, las
+// negativas no restan). Castigo (Punishment): misma fórmula pero sobre las
+// etapas positivas del OBJETIVO y con base 60 en vez de 20, tope de 200.
+const STORED_POWER_MOVES = new Set(["stored-power", "power-trip"]);
+const PUNISHMENT_MOVES = new Set(["punishment"]);
+function countPositiveStages(statStages) {
+  return Object.values(statStages || {}).reduce((sum, s) => sum + (s > 0 ? s : 0), 0);
+}
+
+// Magnitud (Magnitude): potencia aleatoria por tramos oficiales (10/30/50/70/
+// 90/110/150 con probabilidades crecientes hacia el centro de la tabla real
+// de la saga). Para la IA (expectedDamage) se usa la potencia media ponderada
+// (71) en vez de un muestreo aleatorio, igual de determinista que el resto de
+// su lógica de puntuación.
+const MAGNITUDE_MOVES = new Set(["magnitude"]);
+
+// Sorpresa (Present): en los juegos reales tiene además una probabilidad
+// (20%) de CURAR al objetivo en vez de dañarlo; se deja fuera de alcance a
+// propósito (exigiría que el motor soportara "daño negativo" como concepto,
+// algo que ningún otro punto de computeDamage contempla) y sus probabilidades
+// de daño se renormalizan sin esa rama: 40 de potencia el 50% de las veces,
+// 80 el 37.5%, 120 el 12.5% (proporcional a los pesos reales de 102/76/26
+// sobre 204 en vez de 256). La IA (expectedDamage) usa la media ponderada
+// (65) en vez de un muestreo aleatorio, igual que Magnitud.
+const PRESENT_MOVES = new Set(["present"]);
+
+// Rotura de invulnerabilidad: Placaje Aéreo/Tornado golpean a un objetivo
+// invulnerable por estar en la fase de carga de Vuelo/Rebote (con el doble de
+// daño); Terremoto/Magnitud hacen lo mismo contra Cavar, y Surf/Remolino
+// contra Buceo — mecánica oficial de la saga. Se necesita saber CON QUÉ
+// movimiento concreto quedó invulnerable el objetivo (ver
+// attacker.invulnerableMove, fijado junto a `invulnerable` en el turno de
+// carga de TWO_TURN_MOVES), no solo que lo esté.
+const INVULNERABILITY_BREAKER_MOVES = {
+  gust: new Set(["fly", "bounce"]),
+  twister: new Set(["fly", "bounce"]),
+  earthquake: new Set(["dig"]),
+  magnitude: new Set(["dig"]),
+  surf: new Set(["dive"]),
+  whirlpool: new Set(["dive"]),
+};
+
+// Rayo/Vendaval (Thunder/Hurricane): nunca fallan bajo Lluvia (accuracy 100
+// fijo) y su precisión cae a 50 bajo Sol; Ventisca (Blizzard): nunca falla
+// bajo Granizo. Excepciones oficiales de la saga sobre la precisión base de
+// la API, resueltas en getEffectiveAccuracy antes de aplicar los stages de
+// Precisión/Evasión normales (que SÍ se siguen aplicando después, sobre este
+// valor ya corregido).
+const WEATHER_ACCURACY_MOVES = new Set(["thunder", "hurricane"]);
+function weatherAdjustedBaseAccuracy(move, weather) {
+  if (move.name === "blizzard") return weather?.type === "hail" ? 100 : null;
+  if (WEATHER_ACCURACY_MOVES.has(move.name)) {
+    if (weather?.type === "rain") return 100;
+    if (weather?.type === "sun") return 50;
+  }
+  return null;
+}
+
+// Neblina/Espabila (Defog) y Giro Rápido (Rapid Spin): eliminan todos los
+// hazards de entrada acumulados (ver HAZARD_MOVES/weather.hazards) — Neblina
+// los de AMBOS lados y además baja la Evasión del objetivo una etapa; Giro
+// Rápido solo los del propio lado de quien lo usa, además de curarse a sí
+// mismo de Semilla Drenadora y aprisionamiento (mecánica real de
+// generaciones recientes), tras el golpe si conecta de verdad.
+const DEFOG_MOVES = new Set(["defog"]);
+const RAPID_SPIN_MOVES = new Set(["rapid-spin"]);
+
+// Mímico (Mimic): copia TEMPORALMENTE (hasta que quien lo usó salga del
+// campo, ver resetPokemonOnSwitchOut) el último movimiento que usó el
+// objetivo en su propio hueco de Mímico, con 5 PP. Esquema (Sketch): copia
+// PERMANENTEMENTE ese mismo movimiento en su hueco — pero solo para lo que
+// dure ESTE combate: el motor no tiene ningún punto de guardado que
+// modifique el moveset persistente de la colección/entrenador (sería un
+// cambio de alcance mucho mayor, tocando otro subsistema completo), así que
+// se simplifica a que dure el combate actual, documentado aquí a propósito.
+// Ambos fallan si el objetivo no ha usado ningún movimiento todavía, si es el
+// propio Mímico/Esquema, o si el usuario ya conoce ese movimiento.
+const MIMIC_MOVES = new Set(["mimic"]);
+const SKETCH_MOVES = new Set(["sketch"]);
+
+// Metrónomo (Metronome): ejecuta un movimiento COMPLETAMENTE al azar de entre
+// todos los del juego, reutilizando la misma lista ya cacheada de nombres que
+// usa Esquema de Smeargle (getLearnableMoveNames("smeargle"), ver su
+// comentario) en vez de duplicar la petición a la API. Movimiento Espejo
+// (Mirror Move): repite el último movimiento que usó el OBJETIVO (falla si
+// nunca usó ninguno o si era un movimiento de estado, simplificación
+// razonable de la restricción real de "solo movimientos usados directamente
+// contra mí"). Ambos delegan en una llamada recursiva a executeMove con el
+// movimiento elegido.
+const METRONOME_MOVES = new Set(["metronome"]);
+const MIRROR_MOVE_MOVES = new Set(["mirror-move"]);
+
+// Ayuda (Assist) y Sofoco... no, Hipnosis no — Sonámbulo (Sleep Talk): ambos
+// ejecutan un movimiento AL AZAR de un moveset ajeno al elegido normalmente,
+// sin gastar el PP de ese movimiento copiado (ver el flag `skipPpCost` de
+// `extra`, comprobado junto a la resta de PP normal más arriba). Ayuda
+// debería copiar de un COMPAÑERO DE EQUIPO al azar, pero executeMove no
+// recibe el equipo completo como parámetro (misma limitación ya documentada
+// en TEAM_STATUS_HEAL_MOVES), así que se aproxima con un movimiento al azar
+// del propio moveset del usuario, igual de razonable que esa otra
+// simplificación ya asumida. Sonámbulo solo puede activarse mientras el
+// usuario está dormido (ver la excepción especial en statusPreMoveCheck que
+// fuerza su elección en vez de perder el turno, y `attacker.forcedSleepTalk`).
+const ASSIST_MOVES = new Set(["assist"]);
+const SLEEP_TALK_MOVES = new Set(["sleep-talk"]);
+function pickRandomMoveFromKit(attacker, excludeNames) {
+  const candidates = attacker.moves.filter((m) =>
+    !excludeNames.has(m.name) && !TWO_TURN_MOVES.has(m.name) && !CHARGE_MOVES_VULNERABLE.has(m.name)
+  );
+  if (!candidates.length) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+// Primero (Me First): solo tiene efecto si quien lo usa actúa ANTES que el
+// rival este turno (algo que resolveTurn ya sabe de antemano, al elegir
+// ambos movimientos antes de ejecutar ninguno — se le pasa como
+// extra.rivalPendingMove, ver runSlot) y el movimiento que el rival iba a
+// usar no es de estado; en ese caso, usa ESE MISMO movimiento con ×1.5 de
+// potencia en vez del suyo propio. Falla sin tirada de precisión en
+// cualquier otro caso (incluido usarlo como segundo mover, donde
+// extra.rivalPendingMove nunca se rellena porque el rival ya actuó).
+const ME_FIRST_MOVES = new Set(["me-first"]);
+
 // PokeAPI no distingue "mal envenenado" (Tóxico) de veneno normal: el campo
 // meta.ailment.name de /move/toxic devuelve "poison" igual que cualquier
 // movimiento venenoso normal (no existe "toxic" en el enum move-ailment).
@@ -1740,6 +1898,31 @@ function resetPokemonOnSwitchOut(poke) {
   poke.cursed = false;
   poke.furyCutterStreak = 0;
   poke.rolloutTurn = 0;
+  // Con qué movimiento concreto quedó invulnerable (ver
+  // INVULNERABILITY_BREAKER_MOVES) tampoco tiene sentido conservarlo una vez
+  // deja de estarlo.
+  poke.invulnerableMove = null;
+  // Reserva (STOCKPILE_MOVES), Destino Ligado y Cántico Mortal tampoco
+  // persisten al salir del campo, mismo criterio que el resto de esta
+  // función (Cántico Mortal en concreto SE CANCELA por completo al cambiar,
+  // no solo se pausa, igual que en los juegos reales).
+  poke.stockpile = 0;
+  poke.destinyBondActive = false;
+  poke.perishCount = null;
+  // Sonámbulo forzado (ver el flag `forcedSleepTalk`, fijado en
+  // statusPreMoveCheck): si el Pokémon sale del campo mientras dormido,
+  // pierde igualmente esta marca temporal de "elige Sonámbulo si o sí para
+  // este turno".
+  poke.forcedSleepTalk = false;
+  // Mímico (ver MIMIC_MOVES): al salir del campo se restaura el movimiento
+  // original en el hueco que había copiado temporalmente (Esquema, en
+  // cambio, es permanente para lo que dure el combate y NO se restaura aquí
+  // a propósito, ver su comentario).
+  if (poke.mimicSlotIndex != null && poke.mimicOriginalMove) {
+    poke.moves[poke.mimicSlotIndex] = poke.mimicOriginalMove;
+  }
+  poke.mimicSlotIndex = null;
+  poke.mimicOriginalMove = null;
 }
 
 /* ---------------------------------------------------------------
@@ -1862,7 +2045,16 @@ function statusPreMoveCheck(poke, turns) {
       return false;
     }
     if (poke.sleepTurns > 0) {
+      // Sonámbulo (ver SLEEP_TALK_MOVES): si lo tiene en su moveset con PP,
+      // en vez de perder el turno por completo se le fuerza a elegirlo (ver
+      // `forcedSleepTalk`, comprobado con prioridad en chooseMove/
+      // decideAiTurn); el contador de sueño se sigue descontando igual.
+      const sleepTalk = poke.moves.find((m) => m.name === "sleep-talk" && (m.ppLeft == null || m.ppLeft > 0));
       poke.sleepTurns -= 1;
+      if (sleepTalk) {
+        poke.forcedSleepTalk = true;
+        return true;
+      }
       turns.push({ type: "statusText", text: `${poke.name} está profundamente dormido y no puede atacar` });
       return false;
     } else {
@@ -1974,6 +2166,23 @@ function tickCurseDamage(poke, turns) {
   poke.hp = Math.max(0, poke.hp - dmg);
   turns.push({ type: "statusText", text: `${poke.name} sufre el daño de la maldición` });
   if (poke.hp <= 0) pushFaintOnce(poke, turns);
+}
+
+// Cántico Mortal (ver PERISH_SONG_MOVES): descuenta el contador de `poke` y,
+// al llegar a 0, lo debilita directamente sin importar sus PS actuales. Se
+// cancela por completo si `poke` sale del campo antes de llegar a 0 (ver
+// resetPokemonOnSwitchOut), igual que en los juegos reales.
+function tickPerishSong(poke, turns) {
+  if (poke.perishCount == null || poke.hp <= 0) return;
+  poke.perishCount -= 1;
+  if (poke.perishCount > 0) {
+    turns.push({ type: "statusText", text: `El contador de Cántico Mortal de ${poke.name} baja a ${poke.perishCount}` });
+  } else {
+    poke.perishCount = null;
+    poke.hp = 0;
+    turns.push({ type: "statusText", text: `¡A ${poke.name} se le acabó el tiempo por el Cántico Mortal!` });
+    pushFaintOnce(poke, turns);
+  }
 }
 
 // Premonición/Deseo Oculto (ver FUTURE_MOVES): descuenta el contador de cada
@@ -2242,6 +2451,11 @@ function resolveVariablePower(entry) {
   if (TARGET_HP_PROPORTIONAL_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "target-hp-proportional" };
   if (FURY_CUTTER_MOVES.has(entry.name)) return { ...entry, specialDamage: "fury-cutter" };
   if (ROLLOUT_MOVES.has(entry.name)) return { ...entry, specialDamage: "rollout" };
+  if (SPIT_UP_MOVES.has(entry.name)) return { ...entry, specialDamage: "spit-up" };
+  if (STORED_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "stored-power" };
+  if (PUNISHMENT_MOVES.has(entry.name)) return { ...entry, specialDamage: "punishment" };
+  if (MAGNITUDE_MOVES.has(entry.name)) return { ...entry, specialDamage: "magnitude" };
+  if (PRESENT_MOVES.has(entry.name)) return { ...entry, specialDamage: "present" };
   if (entry.power != null || entry.damageClass === "status") return entry;
   if (COUNTER_MOVES[entry.name] != null) return { ...entry, specialDamage: "counter" };
   if (SPEED_RATIO_MOVES.has(entry.name)) return { ...entry, specialDamage: "speed-ratio" };
@@ -2892,7 +3106,29 @@ function useApiCache() {
       // cadena forzada (attacker.rolloutTurn, ver ROLLOUT_MOVES/executeMove),
       // hasta el 5º turno (30 -> 60 -> 120 -> 240 -> 480).
       power = 30 * Math.pow(2, (attacker.rolloutTurn || 1) - 1);
+    } else if (move.specialDamage === "spit-up") {
+      // Escupir: potencia según el nivel de Reserva consumido (comprobado ya
+      // en executeMove que hay al menos 1 antes de llegar aquí).
+      const stock = attacker.stockpile || 0;
+      power = stock === 1 ? 100 : stock === 2 ? 200 : 300;
+    } else if (move.specialDamage === "stored-power") {
+      power = 20 + 20 * countPositiveStages(attacker.statStages);
+    } else if (move.specialDamage === "punishment") {
+      power = Math.min(200, 60 + 20 * countPositiveStages(defender.statStages));
+    } else if (move.specialDamage === "magnitude") {
+      const r = Math.random();
+      power = r < 0.05 ? 10 : r < 0.15 ? 30 : r < 0.35 ? 50 : r < 0.65 ? 70 : r < 0.85 ? 90 : r < 0.95 ? 110 : 150;
+    } else if (move.specialDamage === "present") {
+      const r = Math.random();
+      power = r < 0.5 ? 40 : r < 0.875 ? 80 : 120;
     }
+
+    // Rotura de invulnerabilidad (ver INVULNERABILITY_BREAKER_MOVES): si el
+    // objetivo está invulnerable por Vuelo/Rebote/Cavar/Buceo y este
+    // movimiento concreto es de los que atraviesan esa fase, dobla el daño
+    // (executeMove ya comprobó que, en ese caso, SÍ se deja seguir el flujo
+    // normal en vez de esquivar el golpe por completo).
+    const invulnerabilityBreakMult = (defender.invulnerable && INVULNERABILITY_BREAKER_MOVES[move.name]?.has(defender.invulnerableMove)) ? 2 : 1;
 
     // El crítico se decide antes de leer los stages: ignora bajadas propias
     // de Ataque/Ataque Especial (nunca peor que stage 0) y subidas de
@@ -2935,7 +3171,7 @@ function useApiCache() {
     const mult = await typeMultiplier([move.type], defender.types, move.name);
     const critMult = isCrit ? 1.5 : 1;
     const rand = 0.85 + Math.random() * 0.15;
-    let damage = Math.floor(base * stab * weatherMult * terrainMult * screenMult * mult * critMult * rand);
+    let damage = Math.floor(base * stab * weatherMult * terrainMult * screenMult * mult * critMult * rand * invulnerabilityBreakMult);
     damage = mult > 0 ? Math.max(1, damage) : 0;
     return { damage, isCrit, mult };
   }, [typeMultiplier]);
@@ -2952,7 +3188,7 @@ function useApiCache() {
       return defender.hp * (acc / 100);
     }
     if (move.damageClass === "status" || (!move.power && !move.specialDamage)) return 0;
-    const acc = getEffectiveAccuracy(attacker, defender, move);
+    const acc = getEffectiveAccuracy(attacker, defender, move, weather);
     if (move.specialDamage === "fixed-level") {
       const mult = await typeMultiplier([move.type], defender.types, move.name);
       return mult > 0 ? 50 * (acc / 100) : 0;
@@ -2999,7 +3235,19 @@ function useApiCache() {
       power = Math.min(160, 40 * Math.pow(2, attacker.furyCutterStreak || 0));
     } else if (move.specialDamage === "rollout") {
       power = 30 * Math.pow(2, (attacker.rolloutTurn || 1) - 1);
+    } else if (move.specialDamage === "spit-up") {
+      const stock = attacker.stockpile || 0;
+      power = stock === 1 ? 100 : stock === 2 ? 200 : stock === 3 ? 300 : 0;
+    } else if (move.specialDamage === "stored-power") {
+      power = 20 + 20 * countPositiveStages(attacker.statStages);
+    } else if (move.specialDamage === "punishment") {
+      power = Math.min(200, 60 + 20 * countPositiveStages(defender.statStages));
+    } else if (move.specialDamage === "magnitude") {
+      power = 71; // media ponderada de la tabla real, ver MAGNITUDE_MOVES
+    } else if (move.specialDamage === "present") {
+      power = 65; // media ponderada de la tabla real, ver PRESENT_MOVES
     }
+    const invulnerabilityBreakMult = (defender.invulnerable && INVULNERABILITY_BREAKER_MOVES[move.name]?.has(defender.invulnerableMove)) ? 2 : 1;
     let atkStat = move.damageClass === "special"
       ? getEffectiveStat(attacker, "special-attack")
       : BODY_PRESS_MOVES.has(move.name)
@@ -3018,7 +3266,7 @@ function useApiCache() {
     const terrainMult = terrainPowerMultiplier(weather, move, attacker) * terrainDamageReductionMultiplier(weather, move, defender);
     const screenMult = screensDamageMultiplier(weather, move, defender);
     const mult = await typeMultiplier([move.type], defender.types, move.name);
-    let expected = base * stab * weatherMult * terrainMult * screenMult * mult * (acc / 100);
+    let expected = base * stab * weatherMult * terrainMult * screenMult * mult * invulnerabilityBreakMult * (acc / 100);
     // Golpes múltiples: la IA debe valorar el total esperado de golpes, no
     // solo uno (si no, infravalora movimientos como Lanzarrocas frente a
     // uno de un único golpe con potencia similar).
@@ -3173,6 +3421,15 @@ function useApiCache() {
   // cambios incluidos solo se usan en el combate interactivo vía
   // decideAiTurn, más abajo: ver su comentario para la razón).
   const chooseMove = useCallback(async (attacker, defender, weather, difficulty = "normal") => {
+    // Sonámbulo forzado (ver statusPreMoveCheck/SLEEP_TALK_MOVES): tiene
+    // prioridad incluso por encima de Otra Vez/furia, porque mientras está
+    // dormido el Pokémon no puede elegir NADA más que Sonámbulo.
+    if (attacker.forcedSleepTalk) {
+      attacker.forcedSleepTalk = false;
+      const sleepTalk = attacker.moves.find((m) => m.name === "sleep-talk");
+      if (sleepTalk) return sleepTalk;
+    }
+
     // Otra Vez en curso: fuerza el mismo movimiento que Enfado/furia (misma
     // prioridad que lockedMove, comprobada primero porque Otra Vez es una
     // restricción impuesta por el RIVAL, no una elección propia como la
@@ -3265,7 +3522,7 @@ function useApiCache() {
   const decideAiTurn = useCallback(async ({ attacker, attackerTeam, attackerIdx, attackerTrainerId, defender, weather, difficulty }) => {
     // Ver comentario equivalente en chooseMove: Otra Vez/furia se resuelven
     // ahí, sin pasar por la lógica de cambio voluntario de más abajo.
-    if (attacker.lockedMove || (attacker.encoreTurns > 0 && attacker.encoreMove) || difficulty === "normal") {
+    if (attacker.forcedSleepTalk || attacker.lockedMove || (attacker.encoreTurns > 0 && attacker.encoreMove) || difficulty === "normal") {
       return { type: "attack", move: await chooseMove(attacker, defender, weather, difficulty) };
     }
 
@@ -3330,7 +3587,16 @@ function useApiCache() {
     // Protección); ejecuteMove solo se llama cuando el atacante SÍ pudo
     // actuar (statusPreMoveCheck ya se resolvió antes), así que aquí no
     // hace falta distinguir esos casos.
-    if (move.ppLeft != null && !isTwoTurnRelease && !isVulnerableChargeRelease) move.ppLeft = Math.max(0, move.ppLeft - 1);
+    // `extra.skipPpCost`: Ayuda/Sonámbulo/Primero delegan en una llamada
+    // recursiva a executeMove con el movimiento COPIADO de otro sitio (no el
+    // elegido normalmente); ese movimiento copiado no debe gastar su propio
+    // PP, solo el de Ayuda/Sonámbulo/Primero en sí (ya gastado en la llamada
+    // exterior, antes de llegar a esta recursiva). Metrónomo/Movimiento
+    // Espejo/Mímico no necesitan este flag: fabrican su movimiento con
+    // getMove(), que nunca trae `ppLeft` (solo lo tienen los movimientos del
+    // propio moveset del atacante, ver preparePokemonForBattle), así que la
+    // guarda `!= null` de abajo ya los protege sin ayuda extra.
+    if (move.ppLeft != null && !isTwoTurnRelease && !isVulnerableChargeRelease && !extra.skipPpCost) move.ppLeft = Math.max(0, move.ppLeft - 1);
 
     // Último movimiento usado: necesario para Otra Vez (fuerza a repetirlo)
     // y Anulación (lo bloquea) — ver ENCORE_MOVES/DISABLE_MOVES más abajo.
@@ -3359,6 +3625,11 @@ function useApiCache() {
     if (!ROLLOUT_MOVES.has(move.name)) attacker.rolloutTurn = 0;
 
     const isRolloutMove = ROLLOUT_MOVES.has(move.name);
+
+    // Destino Ligado (ver DESTINY_BOND_MOVES): deja de proteger en cuanto
+    // quien lo activó vuelve a actuar con cualquier OTRO movimiento (dura
+    // hasta la siguiente acción propia, igual que en los juegos reales).
+    if (attacker.destinyBondActive && !DESTINY_BOND_MOVES.has(move.name)) attacker.destinyBondActive = false;
 
     // Golpe Bajo (Sucker Punch): resolveTurn ya decidió de antemano (antes
     // de que este movimiento se ejecute) si el objetivo tiene un movimiento
@@ -3541,10 +3812,12 @@ function useApiCache() {
     if (isTwoTurnMove) {
       if (!isTwoTurnRelease) {
         attacker.invulnerable = true;
+        attacker.invulnerableMove = move.name;
         attacker.lockedMove = move.name;
         return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡${attacker.name} desapareció!`, inline: false }] };
       }
       attacker.invulnerable = false;
+      attacker.invulnerableMove = null;
       attacker.lockedMove = null;
     }
 
@@ -3567,8 +3840,13 @@ function useApiCache() {
 
     // Un objetivo invulnerable (en la fase de carga de un movimiento de dos
     // turnos) esquiva por completo cualquier movimiento rival dirigido a él
-    // este turno, salvo que sea uno dirigido a uno mismo (no aplica aquí).
-    if (!move.selfTargeted && defender.invulnerable) {
+    // este turno, salvo que sea uno dirigido a uno mismo (no aplica aquí) o
+    // sea uno de los que rompen esa invulnerabilidad en concreto (ver
+    // INVULNERABILITY_BREAKER_MOVES): en ese caso se deja seguir el flujo
+    // normal de más abajo, que ya sabe doblar el daño (ver
+    // invulnerabilityBreakMult en computeDamage/expectedDamage).
+    const breaksThroughInvulnerability = defender.invulnerable && INVULNERABILITY_BREAKER_MOVES[move.name]?.has(defender.invulnerableMove);
+    if (!move.selfTargeted && defender.invulnerable && !breaksThroughInvulnerability) {
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
       const events = [{ type: "statusText", text: `¡${defender.name} esquivó el ataque!`, inline: false }];
@@ -3690,7 +3968,7 @@ function useApiCache() {
     // si el objetivo se debilita a mitad. Cualquier ailment/stat_changes
     // secundario solo se comprueba tras el ÚLTIMO golpe.
     if (move.minHits != null && move.maxHits != null) {
-      const multiAcc = getEffectiveAccuracy(attacker, defender, move);
+      const multiAcc = getEffectiveAccuracy(attacker, defender, move, weather);
       if (Math.random() * 100 >= multiAcc) {
         if (isRecharge) attacker.mustRecharge = true;
         const thrashEvent = updateThrashLock();
@@ -3738,7 +4016,7 @@ function useApiCache() {
       // generaciones recientes...) nunca fallan, pero si tienen un valor
       // numérico (Hipnosis 60, Onda Trueno 90, Somnífero 75...) sí deben
       // poder fallar, sin aplicar ningún efecto ese turno.
-      const statusAcc = getEffectiveAccuracy(attacker, defender, move);
+      const statusAcc = getEffectiveAccuracy(attacker, defender, move, weather);
       if (move.accuracy != null && Math.random() * 100 >= statusAcc) {
         if (isRecharge) attacker.mustRecharge = true;
         const thrashEvent = updateThrashLock();
@@ -3977,6 +4255,218 @@ function useApiCache() {
         if (thrashEvent) events.push(thrashEvent);
         return { hit: true, damage: 0, crit: false, status: true, events };
       }
+      // Reserva (ver STOCKPILE_MOVES): sube el contador propio (tope 3) y las
+      // etapas de Defensa/Defensa Especial una vez por uso.
+      if (STOCKPILE_MOVES.has(move.name)) {
+        const events = [];
+        if ((attacker.stockpile || 0) >= 3) {
+          events.push({ type: "statusText", text: "¡Pero falló!", inline: false });
+        } else {
+          attacker.stockpile = (attacker.stockpile || 0) + 1;
+          attacker.statStages.defense = Math.min(6, attacker.statStages.defense + 1);
+          attacker.statStages["special-defense"] = Math.min(6, attacker.statStages["special-defense"] + 1);
+          events.push({ type: "statusText", text: `¡${attacker.name} acumuló Reserva! (${attacker.stockpile})`, inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Tragar (ver SWALLOW_MOVES): consume TODA la Reserva acumulada de
+      // golpe, curando 25/50/100% del PS máximo según el nivel (1/2/3) y
+      // revirtiendo esas mismas etapas de Defensa/Defensa Especial ganadas.
+      if (SWALLOW_MOVES.has(move.name)) {
+        const events = [];
+        const stock = attacker.stockpile || 0;
+        if (stock === 0) {
+          events.push({ type: "statusText", text: "¡Pero falló!", inline: false });
+        } else {
+          const healFrac = stock === 1 ? 0.25 : stock === 2 ? 0.5 : 1;
+          const heal = Math.floor(attacker.maxHp * healFrac);
+          const before = attacker.hp;
+          attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
+          attacker.statStages.defense = Math.max(-6, attacker.statStages.defense - stock);
+          attacker.statStages["special-defense"] = Math.max(-6, attacker.statStages["special-defense"] - stock);
+          attacker.stockpile = 0;
+          events.push({ type: "statusText", text: attacker.hp > before ? `¡${attacker.name} restauró PS!` : `¡${attacker.name} ya tenía los PS al máximo!`, inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Destino Ligado (ver DESTINY_BOND_MOVES): activa la marca propia, se
+      // comprueba en el bloque genérico final de esta misma función (ver
+      // executeMove más abajo, junto a defender.hp <= 0).
+      if (DESTINY_BOND_MOVES.has(move.name)) {
+        attacker.destinyBondActive = true;
+        const events = [{ type: "statusText", text: `¡${attacker.name} está dispuesto a llevarse a su rival por delante!`, inline: false }];
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Cántico Mortal (ver PERISH_SONG_MOVES): afecta a los DOS Pokémon
+      // activos (los únicos "en el campo" en este motor) que no la tuvieran
+      // ya.
+      if (PERISH_SONG_MOVES.has(move.name)) {
+        let affectedAny = false;
+        if (attacker.perishCount == null) { attacker.perishCount = 3; affectedAny = true; }
+        if (defender.perishCount == null) { defender.perishCount = 3; affectedAny = true; }
+        const events = [{
+          type: "statusText",
+          text: affectedAny ? "¡Todos los Pokémon que oyeron la canción se debilitarán en 3 turnos!" : "¡Pero no tuvo ningún efecto!",
+          inline: false,
+        }];
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Neblina (ver DEFOG_MOVES): baja la Evasión del objetivo una etapa y
+      // elimina los hazards de entrada de AMBOS lados.
+      if (DEFOG_MOVES.has(move.name)) {
+        const events = [];
+        defender.statStages.evasion = Math.max(-6, defender.statStages.evasion - 1);
+        events.push({ type: "statusText", text: `¡La Evasión de ${defender.name} bajó!`, inline: false });
+        let clearedAny = false;
+        if (weather?.hazards?.[attacker.trainerId]) {
+          weather.hazards[attacker.trainerId] = { stealthRock: false, spikes: 0, toxicSpikes: 0, stickyWeb: false };
+          clearedAny = true;
+        }
+        if (weather?.hazards?.[defender.trainerId]) {
+          weather.hazards[defender.trainerId] = { stealthRock: false, spikes: 0, toxicSpikes: 0, stickyWeb: false };
+          clearedAny = true;
+        }
+        if (clearedAny) events.push({ type: "statusText", text: "¡Todos los peligros del terreno han desaparecido!", inline: false });
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Mímico/Esquema (ver MIMIC_MOVES/SKETCH_MOVES): copian el último
+      // movimiento que usó el objetivo en el propio hueco de Mímico/Esquema.
+      // Fallan si el objetivo no ha usado ningún movimiento todavía, si es el
+      // propio Mímico/Esquema, o si el usuario ya conoce ese movimiento.
+      if (MIMIC_MOVES.has(move.name) || SKETCH_MOVES.has(move.name)) {
+        const isSketch = SKETCH_MOVES.has(move.name);
+        const lastName = defender.lastMoveUsed;
+        const events = [];
+        if (!lastName || MIMIC_MOVES.has(lastName) || SKETCH_MOVES.has(lastName) || attacker.moves.some((m) => m.name === lastName)) {
+          events.push({ type: "statusText", text: "¡Pero falló!", inline: false });
+        } else {
+          const copied = await getMove(lastName);
+          const slotIdx = attacker.moves.findIndex((m) => m.name === move.name);
+          if (slotIdx !== -1) {
+            if (!isSketch && !attacker.mimicOriginalMove) {
+              attacker.mimicOriginalMove = attacker.moves[slotIdx];
+              attacker.mimicSlotIndex = slotIdx;
+            }
+            attacker.moves[slotIdx] = { ...copied, ppLeft: isSketch ? (copied.pp ?? 5) : 5 };
+          }
+          events.push({
+            type: "statusText",
+            text: isSketch
+              ? `¡${attacker.name} aprendió ${displayMoveName(lastName)} para el resto del combate!`
+              : `¡${attacker.name} copió temporalmente ${displayMoveName(lastName)}!`,
+            inline: false,
+          });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Metrónomo (ver METRONOME_MOVES): ejecuta un movimiento al azar de
+      // entre todos los del juego, delegando en una llamada recursiva a
+      // executeMove.
+      if (METRONOME_MOVES.has(move.name)) {
+        const pool = await getLearnableMoveNames("smeargle");
+        const excluded = new Set(["metronome", "struggle", "sketch"]);
+        const candidates = pool.filter((n) => !excluded.has(n) && !n.includes("--"));
+        if (candidates.length === 0) {
+          const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+          if (isRecharge) attacker.mustRecharge = true;
+          return { hit: true, damage: 0, crit: false, status: true, events };
+        }
+        const picked = await getMove(candidates[Math.floor(Math.random() * candidates.length)]);
+        const events = [{ type: "statusText", text: `¡${attacker.name} invoca al azar ${displayMoveName(picked.name)}!`, inline: false }];
+        const inner = await executeMove(attacker, defender, picked, weather, extra);
+        return { ...inner, events: [...events, ...(inner.events || [])] };
+      }
+      // Movimiento Espejo (ver MIRROR_MOVE_MOVES): repite el último
+      // movimiento que usó el OBJETIVO. Falla si nunca usó ninguno o si era
+      // un movimiento de estado (simplificación razonable de la restricción
+      // real de "solo movimientos usados directamente contra mí").
+      if (MIRROR_MOVE_MOVES.has(move.name)) {
+        const lastName = defender.lastMoveUsed;
+        if (!lastName) {
+          const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+          if (isRecharge) attacker.mustRecharge = true;
+          return { hit: true, damage: 0, crit: false, status: true, events };
+        }
+        const picked = await getMove(lastName);
+        if (picked.damageClass === "status") {
+          const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+          if (isRecharge) attacker.mustRecharge = true;
+          return { hit: true, damage: 0, crit: false, status: true, events };
+        }
+        const events = [{ type: "statusText", text: `¡${attacker.name} usa Movimiento Espejo!`, inline: false }];
+        const inner = await executeMove(attacker, defender, picked, weather, extra);
+        return { ...inner, events: [...events, ...(inner.events || [])] };
+      }
+      // Ayuda (ver ASSIST_MOVES): aproximado a un movimiento al azar del
+      // propio moveset del usuario (ver el comentario de ASSIST_MOVES para la
+      // razón de esta simplificación), sin gastar el PP del movimiento
+      // copiado.
+      if (ASSIST_MOVES.has(move.name)) {
+        const picked = pickRandomMoveFromKit(attacker, new Set(["assist"]));
+        if (!picked) {
+          const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+          if (isRecharge) attacker.mustRecharge = true;
+          return { hit: true, damage: 0, crit: false, status: true, events };
+        }
+        const events = [{ type: "statusText", text: `¡${attacker.name} pide Ayuda y usa ${displayMoveName(picked.name)}!`, inline: false }];
+        const inner = await executeMove(attacker, defender, picked, weather, { ...extra, skipPpCost: true });
+        return { ...inner, events: [...events, ...(inner.events || [])] };
+      }
+      // Sonámbulo (ver SLEEP_TALK_MOVES): solo tiene efecto mientras el
+      // usuario está dormido (normalmente forzado por statusPreMoveCheck vía
+      // `forcedSleepTalk`, pero se revalida aquí por si se elige de
+      // cualquier otra forma). Ejecuta un movimiento al azar del propio
+      // moveset (excluyendo movimientos de carga/dos turnos y Descanso, que
+      // no tendrían sentido mientras ya se está dormido) sin gastar su PP.
+      if (SLEEP_TALK_MOVES.has(move.name)) {
+        if (attacker.status !== "sleep") {
+          const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+          if (isRecharge) attacker.mustRecharge = true;
+          return { hit: true, damage: 0, crit: false, status: true, events };
+        }
+        const picked = pickRandomMoveFromKit(attacker, new Set(["sleep-talk", "rest"]));
+        if (!picked) {
+          const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+          if (isRecharge) attacker.mustRecharge = true;
+          return { hit: true, damage: 0, crit: false, status: true, events };
+        }
+        const events = [{ type: "statusText", text: `${attacker.name} habla en sueños y usa ${displayMoveName(picked.name)}`, inline: false }];
+        const inner = await executeMove(attacker, defender, picked, weather, { ...extra, skipPpCost: true });
+        return { ...inner, events: [...events, ...(inner.events || [])] };
+      }
+      // Primero (ver ME_FIRST_MOVES): solo funciona si el rival todavía no ha
+      // actuado este turno (extra.rivalPendingMove, ver runSlot) y su
+      // movimiento no es de estado; usa ESE movimiento con ×1.5 de potencia.
+      if (ME_FIRST_MOVES.has(move.name)) {
+        const rival = extra.rivalPendingMove;
+        if (!rival || rival.damageClass === "status" || ME_FIRST_MOVES.has(rival.name)) {
+          const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+          if (isRecharge) attacker.mustRecharge = true;
+          return { hit: true, damage: 0, crit: false, status: true, events };
+        }
+        const boosted = { ...rival, power: rival.power != null ? Math.floor(rival.power * 1.5) : rival.power };
+        const events = [{ type: "statusText", text: `¡${attacker.name} se adelanta con Primero!`, inline: false }];
+        const inner = await executeMove(attacker, defender, boosted, weather, { ...extra, skipPpCost: true });
+        return { ...inner, events: [...events, ...(inner.events || [])] };
+      }
       const events = applyMoveEffects(attacker, defender, move, 1, false, weather);
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
@@ -3999,6 +4489,15 @@ function useApiCache() {
       if (thrashEvent) events.push(thrashEvent);
       return { hit: true, damage: 0, crit: false, status: true, events };
     }
+    // Escupir (ver SPIT_UP_MOVES): falla por completo, sin tirada de
+    // precisión, si no hay ninguna Reserva acumulada (su potencia depende
+    // por completo de ella, ver specialDamage="spit-up" en computeDamage).
+    if (SPIT_UP_MOVES.has(move.name) && !(attacker.stockpile > 0)) {
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: 0, crit: false, status: true, events };
+    }
     if (COUNTER_MOVES[move.name] != null) {
       const taken = attacker.counterDamageTaken;
       const wantCategory = COUNTER_MOVES[move.name];
@@ -4017,7 +4516,7 @@ function useApiCache() {
     if (isRolloutMove) {
       attacker.rolloutTurn = attacker.lockedMove === move.name ? (attacker.rolloutTurn || 1) + 1 : 1;
     }
-    const acc = getEffectiveAccuracy(attacker, defender, move);
+    const acc = getEffectiveAccuracy(attacker, defender, move, weather);
     if (Math.random() * 100 >= acc) {
       if (isRecharge) attacker.mustRecharge = true;
       if (isRolloutMove) { attacker.lockedMove = null; attacker.rolloutTurn = 0; }
@@ -4030,6 +4529,16 @@ function useApiCache() {
     if (isRolloutMove) attacker.lockedMove = attacker.rolloutTurn >= 5 ? null : move.name;
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move, weather);
     defender.hp = Math.max(0, defender.hp - damage);
+    // Destino Ligado (ver DESTINY_BOND_MOVES): si este golpe directo deja al
+    // OBJETIVO a 0 PS y el objetivo lo había activado, quien atacó también
+    // se debilita con él. Alcance limitado a este único punto (ver el
+    // comentario de la constante).
+    let destinyBondEvents = [];
+    if (defender.hp <= 0 && defender.destinyBondActive) {
+      defender.destinyBondActive = false;
+      attacker.hp = 0;
+      destinyBondEvents.push({ type: "statusText", text: `¡${defender.name} se lleva a ${attacker.name} consigo por el Destino Ligado!`, inline: false });
+    }
     // Corte Furia (ver FURY_CUTTER_MOVES): un golpe que conecta de verdad
     // avanza la racha (tope de streak=2, potencia 160 ya alcanzada); el
     // reinicio a 0 por usar otro movimiento ya se gestiona más arriba.
@@ -4045,6 +4554,8 @@ function useApiCache() {
       defender.counterDamageTaken = { amount: damage, category: move.damageClass };
     }
     const events = applyMoveEffects(attacker, defender, move, mult, defender.hp <= 0, weather);
+    events.push(...destinyBondEvents);
+    if (attacker.hp <= 0) pushFaintOnce(attacker, events);
     // Drenado/retroceso (Come Sueños, Giga Drain, Absorber... / Envite
     // Ígneo, Placaje, Golpe Cabeza...): cura o resta al atacante un % del
     // daño infligido según el signo de meta.drain.
@@ -4056,6 +4567,30 @@ function useApiCache() {
     if (BINDING_MOVES.has(move.name) && mult > 0 && defender.hp > 0 && !defender.boundTurns) {
       defender.boundTurns = 4 + Math.floor(Math.random() * 2);
       events.push({ type: "statusText", text: `¡${defender.name} ha quedado atrapado!`, inline: false });
+    }
+    // Escupir (ver SPIT_UP_MOVES): consume la Reserva usada al calcular su
+    // potencia (ya comprobado que había al menos 1 antes de llegar aquí, ver
+    // el chequeo de fallo más arriba) y revierte esas mismas etapas de
+    // Defensa/Defensa Especial.
+    if (SPIT_UP_MOVES.has(move.name)) {
+      const stock = attacker.stockpile || 0;
+      attacker.statStages.defense = Math.max(-6, attacker.statStages.defense - stock);
+      attacker.statStages["special-defense"] = Math.max(-6, attacker.statStages["special-defense"] - stock);
+      attacker.stockpile = 0;
+    }
+    // Giro Rápido (ver RAPID_SPIN_MOVES): si el golpe conectó de verdad,
+    // limpia los hazards del propio lado y cura a quien lo usó de Semilla
+    // Drenadora/aprisionamiento (mecánica real de generaciones recientes).
+    if (RAPID_SPIN_MOVES.has(move.name) && mult > 0) {
+      let clearedAny = false;
+      if (weather?.hazards?.[attacker.trainerId]) {
+        weather.hazards[attacker.trainerId] = { stealthRock: false, spikes: 0, toxicSpikes: 0, stickyWeb: false };
+        clearedAny = true;
+      }
+      if (attacker.leechSeeded || attacker.boundTurns) clearedAny = true;
+      attacker.leechSeeded = false;
+      attacker.boundTurns = 0;
+      if (clearedAny) events.push({ type: "statusText", text: `¡${attacker.name} se liberó de cualquier peligro o efecto persistente!`, inline: false });
     }
     // Rodillo de Acero: ya se comprobó arriba que había campo activo (si no
     // lo hubiera, el movimiento ya habría fallado antes de llegar aquí), así
@@ -4082,7 +4617,7 @@ function useApiCache() {
     // `mult`: mismo motivo que en la rama de golpes múltiples de arriba,
     // solo para el flash de efectividad de la interfaz.
     return { hit: true, damage, crit: isCrit, status: false, events, mult };
-  }, [computeDamage]);
+  }, [computeDamage, getMove, getLearnableMoveNames]);
 
   // Envoltorio de executeMove que resuelve la excepción de Pulso Terrestre
   // (cambia de tipo y dobla potencia según el campo activo, ver
@@ -4211,12 +4746,12 @@ function useApiCache() {
     // entradas de log; devuelve el `result` de executeMove para que cada
     // slot gestione sus propios efectos de cambio (que difieren entre el
     // primer y el segundo mover, ver más abajo).
-    async function runSlot(attacker, defender, move, atkTrainer, suckerPunchFails) {
+    async function runSlot(attacker, defender, move, atkTrainer, suckerPunchFails, rivalPendingMove) {
       // Ver comentario del descongelado instantáneo por Fuego/Escaldar en
       // executeMove: se detecta aquí (único punto de salida de esta
       // llamada) comparando el estado del objetivo antes/después.
       const defenderWasFrozen = defender.status === "freeze";
-      const result = await executeMoveWithSelfKO(attacker, defender, move, weather, { suckerPunchFails });
+      const result = await executeMoveWithSelfKO(attacker, defender, move, weather, { suckerPunchFails, rivalPendingMove });
       let inlineEffect = null;
       const extraEvents = [];
       for (const ev of result.events || []) {
@@ -4290,7 +4825,7 @@ function useApiCache() {
           attacker.hasActedSinceEntering = true;
           turns.push({ type: "statusText", text: `${attacker.name} no tiene PP para ningún movimiento y pierde el turno` });
         } else {
-          const result = await runSlot(attacker, defender, move, firstTrainer, false);
+          const result = await runSlot(attacker, defender, move, firstTrainer, false, secondMove);
           attacker.hasActedSinceEntering = true;
           // Excepción de Explosión/Autodestrucción y similares
           // (SELF_KO_MOVES, ver executeMoveWithSelfKO): si el golpe que
@@ -4452,6 +4987,8 @@ function useApiCache() {
     tickIngrainAquaRingHeal(activePb, turns);
     tickCurseDamage(activePa, turns);
     tickCurseDamage(activePb, turns);
+    tickPerishSong(activePa, turns);
+    tickPerishSong(activePb, turns);
     applyPendingFutureHits(weather, activePa, activePb, turns);
     applyWeatherResidualDamage(activePa, weather, turns);
     applyWeatherResidualDamage(activePb, weather, turns);
@@ -4652,6 +5189,8 @@ function useApiCache() {
     tickIngrainAquaRingHeal(opponent, turns);
     tickCurseDamage(incoming, turns);
     tickCurseDamage(opponent, turns);
+    tickPerishSong(incoming, turns);
+    tickPerishSong(opponent, turns);
     applyPendingFutureHits(weather, incoming, opponent, turns);
     applyWeatherResidualDamage(incoming, weather, turns);
     applyWeatherResidualDamage(opponent, weather, turns);
@@ -4742,7 +5281,11 @@ function useApiCache() {
       // Hidro, maldición, racha de Corte Furia y cadena de Rodada/Bola
       // Hielo: mismo criterio, siempre limpios al entrar al campo.
       trapped: false, ingrained: false, aquaRing: false, cursed: false,
-      furyCutterStreak: 0, rolloutTurn: 0,
+      furyCutterStreak: 0, rolloutTurn: 0, invulnerableMove: null,
+      // Reserva/Destino Ligado/Cántico Mortal/Sonámbulo forzado/Mímico:
+      // mismo criterio, siempre limpios al entrar al campo por primera vez.
+      stockpile: 0, destinyBondActive: false, perishCount: null,
+      forcedSleepTalk: false, mimicSlotIndex: null, mimicOriginalMove: null,
       // faintLogged: ver pushFaintOnce. hasActedSinceEntering: ver
       // FIRST_TURN_ONLY_MOVES (Fake Out/Impresión Primeriza) — empieza en
       // `false` porque este Pokémon acaba de entrar al campo (inicio del
