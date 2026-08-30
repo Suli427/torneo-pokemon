@@ -1246,6 +1246,68 @@ const LEECH_SEED_MOVES = new Set(["leech-seed"]);
 // mecánica real queda fuera por ahora, documentada aquí a propósito.
 const BINDING_MOVES = new Set(["bind", "wrap", "fire-spin", "sand-tomb", "whirlpool", "clamp", "infestation", "magma-storm", "thunder-cage"]);
 
+// Sujeción (Mean Look), Bloqueo (Block) y Telaraña (Spider Web): no hacen
+// daño ni infligen ningún ailment/stat_change vía la API, solo "atrapan" al
+// objetivo. Mismo límite de alcance ya documentado en BINDING_MOVES (el motor
+// no tiene un punto central de "¿puede cambiar ahora mismo?" para bloquear un
+// cambio VOLUNTARIO), así que aquí se implementa solo la parte SÍ alcanzable
+// con la arquitectura actual: impedir que DRAG_OUT_MOVES (Colada
+// Dragón/Giro Vil) fuerce la salida del objetivo atrapado — que en los juegos
+// reales también forma parte de la mecánica de "no puede salir del campo por
+// ningún medio". Se guarda como poke.trapped (persiste hasta que sale del
+// campo, ver resetPokemonOnSwitchOut).
+const TRAP_MOVES = new Set(["mean-look", "block", "spider-web"]);
+
+// Rizo Enrollado (Ingrain): además de curar 1/16 de PS máximo al final de
+// cada turno (igual que Anillo Hidro, ver AQUA_RING_MOVES), sus raíces
+// también le impiden ser expulsado del campo por la fuerza — por eso también
+// cuenta como "trapped" a efectos de DRAG_OUT_MOVES, igual que TRAP_MOVES.
+const INGRAIN_MOVES = new Set(["ingrain"]);
+
+// Anillo Hidro (Aqua Ring): cura 1/16 de PS máximo al final de cada turno
+// mientras siga en el campo, sin ningún efecto de anclaje (a diferencia de
+// Rizo Enrollado, sí puede ser expulsado con normalidad).
+const AQUA_RING_MOVES = new Set(["aqua-ring"]);
+
+// Puño Firme (Focus Punch): falla por completo (sin tirada de precisión, sin
+// daño) si quien lo usa RECIBIÓ algún golpe que conectó este mismo turno
+// antes de llegar a ejecutarlo — se reutiliza attacker.counterDamageTaken
+// (ya anotado por cualquier golpe que conecte de verdad, ver COUNTER_MOVES y
+// runSlot/attackTarget), que por diseño solo refleja daño de ESTE turno (se
+// limpia al final de cada uno). Su prioridad -3 (ya viene bien de la API, sin
+// necesidad de ninguna excepción aquí) hace que en la práctica case case casi
+// siempre con "el rival actuó primero", igual que en los juegos reales.
+const FOCUS_PUNCH_MOVES = new Set(["focus-punch"]);
+
+// Maldición (Curse): mecánica DOBLE según el tipo de quien la usa, algo que
+// ningún otro movimiento de este archivo hace (por eso no encaja en ningún
+// patrón ya existente). Tipo Fantasma: sacrifica la mitad de su PS máximo
+// (puede llegar a debilitarse) para maldecir al objetivo, que pierde 1/4 de
+// su PS máximo al final de cada turno hasta salir del campo (poke.cursed,
+// ver tickCurseDamage). Cualquier otro tipo: sube su propio Ataque y Defensa
+// una etapa y baja su propia Velocidad una etapa, sin afectar al objetivo —
+// la API no distingue esto por `target`/`stat_changes` (Maldición es de tipo
+// Fantasma pero el efecto de subida de stats real es sobre uno mismo, no
+// sobre move.selfTargeted), así que se hardcodea el efecto completo a mano en
+// vez de dejarlo a applyMoveEffects.
+const CURSE_MOVES = new Set(["curse"]);
+
+// Corte Furia (Fury Cutter): ver USER_HP_TIER_POWER_MOVES y ss. arriba para
+// el resto de potencias variables — este dobla su potencia por cada uso
+// consecutivo que CONECTA (falla o cambiar de movimiento reinicia la racha a
+// 0), hasta un tope de 160. Racha guardada en attacker.furyCutterStreak.
+const FURY_CUTTER_MOVES = new Set(["fury-cutter"]);
+
+// Rodada (Rollout) y Bola Hielo (Ice Ball): a diferencia de Corte Furia, no
+// es una elección repetida por el jugador/IA sino una cadena FORZADA de 5
+// turnos (reutiliza attacker.lockedMove, el mismo campo que ya usan las
+// furias/Golpe Fantasma/Sky Attack — ver updateThrashLock/isTwoTurnMove para
+// el patrón), doblando su potencia cada turno (30 -> 60 -> 240 -> 480) hasta
+// liberarse tras el 5º turno. Un fallo rompe la cadena de inmediato (vuelve a
+// empezar en el próximo uso), igual que en los juegos reales. No se modela la
+// duplicación extra de Rizo Defensa (Defense Curl) previo, fuera de alcance.
+const ROLLOUT_MOVES = new Set(["rollout", "ice-ball"]);
+
 // PokeAPI no distingue "mal envenenado" (Tóxico) de veneno normal: el campo
 // meta.ailment.name de /move/toxic devuelve "poison" igual que cualquier
 // movimiento venenoso normal (no existe "toxic" en el enum move-ailment).
@@ -1669,6 +1731,15 @@ function resetPokemonOnSwitchOut(poke) {
   poke.leechSeeded = false;
   poke.boundTurns = 0;
   poke.counterDamageTaken = null;
+  // Sujeción/Bloqueo/Telaraña/Rizo Enrollado (trapped/ingrained), Anillo
+  // Hidro, la racha de Corte Furia, la cadena de Rodada/Bola Hielo y la
+  // maldición tampoco persisten al salir del campo, mismo criterio.
+  poke.trapped = false;
+  poke.ingrained = false;
+  poke.aquaRing = false;
+  poke.cursed = false;
+  poke.furyCutterStreak = 0;
+  poke.rolloutTurn = 0;
 }
 
 /* ---------------------------------------------------------------
@@ -1881,6 +1952,28 @@ function tickBindingDamage(poke, turns) {
   if (poke.boundTurns <= 0) {
     turns.push({ type: "statusText", text: `${poke.name} ya no está atrapado` });
   }
+}
+
+// Rizo Enrollado/Anillo Hidro (ver INGRAIN_MOVES/AQUA_RING_MOVES): cura 1/16
+// del PS máximo de `poke` al final de cada turno completo mientras dure
+// cualquiera de los dos efectos (no se acumulan si por lo que sea tuviera
+// ambos a la vez, un solo tic por turno). No hace nada si ya está debilitado.
+function tickIngrainAquaRingHeal(poke, turns) {
+  if ((!poke.ingrained && !poke.aquaRing) || poke.hp <= 0 || poke.hp >= poke.maxHp) return;
+  const heal = Math.max(1, Math.floor(poke.maxHp / 16));
+  poke.hp = Math.min(poke.maxHp, poke.hp + heal);
+  turns.push({ type: "statusText", text: `${poke.name} restaura algo de PS` });
+}
+
+// Maldición, versión Fantasma (ver CURSE_MOVES): daño de 1/4 del PS máximo de
+// `poke` al final de cada turno completo mientras siga maldito (poke.cursed,
+// se pierde al salir del campo, ver resetPokemonOnSwitchOut).
+function tickCurseDamage(poke, turns) {
+  if (!poke.cursed || poke.hp <= 0) return;
+  const dmg = Math.max(1, Math.floor(poke.maxHp / 4));
+  poke.hp = Math.max(0, poke.hp - dmg);
+  turns.push({ type: "statusText", text: `${poke.name} sufre el daño de la maldición` });
+  if (poke.hp <= 0) pushFaintOnce(poke, turns);
 }
 
 // Premonición/Deseo Oculto (ver FUTURE_MOVES): descuenta el contador de cada
@@ -2106,9 +2199,49 @@ const FIXED_LEVEL_MOVES = new Set(["night-shade", "seismic-toss"]);
 // necesita el peso del objetivo, que solo se conoce al ejecutar el golpe.
 const WEIGHT_BASED_POWER_MOVES = new Set(["grass-knot", "low-kick"]);
 
+// Frustración/Envite Miedo (Flail/Reversal): potencia según el % de PS
+// ACTUAL DEL PROPIO USUARIO respecto a su máximo, por tramos oficiales —
+// cuanto MENOS PS le queda, MÁS potencia (hasta 200 casi debilitado, 20 con
+// PS lleno). El `power` que da la API para estos dos es también un
+// placeholder sin significado real (igual que WEIGHT_BASED_POWER_MOVES), así
+// que se resuelven igual, en tiempo de combate vía flailReversalPower().
+const USER_HP_TIER_POWER_MOVES = new Set(["flail", "reversal"]);
+function flailReversalPower(currentHp, maxHp) {
+  const pct = (currentHp / Math.max(1, maxHp)) * 100;
+  if (pct <= 4.17) return 200;
+  if (pct <= 10.42) return 150;
+  if (pct <= 20.83) return 100;
+  if (pct <= 34.72) return 80;
+  if (pct <= 68.75) return 40;
+  return 20;
+}
+
+// Erupción (Eruption) y Surtidor (Water Spout): mecánica inversa a
+// Frustración/Envite Miedo — potencia PROPORCIONAL (no por tramos) al % de PS
+// ACTUAL DEL PROPIO USUARIO, hasta 150 con PS lleno, bajando hasta 1 cerca de
+// debilitarse. Fórmula oficial: floor(150 * PS_actual / PS_máximo), mínimo 1.
+const USER_HP_PROPORTIONAL_POWER_MOVES = new Set(["eruption", "water-spout"]);
+
+// Desgaste (Wring Out) y Puño Firme... no, Garra Brutal/Crush Grip: potencia
+// PROPORCIONAL al % de PS ACTUAL DEL OBJETIVO (no del usuario), hasta 120 con
+// el objetivo a PS lleno. A diferencia de HALF_CURRENT_HP_MOVES, esta potencia
+// SÍ pasa por la fórmula normal completa (STAB, tipo, crítico, etc.), no es
+// daño fijo — por eso se resuelve como `power` variable y no como
+// specialDamage="fixed-*". Fórmula oficial: floor(120 * PS_actual_objetivo /
+// PS_máximo_objetivo), mínimo 1.
+const TARGET_HP_PROPORTIONAL_POWER_MOVES = new Set(["wring-out", "crush-grip"]);
+function hpProportionalPower(currentHp, maxHp, maxPower) {
+  return Math.max(1, Math.floor((maxPower * currentHp) / Math.max(1, maxHp)));
+}
+
 function resolveVariablePower(entry) {
   if (WEIGHT_BASED_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "weight-based" };
   if (WEIGHT_RATIO_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "weight-ratio" };
+  if (USER_HP_TIER_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "user-hp-tier" };
+  if (USER_HP_PROPORTIONAL_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "user-hp-proportional" };
+  if (TARGET_HP_PROPORTIONAL_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "target-hp-proportional" };
+  if (FURY_CUTTER_MOVES.has(entry.name)) return { ...entry, specialDamage: "fury-cutter" };
+  if (ROLLOUT_MOVES.has(entry.name)) return { ...entry, specialDamage: "rollout" };
   if (entry.power != null || entry.damageClass === "status") return entry;
   if (COUNTER_MOVES[entry.name] != null) return { ...entry, specialDamage: "counter" };
   if (SPEED_RATIO_MOVES.has(entry.name)) return { ...entry, specialDamage: "speed-ratio" };
@@ -2736,6 +2869,29 @@ function useApiCache() {
       // Bofetazo Pesado/Golpe Vapor: potencia según el RATIO de peso propio
       // entre el del objetivo (ver WEIGHT_RATIO_POWER_MOVES/weightRatioPower).
       power = weightRatioPower(attacker.weightKg, defender.weightKg);
+    } else if (move.specialDamage === "user-hp-tier") {
+      // Frustración/Envite Miedo: potencia por tramos según el % de PS
+      // ACTUAL DEL PROPIO USUARIO (ver USER_HP_TIER_POWER_MOVES).
+      power = flailReversalPower(attacker.hp, attacker.maxHp);
+    } else if (move.specialDamage === "user-hp-proportional") {
+      // Erupción/Surtidor: potencia proporcional al % de PS ACTUAL DEL
+      // PROPIO USUARIO (ver USER_HP_PROPORTIONAL_POWER_MOVES).
+      power = hpProportionalPower(attacker.hp, attacker.maxHp, 150);
+    } else if (move.specialDamage === "target-hp-proportional") {
+      // Desgaste/Garra Brutal: potencia proporcional al % de PS ACTUAL DEL
+      // OBJETIVO (ver TARGET_HP_PROPORTIONAL_POWER_MOVES).
+      power = hpProportionalPower(defender.hp, defender.maxHp, 120);
+    } else if (move.specialDamage === "fury-cutter") {
+      // Corte Furia: dobla su potencia por cada uso consecutivo que conecta
+      // (attacker.furyCutterStreak, reiniciado a 0 en cuanto se usa otro
+      // movimiento distinto o este falla — ver executeMove), hasta un tope
+      // de 160 (streak 2: 40 -> 80 -> 160).
+      power = Math.min(160, 40 * Math.pow(2, attacker.furyCutterStreak || 0));
+    } else if (move.specialDamage === "rollout") {
+      // Rodada/Bola Hielo: dobla su potencia cada turno que se repite en
+      // cadena forzada (attacker.rolloutTurn, ver ROLLOUT_MOVES/executeMove),
+      // hasta el 5º turno (30 -> 60 -> 120 -> 240 -> 480).
+      power = 30 * Math.pow(2, (attacker.rolloutTurn || 1) - 1);
     }
 
     // El crítico se decide antes de leer los stages: ignora bajadas propias
@@ -2833,6 +2989,16 @@ function useApiCache() {
       power = weightBasedPower(defender.weightKg);
     } else if (move.specialDamage === "weight-ratio") {
       power = weightRatioPower(attacker.weightKg, defender.weightKg);
+    } else if (move.specialDamage === "user-hp-tier") {
+      power = flailReversalPower(attacker.hp, attacker.maxHp);
+    } else if (move.specialDamage === "user-hp-proportional") {
+      power = hpProportionalPower(attacker.hp, attacker.maxHp, 150);
+    } else if (move.specialDamage === "target-hp-proportional") {
+      power = hpProportionalPower(defender.hp, defender.maxHp, 120);
+    } else if (move.specialDamage === "fury-cutter") {
+      power = Math.min(160, 40 * Math.pow(2, attacker.furyCutterStreak || 0));
+    } else if (move.specialDamage === "rollout") {
+      power = 30 * Math.pow(2, (attacker.rolloutTurn || 1) - 1);
     }
     let atkStat = move.damageClass === "special"
       ? getEffectiveStat(attacker, "special-attack")
@@ -3180,6 +3346,19 @@ function useApiCache() {
     // usa cualquier otro movimiento se reinicia (tanto si acierta como si
     // el propio ataque queda bloqueado por la protección del rival).
     if (!isProtectMove) attacker.protectChain = 0;
+
+    // La racha de Corte Furia (ver FURY_CUTTER_MOVES) también solo cuenta
+    // usos consecutivos: en cuanto se usa cualquier otro movimiento se
+    // reinicia a 0, igual que la racha de Protección de arriba. El reinicio
+    // por FALLO de precisión se gestiona más abajo, junto a la tirada.
+    if (!FURY_CUTTER_MOVES.has(move.name)) attacker.furyCutterStreak = 0;
+
+    // Igual que arriba pero para la cadena de Rodada/Bola Hielo: cualquier
+    // otro movimiento la reinicia a 0 (el propio uso repetido se gestiona más
+    // abajo, junto a la tirada de precisión).
+    if (!ROLLOUT_MOVES.has(move.name)) attacker.rolloutTurn = 0;
+
+    const isRolloutMove = ROLLOUT_MOVES.has(move.name);
 
     // Golpe Bajo (Sucker Punch): resolveTurn ya decidió de antemano (antes
     // de que este movimiento se ejecute) si el objetivo tiene un movimiento
@@ -3720,6 +3899,84 @@ function useApiCache() {
         if (thrashEvent) events.push(thrashEvent);
         return { hit: true, damage: 0, crit: false, status: true, events };
       }
+      // Sujeción/Bloqueo/Telaraña (ver TRAP_MOVES): marca al objetivo como
+      // atrapado (ver el gateo de DRAG_OUT_MOVES más abajo en resolveTurn/
+      // resolveSwitchTurn); reaplicarlo no tiene ningún efecto adicional.
+      if (TRAP_MOVES.has(move.name)) {
+        const events = [];
+        if (!defender.trapped) {
+          defender.trapped = true;
+          events.push({ type: "statusText", text: `¡${defender.name} ya no puede escapar!`, inline: false });
+        } else {
+          events.push({ type: "statusText", text: "¡Pero no tuvo ningún efecto!", inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Rizo Enrollado (ver INGRAIN_MOVES): se ancla al campo (mismo efecto
+      // de "atrapado" que TRAP_MOVES frente a DRAG_OUT_MOVES) y empieza a
+      // curar 1/16 de su PS máximo al final de cada turno (ver
+      // tickIngrainAquaRingHeal).
+      if (INGRAIN_MOVES.has(move.name)) {
+        const events = [];
+        if (!attacker.ingrained) {
+          attacker.ingrained = true;
+          events.push({ type: "statusText", text: `¡${attacker.name} plantó raíces!`, inline: false });
+        } else {
+          events.push({ type: "statusText", text: "¡Pero no tuvo ningún efecto!", inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Anillo Hidro (ver AQUA_RING_MOVES): igual que Rizo Enrollado pero sin
+      // efecto de anclaje, solo la curación de 1/16 al final de cada turno.
+      if (AQUA_RING_MOVES.has(move.name)) {
+        const events = [];
+        if (!attacker.aquaRing) {
+          attacker.aquaRing = true;
+          events.push({ type: "statusText", text: `¡${attacker.name} se rodeó de un velo de agua!`, inline: false });
+        } else {
+          events.push({ type: "statusText", text: "¡Pero no tuvo ningún efecto!", inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Maldición (ver CURSE_MOVES): mecánica doble según el propio tipo de
+      // quien la usa. Tipo Fantasma: sacrifica la mitad de su PS máximo
+      // (puede llegar a debilitarse con esto) y maldice al objetivo (daño de
+      // 1/4 de su PS máximo al final de cada turno, ver tickCurseDamage);
+      // reaplicarla sobre un objetivo ya maldito no tiene ningún efecto
+      // adicional. Cualquier otro tipo: sube su propio Ataque y Defensa una
+      // etapa y baja su propia Velocidad una etapa, sin afectar al objetivo.
+      if (CURSE_MOVES.has(move.name)) {
+        const events = [];
+        if (attacker.types.includes("ghost")) {
+          if (defender.cursed) {
+            events.push({ type: "statusText", text: "¡Pero no tuvo ningún efecto!", inline: false });
+          } else {
+            const cost = Math.max(1, Math.floor(attacker.maxHp / 2));
+            attacker.hp = Math.max(0, attacker.hp - cost);
+            defender.cursed = true;
+            events.push({ type: "statusText", text: `¡${attacker.name} sacrificó parte de su PS para maldecir a ${defender.name}!`, inline: false });
+            if (attacker.hp <= 0) pushFaintOnce(attacker, events);
+          }
+        } else {
+          attacker.statStages.attack = Math.min(6, attacker.statStages.attack + 1);
+          attacker.statStages.defense = Math.min(6, attacker.statStages.defense + 1);
+          attacker.statStages.speed = Math.max(-6, attacker.statStages.speed - 1);
+          events.push({ type: "statusText", text: `¡El Ataque y la Defensa de ${attacker.name} subieron, pero su Velocidad bajó!`, inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
       const events = applyMoveEffects(attacker, defender, move, 1, false, weather);
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
@@ -3731,6 +3988,17 @@ function useApiCache() {
     // golpe de la categoría requerida en este mismo turno (o no recibió
     // ninguno). Si sí lo recibió, se deja seguir el flujo normal de abajo
     // (precisión + computeDamage, que ya sabe leer counterDamageTaken).
+    // Puño Firme (ver FOCUS_PUNCH_MOVES): falla por completo, sin tirada de
+    // precisión, si quien lo usa recibió algún golpe que conectó de verdad
+    // este mismo turno ANTES de llegar a ejecutarlo (se reutiliza
+    // attacker.counterDamageTaken, que por diseño solo refleja daño de este
+    // turno — ver COUNTER_MOVES y su reseteo al final de cada turno).
+    if (FOCUS_PUNCH_MOVES.has(move.name) && attacker.counterDamageTaken?.amount > 0) {
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: `¡${attacker.name} perdió la concentración y no pudo atacar!`, inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: 0, crit: false, status: true, events };
+    }
     if (COUNTER_MOVES[move.name] != null) {
       const taken = attacker.counterDamageTaken;
       const wantCategory = COUNTER_MOVES[move.name];
@@ -3742,14 +4010,32 @@ function useApiCache() {
         return { hit: true, damage: 0, crit: false, status: true, events };
       }
     }
+    // Rodada/Bola Hielo (ver ROLLOUT_MOVES): fija ANTES de la tirada de
+    // precisión qué turno de la cadena de 5 es este (computeDamage necesita
+    // attacker.rolloutTurn ya actualizado para calcular la potencia de ESTE
+    // golpe); un fallo rompe la cadena de inmediato (ver más abajo).
+    if (isRolloutMove) {
+      attacker.rolloutTurn = attacker.lockedMove === move.name ? (attacker.rolloutTurn || 1) + 1 : 1;
+    }
     const acc = getEffectiveAccuracy(attacker, defender, move);
     if (Math.random() * 100 >= acc) {
       if (isRecharge) attacker.mustRecharge = true;
+      if (isRolloutMove) { attacker.lockedMove = null; attacker.rolloutTurn = 0; }
       const thrashEvent = updateThrashLock();
       return { hit: false, damage: 0, crit: false, status: false, events: thrashEvent ? [thrashEvent] : [] };
     }
+    // La cadena continúa hasta completar 5 turnos, momento en el que se
+    // libera (attacker.lockedMove vuelve a null y la IA/jugador puede elegir
+    // libremente el turno siguiente, con la potencia ya reiniciada a la base).
+    if (isRolloutMove) attacker.lockedMove = attacker.rolloutTurn >= 5 ? null : move.name;
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move, weather);
     defender.hp = Math.max(0, defender.hp - damage);
+    // Corte Furia (ver FURY_CUTTER_MOVES): un golpe que conecta de verdad
+    // avanza la racha (tope de streak=2, potencia 160 ya alcanzada); el
+    // reinicio a 0 por usar otro movimiento ya se gestiona más arriba.
+    if (FURY_CUTTER_MOVES.has(move.name)) {
+      attacker.furyCutterStreak = Math.min(2, (attacker.furyCutterStreak || 0) + 1);
+    }
     // Contraataque/Copión/Explosión de Metal (ver COUNTER_MOVES): se anota
     // aquí el daño realmente recibido por `defender` para que, SI actúa
     // después dentro de este mismo turno, pueda devolverlo. Se sobrescribe
@@ -4020,7 +4306,7 @@ function useApiCache() {
           }
 
           if (enableSwitchEffects && result.hit && result.damage > 0) {
-            if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && benchAlive[secondSide]) {
+            if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && !defender.trapped && !defender.ingrained && benchAlive[secondSide]) {
               turns.push({ type: "statusText", text: `¡${defender.name} fue forzado a retirarse!` });
               if (resolveMidTurnSwitch) {
                 const replacement = await resolveMidTurnSwitch(secondSide, "forced");
@@ -4120,7 +4406,7 @@ function useApiCache() {
             // del turno: no hay un tercer mover al que afecte, así que basta
             // con el aviso diferido de siempre (se resuelve después de
             // devolver, igual que ya hacía todo esto antes de este cambio).
-            if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && benchAlive[firstSide]) {
+            if (defender.hp > 0 && DRAG_OUT_MOVES.has(move.name) && !defender.trapped && !defender.ingrained && benchAlive[firstSide]) {
               switchSignals[firstSide] = "forced";
               turns.push({ type: "statusText", text: `¡${defender.name} fue forzado a retirarse!` });
             }
@@ -4162,6 +4448,10 @@ function useApiCache() {
     applyLeechSeedDrain(activePb, activePa, turns);
     tickBindingDamage(activePa, turns);
     tickBindingDamage(activePb, turns);
+    tickIngrainAquaRingHeal(activePa, turns);
+    tickIngrainAquaRingHeal(activePb, turns);
+    tickCurseDamage(activePa, turns);
+    tickCurseDamage(activePb, turns);
     applyPendingFutureHits(weather, activePa, activePb, turns);
     applyWeatherResidualDamage(activePa, weather, turns);
     applyWeatherResidualDamage(activePb, weather, turns);
@@ -4313,7 +4603,7 @@ function useApiCache() {
       // excluyente con estos dos grupos), así que no hace falta
       // distinguir el caso aquí.
       if (result.hit && result.damage > 0) {
-        if (target.hp > 0 && DRAG_OUT_MOVES.has(opponentMove.name)) targetForcedSwitch = true;
+        if (target.hp > 0 && DRAG_OUT_MOVES.has(opponentMove.name) && !target.trapped && !target.ingrained) targetForcedSwitch = true;
         if (opponent.hp > 0 && SWITCH_OUT_MOVES.has(opponentMove.name)) opponentSelfSwitch = true;
       }
     };
@@ -4358,6 +4648,10 @@ function useApiCache() {
     applyLeechSeedDrain(opponent, incoming, turns);
     tickBindingDamage(incoming, turns);
     tickBindingDamage(opponent, turns);
+    tickIngrainAquaRingHeal(incoming, turns);
+    tickIngrainAquaRingHeal(opponent, turns);
+    tickCurseDamage(incoming, turns);
+    tickCurseDamage(opponent, turns);
     applyPendingFutureHits(weather, incoming, opponent, turns);
     applyWeatherResidualDamage(incoming, weather, turns);
     applyWeatherResidualDamage(opponent, weather, turns);
@@ -4444,6 +4738,11 @@ function useApiCache() {
       // (COUNTER_MOVES): igual que el resto de campos de esta función, un
       // Pokémon que entra al campo por primera vez empieza siempre limpio.
       leechSeeded: false, boundTurns: 0, counterDamageTaken: null,
+      // Sujeción/Bloqueo/Telaraña/Rizo Enrollado (trapped/ingrained), Anillo
+      // Hidro, maldición, racha de Corte Furia y cadena de Rodada/Bola
+      // Hielo: mismo criterio, siempre limpios al entrar al campo.
+      trapped: false, ingrained: false, aquaRing: false, cursed: false,
+      furyCutterStreak: 0, rolloutTurn: 0,
       // faintLogged: ver pushFaintOnce. hasActedSinceEntering: ver
       // FIRST_TURN_ONLY_MOVES (Fake Out/Impresión Primeriza) — empieza en
       // `false` porque este Pokémon acaba de entrar al campo (inicio del
