@@ -6336,6 +6336,26 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
   // competitivo genérico como el modo C.
   const [weeklyTeam, setWeeklyTeam] = useState(null);
   const [showWeeklyTeamSelector, setShowWeeklyTeamSelector] = useState(false);
+  // Limpieza de referencias colgadas: si un Pokémon ya elegido para el
+  // equipo semanal deja de existir en la colección (p. ej. se perdió para
+  // siempre al intercambiarlo en el Draft, ver applyDraftCollectionResult
+  // en App), se descarta aquí en cuanto `collection` cambia — sin esto,
+  // `weeklyTeam` seguiría "recordando" una referencia que ya no corresponde
+  // a ninguna entrada real, inflando el contador de seleccionados (p. ej.
+  // "6/6" con solo 5 casillas realmente marcadas) y bloqueando poder elegir
+  // otro en su lugar (no habría ninguna casilla real que desmarcar). Se
+  // aplica solo a `weeklyTeam`: el equipo de un entrenador propio (ver
+  // customTrainers) ya tiene su propio mecanismo de sincronización con el
+  // resultado del Draft (applyDraftCollectionResult), así que no se toca
+  // aquí para no interferir con él. Devuelve la MISMA referencia si no hay
+  // nada que limpiar, para no disparar renders de más.
+  useEffect(() => {
+    setWeeklyTeam((prev) => {
+      if (!prev) return prev;
+      const next = prev.filter((e) => findCollectionEntry(collection, e.slug, e.shiny));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [collection]);
   // Modo "draft": true en cuanto DraftMode pasa de elegir equipo/confirmar
   // el aviso a tener una partida realmente en marcha (ver su propio
   // useEffect con onActiveChange) — usado SOLO para ocultar la cabecera y
@@ -6386,7 +6406,13 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
   const weeklyTheme = selectWeeklyTheme(weeklyWeekKey, weeklyTournamentState.recentWeeks);
   const weeklyCompleted = isWeeklyTournamentCompleted(weeklyTournamentState, weeklyWeekKey);
   const weeklyEligibleCollection = collection.filter((c) => speciesMatchesTheme(weeklyTheme, c.slug));
-  const weeklyTeamValid = !!weeklyTeam && weeklyTeam.length === WEEKLY_TEAM_SIZE;
+  // Filtra contra la colección REAL antes de contar/validar (ver el efecto
+  // de limpieza de `weeklyTeam` más arriba): normalmente ya no hace falta,
+  // porque ese efecto mantiene `weeklyTeam` sin referencias colgadas, pero
+  // esto cubre el instante entre que la colección cambia y ese efecto llega
+  // a ejecutarse, para que este render en concreto nunca cuente un Pokémon
+  // que ya no existe.
+  const weeklyTeamValid = !!weeklyTeam && weeklyTeam.filter((e) => findCollectionEntry(collection, e.slug, e.shiny)).length === WEEKLY_TEAM_SIZE;
 
   // Tick cada 60s solo para refrescar la cuenta atrás del reset semanal en
   // pantalla (getNextWeeklyResetDate en sí no necesita ningún estado, se
@@ -7079,7 +7105,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
                   </div>
                   {weeklyTeam ? (
                     <div className="flex flex-wrap gap-1.5 mb-3">
-                      {weeklyTeam.map((e, i) => (
+                      {weeklyTeam.filter((e) => findCollectionEntry(collection, e.slug, e.shiny)).map((e, i) => (
                         <span key={i} className="text-[11px] px-2 py-1 rounded-full" style={{ background: "#14161f", border: "1px solid #262a3a", color: "#c7cbdb" }}>
                           {displayName(e.slug)}{e.shiny ? " ✨" : ""}
                         </span>
@@ -8604,6 +8630,19 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, f
   // nada (filterFn ausente = toda la colección, comportamiento de siempre).
   const filteredCollection = filterFn ? collection.filter(filterFn) : collection;
 
+  // Descarta silenciosamente cualquier key seleccionada que ya no
+  // corresponda a ninguna entrada real de la colección (p. ej. un Pokémon
+  // perdido para siempre al intercambiarlo en el Draft mientras este equipo
+  // ya estaba elegido de una sesión anterior, ver el efecto de limpieza de
+  // `weeklyTeam` en TorneoTab): sin esto, `selectedKeys` podía seguir
+  // "recordando" una referencia colgada para siempre, inflando el contador
+  // (p. ej. "6/6" con solo 5 casillas realmente marcadas) sin que hubiera
+  // ninguna casilla real a la que corresponder para poder desmarcarla. El
+  // contador, la validación de "completo" y el máximo de 6 se calculan
+  // TODOS a partir de esta lista ya filtrada, nunca de `selectedKeys` en
+  // crudo.
+  const validSelectedKeys = selectedKeys.filter((key) => collection.some((c) => collectionEntryKey(c) === key));
+
   // Ojo: `initialSelectedKeys`/`collection` llegan como arrays nuevos en
   // cada render del padre (TorneoTab crea `weeklyTeam.map(...)` al vuelo, y
   // `filteredCollection` de abajo se deriva de un `filterFn` igual de
@@ -8644,19 +8683,20 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, f
   function toggle(key) {
     setSelectedKeys((sel) => {
       if (sel.includes(key)) return sel.filter((k) => k !== key);
-      if (sel.length >= CUSTOM_TRAINER_MIN_POKEMON) return sel;
+      const validCount = sel.filter((k) => collection.some((c) => collectionEntryKey(c) === k)).length;
+      if (validCount >= CUSTOM_TRAINER_MIN_POKEMON) return sel;
       return [...sel, key];
     });
   }
 
   const trimmedName = name.trim();
   const canConfirm = (mode === "edit" || mode === "weekly")
-    ? selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON
-    : trimmedName.length > 0 && trimmedName.length <= 20 && selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON;
+    ? validSelectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON
+    : trimmedName.length > 0 && trimmedName.length <= 20 && validSelectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON;
 
   function handleConfirm() {
     if (!canConfirm) return;
-    const team = selectedKeys.map((key) => {
+    const team = validSelectedKeys.map((key) => {
       const entry = collection.find((c) => collectionEntryKey(c) === key);
       return { slug: entry.slug, shiny: !!entry.shiny };
     });
@@ -8701,8 +8741,8 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, f
 
         <div className="flex items-center justify-between mb-2">
           <label className="block text-xs font-semibold text-[#8a8fa3]">Elige 6 Pokémon</label>
-          <span className="text-xs font-semibold" style={{ color: selectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON ? "#5fae5f" : "#8a8fa3" }}>
-            {selectedKeys.length} / {CUSTOM_TRAINER_MIN_POKEMON}
+          <span className="text-xs font-semibold" style={{ color: validSelectedKeys.length === CUSTOM_TRAINER_MIN_POKEMON ? "#5fae5f" : "#8a8fa3" }}>
+            {validSelectedKeys.length} / {CUSTOM_TRAINER_MIN_POKEMON}
           </span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
@@ -8711,7 +8751,7 @@ function TeamSelectorModal({ open, mode, collection, api, initialSelectedKeys, f
             const p = sprites[c.slug];
             const sprite = c.shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
             const isSelected = selectedKeys.includes(key);
-            const disabled = !isSelected && selectedKeys.length >= CUSTOM_TRAINER_MIN_POKEMON;
+            const disabled = !isSelected && validSelectedKeys.length >= CUSTOM_TRAINER_MIN_POKEMON;
             return (
               <button
                 key={key}

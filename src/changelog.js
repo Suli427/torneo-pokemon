@@ -405,6 +405,13 @@ export const CHANGELOG = [
     detail: "La pestaña Personajes muestra ahora una tarjeta por cada entrenador propio que hayas creado (hasta 5), cada una con sus propios botones de \"Editar equipo\", \"Editar nombre\" (nuevo), \"Compartir equipo\" y \"Borrar equipo\", más un nuevo \"Eliminar entrenador\" para quitarlo por completo y liberar hueco. Si ya tienes uno guardado de antes de este cambio, se ha migrado automáticamente al primero de la lista sin perder nada. El resto de modos que usaban \"tu entrenador propio\" ahora dejan elegir CUÁL de los tuyos usar: el Modo A del torneo y el Draft muestran un selector cuando tienes más de uno, y la Torre Batalla los lista todos junto al resto de entrenadores desbloqueados. Ninguno de tus entrenadores propios puede aparecer nunca como rival de la CPU, en ningún modo.",
     date: "2026-08-28T17:54:20+02:00",
   },
+  {
+    id: 57,
+    title: "Corrige referencias colgadas al equipo semanal",
+    summary: "Si un Pokémon de tu equipo del torneo semanal se perdía para siempre en el Draft, el selector seguía contándolo como elegido y bloqueaba poder elegir otro en su lugar.",
+    detail: "Cuando un Pokémon que ya formaba parte del equipo elegido para el Torneo Semanal se perdía de forma permanente (por ejemplo, al intercambiarlo en el Draft), el contador seguía marcando \"6/6\" con solo 5 casillas reales marcadas, y no dejaba elegir un sustituto porque esa referencia ya no correspondía a ningún Pokémon real. Ahora el selector de equipo semanal descarta automáticamente cualquier Pokémon seleccionado que ya no exista en la colección al contar y validar el equipo, y una nueva rutina se ejecuta en cuanto el Draft elimina Pokémon de la colección para limpiar esa misma referencia colgada en el equipo semanal ya confirmado, sin tocar el mecanismo ya existente que sincroniza el equipo de los entrenadores propios con el resultado del Draft.",
+    date: "2026-08-30T11:12:58+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
