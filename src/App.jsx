@@ -1056,6 +1056,20 @@ const DEFENSE_AS_SPECIAL_MOVES = new Set(["psystrike", "psyshock", "secret-sword
 // combatientes.
 const WEIGHT_RATIO_POWER_MOVES = new Set(["heavy-slam", "heat-crash"]);
 
+// Contraataque (Counter, físico), Copión (Mirror Coat, especial) y
+// Explosión de Metal (Metal Burst, cualquiera de las dos): no tienen
+// potencia propia (power viene null en la API para los tres, a diferencia
+// del resto de "specialDamage" de arriba), su daño depende por completo de
+// cuánto daño de la categoría correspondiente recibió QUIEN LOS USA en este
+// MISMO turno (ver attacker.counterDamageTaken, anotado cada vez que un
+// golpe conecta de verdad — ver runSlot/attackTarget). Fallan por completo
+// (sin tirada de precisión) si no recibieron ese tipo de golpe este turno;
+// si lo recibieron, hacen ×2 ese daño (Contraataque/Copión) o ×1.5 (Explosión
+// de Metal). Solo tiene sentido si quien los usa actúa DESPUÉS de haber sido
+// golpeado ese turno (el mismo condicionante que en los juegos reales: usarlo
+// yendo primero siempre falla, al no haber recibido nada todavía).
+const COUNTER_MOVES = { counter: "physical", "mirror-coat": "special", "metal-burst": "any" };
+
 // Supercolmillo (Super Fang), Desgracia (Ruination) y Castigo de la
 // Naturaleza (Nature's Madness): daño fijo igual a la mitad de los PS
 // ACTUALES del objetivo (no máximos), redondeado hacia abajo, ignorando la
@@ -1118,6 +1132,26 @@ const TERRAIN_PULSE_TYPE_BY_TERRAIN = { electric: "electric", grassy: "grass", p
 // se guarda en weather.tailwind = { [trainerId]: turnosRestantes }.
 const TAILWIND_MOVES = new Set(["tailwind"]);
 
+// Refugio (Safeguard): efecto de LADO (por trainerId de quien lo usa, no del
+// Pokémon activo, mismo patrón que Viento Afín), 5 turnos — mientras esté
+// activo, el Pokémon activo de ese lado no puede recibir NINGÚN problema de
+// estado no volátil ni confusión infligidos por el RIVAL (los propios, como
+// Descanso, no se ven afectados). Se guarda en weather.safeguard =
+// { [trainerId]: turnosRestantes }. Comprobado en applyMoveEffects (ailment/
+// confusión por movimiento), tickYawn (sueño diferido de Bostezo) y
+// applyEntryHazards (envenenado por Púas Tóxicas al entrar).
+const SAFEGUARD_MOVES = new Set(["safeguard"]);
+
+// Aromaterapia (Aromatherapy) y Campanacura (Heal Bell): en los juegos
+// reales curan el estado no volátil de TODO el equipo, no solo del Pokémon
+// activo — pero este motor de combate solo tiene acceso al Pokémon activo de
+// cada lado en cualquier punto (resolveTurn ni siquiera recibe el equipo
+// completo como parámetro, ver su firma), así que se simplifican aquí a
+// curar solo al activo. Mismo tipo de simplificación ya asumida en otros
+// movimientos de estado de este archivo (Deseo cura al instante en vez de
+// diferido; los hazards no son eliminables por ningún movimiento).
+const TEAM_STATUS_HEAL_MOVES = new Set(["aromatherapy", "heal-bell"]);
+
 // Pantallas (Light Screen/Reflect/Aurora Veil): efecto de LADO (por
 // trainerId de quien las usa, protege a TODO su equipo, no solo al Pokémon
 // activo), 5 turnos, igual patrón que Viento Afín — weather.screens =
@@ -1143,6 +1177,20 @@ const SCREEN_START_TEXT = {
 // elimine, ver comentario del pedido). weather.hazards =
 // { [trainerId]: { stealthRock: bool, spikes: 0-3, toxicSpikes: 0-2, stickyWeb: bool } }.
 const HAZARD_MOVES = new Set(["stealth-rock", "spikes", "toxic-spikes", "sticky-web"]);
+
+// Premonición (Future Sight) y Deseo Oculto (Doom Desire): al USARLOS no
+// hacen daño de inmediato — calculan y "encolan" un golpe con los stats/
+// clima/campo de ESE instante (igual que en los juegos: lo que cuenta es la
+// situación al lanzarlo, no la de dentro de 2 turnos) contra la POSICIÓN del
+// objetivo, y ese golpe se entrega automáticamente al final del turno
+// siguiente-al-siguiente (2 turnos completos después), acierte o no el
+// objetivo haya cambiado de Pokémon mientras tanto — golpea a quien esté en
+// esa posición en ese momento. Se guarda en weather.pendingFutureHits (ver
+// applyPendingFutureHits). Simplificación deliberada: la entrega ignora
+// Protección/invulnerabilidad del objetivo en ese instante (mecánica real
+// mucho más matizada por generación); dado el alcance de esta tanda, se deja
+// así, documentado.
+const FUTURE_MOVES = new Set(["future-sight", "doom-desire"]);
 
 // Restricción de movimientos del rival: Provocación (no puede usar
 // movimientos de estado), Otra Vez (fuerza a repetir su último movimiento) y
@@ -1172,6 +1220,31 @@ const BATON_PASS_MOVES = new Set(["baton-pass"]);
 // mecánica pero además exige que el objetivo esté dormido para siquiera
 // impactar; el resto de drenadores no tienen ese requisito.
 const SLEEP_ONLY_DRAIN_MOVES = new Set(["dream-eater"]);
+
+// Semilla Drenadora (Leech Seed): planta una semilla en el objetivo que, al
+// final de cada turno completo, le quita 1/16 de su PS máximo y esa misma
+// cantidad se la transfiere íntegra a quien la plantó (ver
+// applyLeechSeedDrain). Inmunidad de tipo "dura" (los Pokémon de tipo Planta
+// son inmunes por completo, ni siquiera se tira precisión) igual que otras
+// ya modeladas a mano en este archivo (Come Sueños/objetivo no dormido,
+// Sheer Cold/tipo Hielo). Se pierde al salir del campo (ver
+// resetPokemonOnSwitchOut), igual que en los juegos reales.
+const LEECH_SEED_MOVES = new Set(["leech-seed"]);
+
+// Movimientos de aprisionamiento (Bind, Envoltura/Wrap, Giro Fuego/Fire
+// Spin, Enterrar/Sand Tomb, Remolino/Whirlpool, Constricción/Clamp,
+// Plaga/Infestation, Tormenta Ígnea/Magma Storm, Jaula de Trueno/Thunder
+// Cage): golpean con su potencia normal (ya viene bien de la API, sin
+// necesidad de ninguna tabla especial) y, si conectan, dejan al objetivo
+// "atrapado" 4-5 turnos, perdiendo 1/16 de su PS máximo al final de cada uno
+// de esos turnos sin que quien lo atrapó tenga que volver a actuar (ver
+// tickBindingDamage). Alcance deliberadamente limitado a esto: el motor no
+// tiene ningún punto central de "¿puede este Pokémon cambiar ahora mismo?"
+// al que enganchar el bloqueo de cambio voluntario mientras está atrapado
+// (habría que tocar el flujo de cambio de cada modo — interfaz, Draft, Torre
+// Batalla — para un efecto secundario de nicho), así que esa parte de la
+// mecánica real queda fuera por ahora, documentada aquí a propósito.
+const BINDING_MOVES = new Set(["bind", "wrap", "fire-spin", "sand-tomb", "whirlpool", "clamp", "infestation", "magma-storm", "thunder-cage"]);
 
 // PokeAPI no distingue "mal envenenado" (Tóxico) de veneno normal: el campo
 // meta.ailment.name de /move/toxic devuelve "poison" igual que cualquier
@@ -1417,6 +1490,19 @@ function tickTailwindDuration(weather, turns) {
   }
 }
 
+// Refugio: mismo patrón que Viento Afín (por trainerId, 5 turnos).
+function tickSafeguardDuration(weather, turns) {
+  if (!weather || !weather.safeguard) return;
+  for (const trainerId of Object.keys(weather.safeguard)) {
+    weather.safeguard[trainerId] -= 1;
+    if (weather.safeguard[trainerId] <= 0) {
+      delete weather.safeguard[trainerId];
+      const t = TRAINERS.find((tr) => tr.id === trainerId);
+      turns.push({ type: "statusText", text: `El Refugio ha dejado de proteger al equipo de ${t ? t.name : trainerId}` });
+    }
+  }
+}
+
 // Pantallas: mismo patrón que Viento Afín (por trainerId), pero con hasta
 // tres sub-efectos independientes por lado (light/reflect/auroraVeil), cada
 // uno con su propio contador de 5 turnos.
@@ -1505,7 +1591,7 @@ function applyEntryHazards(poke, weather, turns) {
     turns.push({ type: "statusText", text: `${poke.name} sufre daño por las Púas` });
     if (poke.hp <= 0) pushFaintOnce(poke, turns);
   }
-  if (poke.hp > 0 && hazards.toxicSpikes > 0 && grounded && !poke.status) {
+  if (poke.hp > 0 && hazards.toxicSpikes > 0 && grounded && !poke.status && !(weather?.safeguard?.[poke.trainerId] > 0)) {
     if (poke.types.includes("poison")) {
       hazards.toxicSpikes = 0; // absorbidas: el tipo Veneno las elimina de su lado al entrar
       turns.push({ type: "statusText", text: `¡${poke.name} absorbe las Púas Tóxicas de su lado!` });
@@ -1533,6 +1619,10 @@ function tickYawn(poke, turns, weather) {
   if (poke.yawnTurns > 0) return;
   poke.yawnTurns = 0;
   if (poke.status) return;
+  if (weather?.safeguard?.[poke.trainerId] > 0) {
+    turns.push({ type: "statusText", text: `¡${poke.name} tenía sueño, pero el Refugio se lo impide!` });
+    return;
+  }
   if (terrainBlocksSleep(weather, poke)) {
     turns.push({ type: "statusText", text: `¡${poke.name} tenía sueño, pero el Campo Eléctrico se lo impide!` });
     return;
@@ -1572,6 +1662,13 @@ function resetPokemonOnSwitchOut(poke) {
   poke.encoreTurns = 0;
   poke.disabledMove = null;
   poke.disableTurns = 0;
+  // Semilla Drenadora, aprisionamiento (Bind/Envoltura/...) y el daño
+  // "recordado" para Contraataque/Copión/Explosión de Metal tampoco
+  // persisten al salir del campo, mismo criterio que el resto de esta
+  // función.
+  poke.leechSeeded = false;
+  poke.boundTurns = 0;
+  poke.counterDamageTaken = null;
 }
 
 /* ---------------------------------------------------------------
@@ -1750,6 +1847,68 @@ function applyResidualStatusDamage(poke, turns) {
   if (poke.hp <= 0) pushFaintOnce(poke, turns);
 }
 
+// Semilla Drenadora: al final de cada turno completo, si `poke` sigue
+// "plantado", pierde 1/16 de su PS máximo y `opponent` (el rival ACTIVO en
+// ese momento, sea o no quien plantó la semilla originalmente) recibe esa
+// misma cantidad como curación. Se llama para ambos lados por turno, igual
+// que applyResidualStatusDamage; no hace nada si cualquiera de los dos ya
+// está debilitado.
+function applyLeechSeedDrain(poke, opponent, turns) {
+  if (!poke.leechSeeded || poke.hp <= 0 || !opponent || opponent.hp <= 0) return;
+  const dmg = Math.max(1, Math.floor(poke.maxHp / 16));
+  poke.hp = Math.max(0, poke.hp - dmg);
+  opponent.hp = Math.min(opponent.maxHp, opponent.hp + dmg);
+  turns.push({ type: "statusText", text: `¡La Semilla Drenadora absorbe PS de ${poke.name}!` });
+  if (poke.hp <= 0) pushFaintOnce(poke, turns);
+}
+
+// Aprisionamiento (ver BINDING_MOVES): daño de 1/16 del PS máximo de `poke`
+// al final de cada turno completo mientras dure (poke.boundTurns, fijado al
+// conectar el golpe inicial). Se descuenta el contador DESPUÉS de aplicar el
+// daño de ese turno, así que un valor inicial de 4-5 produce exactamente
+// 4-5 tics de daño.
+function tickBindingDamage(poke, turns) {
+  if (!poke.boundTurns || poke.hp <= 0) return;
+  const dmg = Math.max(1, Math.floor(poke.maxHp / 16));
+  poke.hp = Math.max(0, poke.hp - dmg);
+  turns.push({ type: "statusText", text: `${poke.name} sufre daño por estar atrapado` });
+  if (poke.hp <= 0) {
+    poke.boundTurns = 0;
+    pushFaintOnce(poke, turns);
+    return;
+  }
+  poke.boundTurns -= 1;
+  if (poke.boundTurns <= 0) {
+    turns.push({ type: "statusText", text: `${poke.name} ya no está atrapado` });
+  }
+}
+
+// Premonición/Deseo Oculto (ver FUTURE_MOVES): descuenta el contador de cada
+// golpe encolado en weather.pendingFutureHits y, al llegar a 0, lo entrega
+// al Pokémon que esté AHORA MISMO en la posición objetivo (activePa si su
+// trainerId coincide, si no activePb) — así funciona aunque haya cambiado de
+// Pokémon esa posición desde que se lanzó. El daño y el multiplicador de
+// tipo ya se calcularon al lanzarlo (con los stats de ese momento), así que
+// aquí solo se aplican tal cual.
+function applyPendingFutureHits(weather, activePa, activePb, turns) {
+  if (!weather?.pendingFutureHits?.length) return;
+  const remaining = [];
+  for (const pending of weather.pendingFutureHits) {
+    pending.turnsLeft -= 1;
+    if (pending.turnsLeft > 0) { remaining.push(pending); continue; }
+    const target = pending.targetTrainerId === activePa.trainerId ? activePa : activePb;
+    if (target.hp <= 0) continue;
+    if (pending.mult > 0) {
+      target.hp = Math.max(0, target.hp - pending.damage);
+      turns.push({ type: "statusText", text: `¡${displayMoveName(pending.moveName)} de ${pending.attackerName} golpea a ${target.name}!` });
+      if (target.hp <= 0) pushFaintOnce(target, turns);
+    } else {
+      turns.push({ type: "statusText", text: `${displayMoveName(pending.moveName)} de ${pending.attackerName} no afectó a ${target.name}` });
+    }
+  }
+  weather.pendingFutureHits = remaining;
+}
+
 // Drenado/retroceso (meta.drain de PokeAPI): positivo cura al atacante un %
 // del daño infligido (Giga Drain, Absorber, Come Sueños...), negativo le
 // resta un % de ese mismo daño como retroceso (Envite Ígneo, Placaje,
@@ -1815,13 +1974,20 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
   // los stat_changes se filtran uno a uno más abajo, según a quién vaya
   // cada uno en concreto.
   const skipAilment = targetsOpponent && defenderFainted;
+  // Refugio (ver SAFEGUARD_MOVES): solo bloquea estados/confusión infligidos
+  // por el RIVAL (targetsOpponent) sobre el lado que lo tiene activo; nunca
+  // se aplica a un efecto autoinfligido (Descanso, etc.), ya que `target`
+  // sería el propio atacante en ese caso, no el lado protegido.
+  const targetProtectedBySafeguard = targetsOpponent && weather?.safeguard?.[target.trainerId] > 0;
 
   if (!skipAilment && move.ailmentName && move.ailmentName !== "none") {
     const chance = move.ailmentChance > 0 ? move.ailmentChance : (isStatusMove ? 100 : 0);
     if (chance > 0 && Math.random() * 100 < chance) {
       if (move.ailmentName === "confusion") {
         if (!target.confusionTurns) {
-          if (terrainBlocksStatus(weather, target)) {
+          if (targetProtectedBySafeguard) {
+            events.push({ type: "statusText", text: `¡El Refugio protege a ${target.name} de la confusión!`, inline: false });
+          } else if (terrainBlocksStatus(weather, target)) {
             events.push({ type: "statusText", text: `¡El Campo de Niebla protege a ${target.name} de la confusión!`, inline: false });
           } else {
             target.confusionTurns = 1 + Math.floor(Math.random() * 4);
@@ -1829,7 +1995,9 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
           }
         }
       } else if (AILMENT_APPLY_TEXT[move.ailmentName] && !target.status) {
-        if (move.ailmentName === "sleep" && terrainBlocksSleep(weather, target)) {
+        if (targetProtectedBySafeguard) {
+          events.push({ type: "statusText", text: `¡El Refugio protege a ${target.name} de los problemas de estado!`, inline: false });
+        } else if (move.ailmentName === "sleep" && terrainBlocksSleep(weather, target)) {
           events.push({ type: "statusText", text: `¡El Campo Eléctrico evita que ${target.name} se duerma!`, inline: false });
         } else if (terrainBlocksStatus(weather, target)) {
           events.push({ type: "statusText", text: `¡El Campo de Niebla protege a ${target.name} de los estados alterados!`, inline: false });
@@ -1942,6 +2110,7 @@ function resolveVariablePower(entry) {
   if (WEIGHT_BASED_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "weight-based" };
   if (WEIGHT_RATIO_POWER_MOVES.has(entry.name)) return { ...entry, specialDamage: "weight-ratio" };
   if (entry.power != null || entry.damageClass === "status") return entry;
+  if (COUNTER_MOVES[entry.name] != null) return { ...entry, specialDamage: "counter" };
   if (SPEED_RATIO_MOVES.has(entry.name)) return { ...entry, specialDamage: "speed-ratio" };
   if (FIXED_LEVEL_MOVES.has(entry.name)) return { ...entry, specialDamage: "fixed-level" };
   if (HALF_CURRENT_HP_MOVES.has(entry.name)) return { ...entry, specialDamage: "fixed-half-hp" };
@@ -2539,6 +2708,19 @@ function useApiCache() {
       const mult = await typeMultiplier([move.type], defender.types, move.name);
       return { damage: mult > 0 ? move.fixedDamageAmount : 0, isCrit: false, mult };
     }
+    // Contraataque/Copión/Explosión de Metal: si llega hasta aquí es porque
+    // ya se comprobó en executeMove que `attacker` SÍ recibió un golpe de la
+    // categoría adecuada este mismo turno (ver COUNTER_MOVES); el daño es
+    // ×2 (Contraataque/Copión) o ×1.5 (Explosión de Metal) ese golpe
+    // recibido, sin STAB ni crítico, solo respetando la inmunidad de tipo
+    // binaria del propio Contraataque/Copión/Explosión de Metal.
+    if (move.specialDamage === "counter") {
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
+      if (mult === 0) return { damage: 0, isCrit: false, mult };
+      const multiplier = move.name === "metal-burst" ? 1.5 : 2;
+      const damage = Math.max(1, Math.floor((attacker.counterDamageTaken?.amount || 0) * multiplier));
+      return { damage, isCrit: false, mult };
+    }
     let power = move.power;
     if (move.specialDamage === "speed-ratio") {
       const ratio = getEffectiveSpeed(attacker, weather) / Math.max(1, getEffectiveSpeed(defender, weather));
@@ -2626,6 +2808,22 @@ function useApiCache() {
     if (move.specialDamage === "fixed-flat") {
       const mult = await typeMultiplier([move.type], defender.types, move.name);
       return mult > 0 ? move.fixedDamageAmount * (acc / 100) : 0;
+    }
+    // Contraataque/Copión/Explosión de Metal: en el momento en que la IA
+    // elige su movimiento todavía no se sabe si va a recibir un golpe este
+    // turno (se decide antes de resolverlo, igual que en los juegos reales),
+    // así que `attacker.counterDamageTaken` aquí siempre refleja como mucho
+    // el turno YA terminado anterior (se limpia al final de cada turno) —
+    // en la práctica esto hace que la IA nunca valore especialmente elegir
+    // uno de estos movimientos, una simplificación razonable frente a
+    // predecir de antemano si va a ser golpeado.
+    if (move.specialDamage === "counter") {
+      const taken = attacker.counterDamageTaken;
+      if (!taken || taken.amount <= 0) return 0;
+      const mult = await typeMultiplier([move.type], defender.types, move.name);
+      if (mult === 0) return 0;
+      const multiplier = move.name === "metal-burst" ? 1.5 : 2;
+      return Math.max(1, Math.floor(taken.amount * multiplier)) * (acc / 100);
     }
     let power = move.power;
     if (move.specialDamage === "speed-ratio") {
@@ -3034,6 +3232,15 @@ function useApiCache() {
       return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡Un fuerte viento empieza a soplar a favor del equipo de ${attacker.name}!`, inline: false }] };
     }
 
+    // Refugio (ver SAFEGUARD_MOVES): efecto de LADO (por trainerId de quien
+    // lo usa), 5 turnos, se reinicia a 5 si ya estaba activo. No lo bloquea
+    // la Protección (no ataca al rival).
+    if (SAFEGUARD_MOVES.has(move.name) && weather) {
+      weather.safeguard = weather.safeguard || {};
+      weather.safeguard[attacker.trainerId] = 5;
+      return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡El equipo de ${attacker.name} ha quedado protegido por el Refugio!`, inline: false }] };
+    }
+
     // Habitación Trampa: efecto GLOBAL del combate (no de lado), 5 turnos,
     // se reinicia a 5 si ya estaba activa.
     if (TRICK_ROOM_MOVES.has(move.name) && weather) {
@@ -3083,6 +3290,31 @@ function useApiCache() {
         text = `¡Ha aparecido una telaraña pegajosa alrededor del equipo de ${defender.name}!`;
       }
       return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text, inline: false }] };
+    }
+
+    // Premonición/Deseo Oculto (ver FUTURE_MOVES): no hacen daño ahora
+    // mismo. Se calcula el golpe con los stats/clima/campo de ESTE instante
+    // y se encola para entregarse 2 turnos completos después (ver
+    // applyPendingFutureHits, llamado al final de cada turno). Nunca falla
+    // por precisión al lanzarlo (accuracy 100 en la API) ni lo bloquea la
+    // Protección/invulnerabilidad del objetivo en este momento — solo
+    // importan esas dos cosas en el instante de la ENTREGA, y ahí se ignoran
+    // a propósito por simplicidad (ver el comentario de FUTURE_MOVES).
+    if (FUTURE_MOVES.has(move.name) && weather) {
+      const { damage: futureDamage, mult: futureMult } = await computeDamage(attacker, defender, move, weather);
+      weather.pendingFutureHits = weather.pendingFutureHits || [];
+      weather.pendingFutureHits.push({
+        targetTrainerId: defender.trainerId,
+        turnsLeft: 2,
+        damage: futureDamage,
+        mult: futureMult,
+        moveName: move.name,
+        attackerName: attacker.name,
+      });
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: `¡${attacker.name} presiente un ataque!`, inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: 0, crit: false, status: true, events };
     }
 
     // Provocación: si el atacante está bajo su efecto, no puede usar NINGÚN
@@ -3217,6 +3449,18 @@ function useApiCache() {
       return { hit: true, damage: 0, crit: false, status: true, events };
     }
 
+    // Semilla Drenadora: los Pokémon de tipo Planta son inmunes por
+    // completo, ni siquiera se tira precisión (ver LEECH_SEED_MOVES). El
+    // resto de la mecánica (plantar la semilla si no lo estaba ya) se
+    // resuelve más abajo, dentro del flujo normal de movimientos de estado.
+    if (LEECH_SEED_MOVES.has(move.name) && !move.selfTargeted && defender.types.includes("grass")) {
+      if (isRecharge) attacker.mustRecharge = true;
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: `¡No afectó a ${defender.name}!`, inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: true, damage: 0, crit: false, status: true, events };
+    }
+
     if (isProtectMove) {
       // Probabilidad de éxito: 100% en el primer uso o tras fallar/usar
       // otro movimiento, y se divide entre 2 en cada uso consecutivo
@@ -3287,6 +3531,12 @@ function useApiCache() {
         if (hitCrit) anyCrit = true;
         hitsLanded++;
       }
+      // Mismo criterio que en el golpe único: anota el daño TOTAL de los
+      // golpes de esta ronda para un posible Contraataque/Copión/Explosión
+      // de Metal del objetivo más tarde en este mismo turno.
+      if (totalDamage > 0 && lastMult > 0) {
+        defender.counterDamageTaken = { amount: totalDamage, category: move.damageClass };
+      }
       const events = applyMoveEffects(attacker, defender, move, lastMult, defender.hp <= 0, weather);
       if (lastMult > 0) applyDrainOrRecoil(attacker, totalDamage, move, events);
       if (defender.hp > 0 && lastMult > 0 && move.flinchChance > 0 && Math.random() * 100 < move.flinchChance) {
@@ -3324,6 +3574,25 @@ function useApiCache() {
         if (!defender.status && !defender.yawnTurns) {
           defender.yawnTurns = 2;
           events.push({ type: "statusText", text: `¡${defender.name} empieza a tener sueño!`, inline: false });
+        } else {
+          events.push({ type: "statusText", text: "¡Pero no tuvo ningún efecto!", inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
+      // Semilla Drenadora: la inmunidad de tipo Planta ya se comprobó al
+      // principio de executeMove (falla sin tirada de precisión). Aquí solo
+      // queda plantar la semilla si el objetivo no la tenía ya (reaplicarla
+      // no tiene ningún efecto adicional, igual que en los juegos); el
+      // drenaje de PS en sí ocurre al final de cada turno completo, ver
+      // applyLeechSeedDrain.
+      if (LEECH_SEED_MOVES.has(move.name)) {
+        const events = [];
+        if (!defender.leechSeeded) {
+          defender.leechSeeded = true;
+          events.push({ type: "statusText", text: `¡${defender.name} ha quedado plantado con una semilla!`, inline: false });
         } else {
           events.push({ type: "statusText", text: "¡Pero no tuvo ningún efecto!", inline: false });
         }
@@ -3432,11 +3701,46 @@ function useApiCache() {
         if (thrashEvent) events.push(thrashEvent);
         return { hit: true, damage: 0, crit: false, status: true, events };
       }
+      // Aromaterapia/Campanacura (ver TEAM_STATUS_HEAL_MOVES): cura el
+      // problema de estado del propio usuario (simplificación deliberada de
+      // "cura a todo el equipo", ver el comentario de la constante). Sin
+      // ningún estado que curar, no tiene ningún efecto.
+      if (TEAM_STATUS_HEAL_MOVES.has(move.name)) {
+        const events = [];
+        if (attacker.status) {
+          attacker.status = null;
+          attacker.toxicCounter = 0;
+          attacker.freezeTurns = 0;
+          events.push({ type: "statusText", text: `¡${attacker.name} se ha curado de su problema de estado!`, inline: false });
+        } else {
+          events.push({ type: "statusText", text: "¡Pero no tuvo ningún efecto!", inline: false });
+        }
+        if (isRecharge) attacker.mustRecharge = true;
+        const thrashEvent = updateThrashLock();
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
       const events = applyMoveEffects(attacker, defender, move, 1, false, weather);
       if (isRecharge) attacker.mustRecharge = true;
       const thrashEvent = updateThrashLock();
       if (thrashEvent) events.push(thrashEvent);
       return { hit: true, damage: 0, crit: false, status: true, events };
+    }
+    // Contraataque/Copión/Explosión de Metal (ver COUNTER_MOVES): fallan por
+    // completo, sin tirada de precisión, si quien los usa no recibió un
+    // golpe de la categoría requerida en este mismo turno (o no recibió
+    // ninguno). Si sí lo recibió, se deja seguir el flujo normal de abajo
+    // (precisión + computeDamage, que ya sabe leer counterDamageTaken).
+    if (COUNTER_MOVES[move.name] != null) {
+      const taken = attacker.counterDamageTaken;
+      const wantCategory = COUNTER_MOVES[move.name];
+      const valid = taken && taken.amount > 0 && (wantCategory === "any" || taken.category === wantCategory);
+      if (!valid) {
+        const thrashEvent = updateThrashLock();
+        const events = [{ type: "statusText", text: "¡Pero falló!", inline: false }];
+        if (thrashEvent) events.push(thrashEvent);
+        return { hit: true, damage: 0, crit: false, status: true, events };
+      }
     }
     const acc = getEffectiveAccuracy(attacker, defender, move);
     if (Math.random() * 100 >= acc) {
@@ -3446,11 +3750,27 @@ function useApiCache() {
     }
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move, weather);
     defender.hp = Math.max(0, defender.hp - damage);
+    // Contraataque/Copión/Explosión de Metal (ver COUNTER_MOVES): se anota
+    // aquí el daño realmente recibido por `defender` para que, SI actúa
+    // después dentro de este mismo turno, pueda devolverlo. Se sobrescribe
+    // en cada golpe nuevo (no se acumula entre turnos distintos: se limpia
+    // al final de cada uno, ver el reseteo junto a `protected`/`flinched`).
+    if (damage > 0 && mult > 0) {
+      defender.counterDamageTaken = { amount: damage, category: move.damageClass };
+    }
     const events = applyMoveEffects(attacker, defender, move, mult, defender.hp <= 0, weather);
     // Drenado/retroceso (Come Sueños, Giga Drain, Absorber... / Envite
     // Ígneo, Placaje, Golpe Cabeza...): cura o resta al atacante un % del
     // daño infligido según el signo de meta.drain.
     if (mult > 0) applyDrainOrRecoil(attacker, damage, move, events);
+    // Aprisionamiento (ver BINDING_MOVES): tras el golpe inicial, si conectó
+    // de verdad y el objetivo sigue en pie y no estaba ya atrapado, queda
+    // atrapado 4-5 turnos (ver tickBindingDamage, llamado al final de cada
+    // turno completo).
+    if (BINDING_MOVES.has(move.name) && mult > 0 && defender.hp > 0 && !defender.boundTurns) {
+      defender.boundTurns = 4 + Math.floor(Math.random() * 2);
+      events.push({ type: "statusText", text: `¡${defender.name} ha quedado atrapado!`, inline: false });
+    }
     // Rodillo de Acero: ya se comprobó arriba que había campo activo (si no
     // lo hubiera, el movimiento ya habría fallado antes de llegar aquí), así
     // que tras el golpe se elimina el campo activo por completo.
@@ -3838,6 +4158,11 @@ function useApiCache() {
 
     applyResidualStatusDamage(activePa, turns);
     applyResidualStatusDamage(activePb, turns);
+    applyLeechSeedDrain(activePa, activePb, turns);
+    applyLeechSeedDrain(activePb, activePa, turns);
+    tickBindingDamage(activePa, turns);
+    tickBindingDamage(activePb, turns);
+    applyPendingFutureHits(weather, activePa, activePb, turns);
     applyWeatherResidualDamage(activePa, weather, turns);
     applyWeatherResidualDamage(activePb, weather, turns);
     applyGrassyTerrainHeal(activePa, weather, turns);
@@ -3849,6 +4174,7 @@ function useApiCache() {
     tickWeatherDuration(weather, turns);
     tickTerrainDuration(weather, turns);
     tickTailwindDuration(weather, turns);
+    tickSafeguardDuration(weather, turns);
     tickScreensDuration(weather, turns);
     tickTrickRoomDuration(weather, turns);
 
@@ -3870,6 +4196,12 @@ function useApiCache() {
     // consumió aquí, se limpia igual para no arrastrarlo al turno siguiente.
     activePa.flinched = false;
     activePb.flinched = false;
+
+    // El daño "recordado" para Contraataque/Copión/Explosión de Metal solo
+    // vale para el resto de ESTE turno (ver COUNTER_MOVES): se limpia aquí
+    // para que un golpe de hace dos turnos no pueda devolverse ahora.
+    activePa.counterDamageTaken = null;
+    activePb.counterDamageTaken = null;
 
     return { turns, switchSignals, decisiveWinnerSide, checkpoints };
   }, [executeMove, executeMoveWithSelfKO]);
@@ -4022,6 +4354,11 @@ function useApiCache() {
 
     applyResidualStatusDamage(incoming, turns);
     applyResidualStatusDamage(opponent, turns);
+    applyLeechSeedDrain(incoming, opponent, turns);
+    applyLeechSeedDrain(opponent, incoming, turns);
+    tickBindingDamage(incoming, turns);
+    tickBindingDamage(opponent, turns);
+    applyPendingFutureHits(weather, incoming, opponent, turns);
     applyWeatherResidualDamage(incoming, weather, turns);
     applyWeatherResidualDamage(opponent, weather, turns);
     applyGrassyTerrainHeal(incoming, weather, turns);
@@ -4033,6 +4370,7 @@ function useApiCache() {
     tickWeatherDuration(weather, turns);
     tickTerrainDuration(weather, turns);
     tickTailwindDuration(weather, turns);
+    tickSafeguardDuration(weather, turns);
     tickScreensDuration(weather, turns);
     tickTrickRoomDuration(weather, turns);
 
@@ -4040,6 +4378,9 @@ function useApiCache() {
     opponent.justFellAsleep = false;
     incoming.flinched = false;
     opponent.flinched = false;
+
+    incoming.counterDamageTaken = null;
+    opponent.counterDamageTaken = null;
 
     return { turns, decisiveWinnerIsOpponent, opponentSelfSwitch, targetForcedSwitch };
   }, [executeMove, executeMoveWithSelfKO]);
@@ -4098,6 +4439,11 @@ function useApiCache() {
       // DISABLE_MOVES) y el último movimiento usado (necesario para saber
       // qué forzar/bloquear con Otra Vez/Anulación).
       tauntTurns: 0, encoreMove: null, encoreTurns: 0, disabledMove: null, disableTurns: 0, lastMoveUsed: null,
+      // Semilla Drenadora (LEECH_SEED_MOVES), aprisionamiento (BINDING_MOVES)
+      // y el daño recordado para Contraataque/Copión/Explosión de Metal
+      // (COUNTER_MOVES): igual que el resto de campos de esta función, un
+      // Pokémon que entra al campo por primera vez empieza siempre limpio.
+      leechSeeded: false, boundTurns: 0, counterDamageTaken: null,
       // faintLogged: ver pushFaintOnce. hasActedSinceEntering: ver
       // FIRST_TURN_ONLY_MOVES (Fake Out/Impresión Primeriza) — empieza en
       // `false` porque este Pokémon acaba de entrar al campo (inicio del
@@ -4126,7 +4472,7 @@ function useApiCache() {
     // debilitamiento. `terrain*` y `tailwind` viven en el mismo objeto que
     // el clima para no tener que enhebrar un segundo parámetro por todo el
     // motor (ver comentario de getEffectiveSpeed).
-    const weather = { type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {}, screens: {}, hazards: {}, trickRoomTurnsLeft: 0, trickRoomJustSet: false };
+    const weather = { type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {}, screens: {}, hazards: {}, trickRoomTurnsLeft: 0, trickRoomJustSet: false, pendingFutureHits: [], safeguard: {} };
     let i = 0, j = 0;
     const log = [];
     while (i < teamA.length && j < teamB.length) {
@@ -5063,7 +5409,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   // se guarda en un ref mutable (igual que en simulateMatch) para que
   // persista a través de cambios de Pokémon y renders sin formar parte del
   // estado de React.
-  const weatherRef = useRef({ type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {}, screens: {}, hazards: {}, trickRoomTurnsLeft: 0, trickRoomJustSet: false });
+  const weatherRef = useRef({ type: null, turnsLeft: 0, justSet: false, terrainType: null, terrainTurnsLeft: 0, terrainJustSet: false, tailwind: {}, screens: {}, hazards: {}, trickRoomTurnsLeft: 0, trickRoomJustSet: false, pendingFutureHits: [], safeguard: {} });
 
   // Acumulado a lo largo de TODO el combate, solo para el sistema de
   // logros (ver analyzeInteractiveBattleMechanics/handleInteractiveFinish

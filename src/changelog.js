@@ -412,6 +412,13 @@ export const CHANGELOG = [
     detail: "Cuando un Pokémon que ya formaba parte del equipo elegido para el Torneo Semanal se perdía de forma permanente (por ejemplo, al intercambiarlo en el Draft), el contador seguía marcando \"6/6\" con solo 5 casillas reales marcadas, y no dejaba elegir un sustituto porque esa referencia ya no correspondía a ningún Pokémon real. Ahora el selector de equipo semanal descarta automáticamente cualquier Pokémon seleccionado que ya no exista en la colección al contar y validar el equipo, y una nueva rutina se ejecuta en cuanto el Draft elimina Pokémon de la colección para limpiar esa misma referencia colgada en el equipo semanal ya confirmado, sin tocar el mecanismo ya existente que sincroniza el equipo de los entrenadores propios con el resultado del Draft.",
     date: "2026-08-30T11:12:58+02:00",
   },
+  {
+    id: 58,
+    title: "Nuevas mecánicas de movimientos (tanda 1 de 3)",
+    summary: "Semilla Drenadora, Contraataque/Copión/Explosión de Metal, aprisionamiento, Premonición/Deseo Oculto y Refugio/Aromaterapia ya funcionan de verdad en combate.",
+    detail: "Tras la auditoría de cobertura de movimientos, se implementan las 5 familias de mayor impacto: Semilla Drenadora (leech-seed) ya drena PS de verdad cada turno, con inmunidad para los Pokémon de tipo Planta; Contraataque, Copión y Explosión de Metal devuelven el doble (o ×1.5) del daño físico/especial recibido ese mismo turno, fallando si no se recibió ninguno; los movimientos de aprisionamiento (Bind, Envoltura, Giro Fuego, Enterrar, Remolino, Constricción, Plaga, Tormenta Ígnea, Jaula de Trueno) atrapan al objetivo 4-5 turnos con daño residual; Premonición y Deseo Oculto ya golpean de forma diferida 2 turnos después, a quien esté en esa posición del campo en ese momento, en vez de hacer daño instantáneo; y Refugio protege a todo un equipo de nuevos problemas de estado y confusión durante 5 turnos, mientras que Aromaterapia y Campanacura curan el estado del Pokémon activo. Quedan pendientes para tandas futuras las familias de impacto medio y bajo ya identificadas en la auditoría (movimientos basados en PS actual, curación de estado en equipo completo, copia de movimientos, etc.).",
+    date: "2026-08-30T21:15:53+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha
