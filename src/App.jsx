@@ -18,6 +18,7 @@ import {
   CASINO_STORAGE_KEY, loadCasinoState, ROULETTE_SECTORS, ROULETTE_SPIN_COST, ROULETTE_HISTORY_LIMIT,
   rollRoulette, canClaimFreeRouletteSpin,
   SLOT_SYMBOLS, SLOT_SYMBOL_ORDER, SLOT_MIN_BET, SLOT_MAX_BET, spinSlotMachine, resolveSlotResult,
+  SCRATCH_CARD_COST, generateScratchCard,
 } from "./casino";
 import {
   WEEKLY_TOURNAMENT_STORAGE_KEY, WEEKLY_TOURNAMENT_REWARD, WEEKLY_TEAM_SIZE,
@@ -12178,10 +12179,265 @@ function SlotMachineGame({ coins, setCoins, queueRewardToast }) {
   );
 }
 
+/* ---------------------------------------------------------------
+   CASINO: CARTAS RASCA (Scratch Cards)
+--------------------------------------------------------------- */
+
+const SCRATCH_CELL_SIZE = 96;
+// Porcentaje de la superficie de purpurina que hay que retirar (por
+// muestreo de píxeles transparentes) para dar la zona por revelada del
+// todo y quitar el canvas de encima — no hace falta llegar al 100% para
+// que se sienta "ya rascado", igual que en una carta de rasca real.
+const SCRATCH_REVEAL_THRESHOLD = 0.55;
+
+// UNA zona rascable de la carta: symbolId ya está decidido de antemano (ver
+// generateScratchCard), la zona solo lo oculta bajo una capa de canvas
+// "purpurina" que el usuario retira arrastrando el ratón/dedo por encima
+// (eventos de puntero, unifican mouse y touch) — se usa un canvas real con
+// `globalCompositeOperation: "destination-out"` para borrar por donde pasa
+// el cursor, en vez de un simple clic que dispare una animación automática,
+// para que se sienta como rascar de verdad tal como se pidió. En cuanto el
+// muestreo de píxeles transparentes supera SCRATCH_REVEAL_THRESHOLD, se
+// considera revelada del todo y el canvas se retira sin más (queda el
+// símbolo ya limpio debajo, sin restos de purpurina a medias).
+function ScratchCell({ symbolId, revealed, onRevealed }) {
+  const canvasRef = useRef(null);
+  const drawingRef = useRef(false);
+  const doneRef = useRef(false);
+
+  useEffect(() => {
+    doneRef.current = false;
+    if (revealed) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = SCRATCH_CELL_SIZE * dpr;
+    canvas.height = SCRATCH_CELL_SIZE * dpr;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    const gradient = ctx.createLinearGradient(0, 0, SCRATCH_CELL_SIZE, SCRATCH_CELL_SIZE);
+    gradient.addColorStop(0, "#9aa0b4");
+    gradient.addColorStop(0.5, "#c7cbdb");
+    gradient.addColorStop(1, "#9aa0b4");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, SCRATCH_CELL_SIZE, SCRATCH_CELL_SIZE);
+    // Textura de "purpurina": puntitos claros repartidos al azar, puramente
+    // decorativos.
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    for (let i = 0; i < 50; i++) {
+      ctx.beginPath();
+      ctx.arc(Math.random() * SCRATCH_CELL_SIZE, Math.random() * SCRATCH_CELL_SIZE, Math.random() * 1.4 + 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }, [revealed]);
+
+  function scratchAt(x, y) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.globalCompositeOperation = "destination-out";
+    // `fillStyle` queda puesto al color semitransparente de la purpurina
+    // decorativa (ver el efecto de arriba) si no se fija aquí explícitamente
+    // — con "destination-out" solo importa el ALFA del color de relleno
+    // (cualquier color opaco vale), pero un alfa < 1 heredado borraría solo
+    // PARCIALMENTE en cada pasada en vez de revelar de golpe por donde pasa
+    // el cursor, como se espera de un rascado de verdad.
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.arc(x, y, 15, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function checkRevealedEnough() {
+    if (doneRef.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    // Muestreo cada 32 píxeles (canal alfa) en vez de todos, de sobra para
+    // estimar el % ya retirado sin recalcular sobre la imagen entera en
+    // cada movimiento del puntero.
+    let sampled = 0, cleared = 0;
+    for (let i = 3; i < data.length; i += 4 * 8) {
+      sampled++;
+      if (data[i] < 40) cleared++;
+    }
+    if (sampled > 0 && cleared / sampled >= SCRATCH_REVEAL_THRESHOLD) {
+      doneRef.current = true;
+      onRevealed?.();
+    }
+  }
+
+  function pointerPos(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function handlePointerDown(e) {
+    if (revealed) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    drawingRef.current = true;
+    const { x, y } = pointerPos(e);
+    scratchAt(x, y);
+    checkRevealedEnough();
+  }
+  function handlePointerMove(e) {
+    if (!drawingRef.current || revealed) return;
+    const { x, y } = pointerPos(e);
+    scratchAt(x, y);
+    checkRevealedEnough();
+  }
+  function handlePointerUp() {
+    drawingRef.current = false;
+    checkRevealedEnough();
+  }
+
+  return (
+    <div
+      className="relative rounded-lg overflow-hidden shrink-0"
+      style={{ width: SCRATCH_CELL_SIZE, height: SCRATCH_CELL_SIZE, background: "#0e1018", border: "2px solid #2c2f42", touchAction: "none" }}
+    >
+      <div className="absolute inset-0 flex items-center justify-center">
+        <SlotSymbolTile symbolId={symbolId} size={SCRATCH_CELL_SIZE * 0.45} />
+      </div>
+      {!revealed && (
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 cursor-pointer"
+          style={{ width: SCRATCH_CELL_SIZE, height: SCRATCH_CELL_SIZE }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerUp}
+        />
+      )}
+    </div>
+  );
+}
+
+// Juego de las Cartas Rasca: coste FIJO por carta (a diferencia de la
+// Tragaperras), 3 símbolos ya sorteados de antemano al comprar (ver
+// generateScratchCard) que el usuario revela rascando cada zona. En cuanto
+// las 3 están reveladas se aplica el premio (una única vez, protegido por
+// `payoutAppliedRef`) y se dispara la celebración según su intensidad.
+function ScratchCardGame({ coins, setCoins, queueRewardToast }) {
+  const [card, setCard] = useState(null); // { outcome, symbols } | null
+  const [revealedCells, setRevealedCells] = useState([false, false, false]);
+  const [celebration, setCelebration] = useState(null);
+  const payoutAppliedRef = useRef(false);
+  const timeoutsRef = useRef([]);
+
+  useEffect(() => {
+    return () => { timeoutsRef.current.forEach(clearTimeout); };
+  }, []);
+
+  const allRevealed = revealedCells.every(Boolean);
+  const canBuy = !card || allRevealed;
+
+  function handleBuy() {
+    if (!canBuy || coins < SCRATCH_CARD_COST) return;
+    setCoins((c) => c - SCRATCH_CARD_COST);
+    setCard(generateScratchCard());
+    setRevealedCells([false, false, false]);
+    setCelebration(null);
+    payoutAppliedRef.current = false;
+  }
+
+  function handleCellRevealed(index) {
+    setRevealedCells((prev) => {
+      const next = [...prev];
+      next[index] = true;
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (!card || payoutAppliedRef.current || !revealedCells.every(Boolean)) return;
+    payoutAppliedRef.current = true;
+    const { outcome } = card;
+    if (outcome.prize > 0) setCoins((c) => c + outcome.prize);
+    if (outcome.kind === "jackpot") {
+      setCelebration("jackpot");
+      timeoutsRef.current.push(setTimeout(() => setCelebration(null), 2600));
+      queueRewardToast?.("¡3 Pokéballs en una Carta Rasca!", outcome.prize, Coins, "🎰 ¡Premio gordo!");
+    } else if (outcome.kind === "triple") {
+      setCelebration("triple");
+      timeoutsRef.current.push(setTimeout(() => setCelebration(null), 1400));
+      queueRewardToast?.("¡3 símbolos iguales en una Carta Rasca!", outcome.prize, Coins, "🎟️ ¡Premio de la Carta Rasca!");
+    } else if (outcome.kind === "pair") {
+      setCelebration("pair");
+      timeoutsRef.current.push(setTimeout(() => setCelebration(null), 700));
+    }
+    // "none": ninguna celebración, el propio panel de resultado ya deja
+    // claro que no ha tocado nada.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card, revealedCells]);
+
+  return (
+    <div className="rounded-xl p-5 relative overflow-hidden" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      {celebration === "jackpot" && <JackpotCelebration />}
+      {celebration === "triple" && card && (
+        <div
+          className="absolute inset-0 pointer-events-none gacha-glow-pulse"
+          style={{ background: `radial-gradient(circle, ${TYPE_COLORS[card.symbols[0]] || "#f2b705"}55 0%, transparent 70%)`, animationDuration: "1200ms" }}
+        />
+      )}
+
+      {!card && (
+        <div className="text-center text-sm text-[#8a8fa3] py-6">Compra una carta para empezar a rascar.</div>
+      )}
+
+      {card && (
+        <div className="flex items-center justify-center gap-3 py-2">
+          {card.symbols.map((symbolId, i) => (
+            <ScratchCell key={i} symbolId={symbolId} revealed={revealedCells[i]} onRevealed={() => handleCellRevealed(i)} />
+          ))}
+        </div>
+      )}
+
+      {card && allRevealed && (
+        <div
+          className="mt-4 rounded-lg p-3 text-center text-sm font-semibold"
+          style={{
+            background: card.outcome.prize > 0 ? (card.outcome.kind === "jackpot" ? "#f2b70522" : "#5fae5f1a") : "#1c1f2c",
+            border: `1px solid ${card.outcome.prize > 0 ? (card.outcome.kind === "jackpot" ? "#f2b705" : "#5fae5f55") : "#2c2f42"}`,
+            color: card.outcome.prize > 0 ? (card.outcome.kind === "jackpot" ? "#f2b705" : "#8fe0a8") : "#8a8fa3",
+          }}
+        >
+          {card.outcome.kind === "jackpot" && `🎉 ¡PREMIO GORDO! Has ganado ${card.outcome.prize} monedas 🎉`}
+          {card.outcome.kind === "triple" && `¡3 iguales! Has ganado ${card.outcome.prize} monedas`}
+          {card.outcome.kind === "pair" && `Pareja: has ganado ${card.outcome.prize} monedas`}
+          {card.outcome.kind === "none" && "Sin premio esta vez."}
+        </div>
+      )}
+
+      <div className="mt-4 flex justify-center">
+        <button
+          onClick={handleBuy}
+          disabled={!canBuy || coins < SCRATCH_CARD_COST}
+          className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          <Sparkles size={16} />
+          {!canBuy ? "Termina de rascar la carta actual" : coins < SCRATCH_CARD_COST ? `Te faltan ${SCRATCH_CARD_COST - coins} monedas` : `Comprar carta · ${SCRATCH_CARD_COST} monedas`}
+        </button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[10px] text-[#8a8fa3]">
+        <div>Sin premio · 30%</div>
+        <div>Pareja gama baja · 25 monedas</div>
+        <div>Pareja gama alta · 50 monedas</div>
+        <div>3 iguales gama baja · 100 monedas</div>
+        <div>3 iguales gama alta · 300 monedas</div>
+        <div className="flex items-center gap-1"><PokeballIcon size={11} /> 3 Pokéballs · 1000 monedas</div>
+      </div>
+    </div>
+  );
+}
+
 // Tarjeta de UN juego dentro de la cuadrícula de la tab Casino: icono,
-// nombre, breve descripción. `available` en `false` la muestra bloqueada
-// (Tragaperras/Cartas Rasca, con espacio para añadirlos en el futuro, ver el
-// pedido) en vez de abrir nada al pulsarla.
+// nombre, breve descripción.
 function CasinoGameCard({ icon: Icon, title, description, available, onClick }) {
   return (
     <button
@@ -12205,7 +12461,7 @@ function CasinoGameCard({ icon: Icon, title, description, available, onClick }) 
 }
 
 function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardToast }) {
-  const [activeGame, setActiveGame] = useState(null); // null = cuadrícula de juegos; "roulette" = Ruleta de la Fortuna
+  const [activeGame, setActiveGame] = useState(null); // null = cuadrícula de juegos; "roulette"/"slots"/"scratch" = juego abierto
 
   if (activeGame === "roulette") {
     return (
@@ -12237,6 +12493,21 @@ function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardTo
     );
   }
 
+  if (activeGame === "scratch") {
+    return (
+      <div className="space-y-4">
+        <button onClick={() => setActiveGame(null)} className="flex items-center gap-1.5 text-xs font-semibold text-[#8a8fa3] hover:text-white">
+          <ArrowLeft size={14} /> Volver al Casino
+        </button>
+        <div>
+          <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Sparkles size={22} color="#f2b705" /> Cartas Rasca</h2>
+          <p className="text-sm text-[#9aa0b4]">Compra una carta por {SCRATCH_CARD_COST} monedas y rasca sus 3 zonas para descubrir el premio.</p>
+        </div>
+        <ScratchCardGame coins={coins} setCoins={setCoins} queueRewardToast={queueRewardToast} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -12261,8 +12532,9 @@ function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardTo
         <CasinoGameCard
           icon={Sparkles}
           title="Cartas Rasca"
-          description="Próximo juego del Casino: rasca y descubre tu premio al instante."
-          available={false}
+          description="Compra una carta por 100 monedas y rasca sus 3 zonas: descubre tu premio al instante, hasta 1000 monedas con 3 Pokéballs."
+          available
+          onClick={() => setActiveGame("scratch")}
         />
       </div>
     </div>

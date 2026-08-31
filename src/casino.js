@@ -191,3 +191,107 @@ export function resolveSlotResult(reels) {
   }
   return { kind: "none", multiplier: 0, matchedSymbol: null };
 }
+
+/* ---------------------------------------------------------------
+   CARTAS RASCA (Scratch Cards)
+--------------------------------------------------------------- */
+
+// Coste FIJO de cada carta (a diferencia de la Tragaperras, aquí no hay
+// apuesta variable, tal cual se pidió).
+export const SCRATCH_CARD_COST = 100;
+
+// Los 5 símbolos elementales de SLOT_SYMBOLS se dividen en dos "gamas" para
+// poder aplicar la tabla de premios pedida (2/3 iguales de gama baja vs.
+// alta): se reutiliza el mismo orden de fuerza ya usado en la Tragaperras
+// (multiplier3 de SLOT_SYMBOLS: Fuego x10 > Agua x9 > Planta x8 > Eléctrico
+// x7 > Normal x6), partiendo por la mitad — los 2 de multiplicador más bajo
+// (Normal, Eléctrico) son "gama baja", los 3 de multiplicador más alto
+// (Fuego, Agua, Planta) son "gama alta". Pokéball queda fuera de ambas
+// gamas: sigue siendo el símbolo especial exclusivo del premio máximo (3
+// iguales), igual que en la Tragaperras.
+export const SCRATCH_LOW_TIER_SYMBOLS = ["normal", "electric"];
+export const SCRATCH_HIGH_TIER_SYMBOLS = ["fire", "water", "grass"];
+
+// Tabla de resultados posibles de una carta, con sus probabilidades (deben
+// sumar 100) y premio FIJO en monedas — a diferencia de la Tragaperras, aquí
+// el premio no es un multiplicador sobre nada, ya que la apuesta (el coste
+// de la carta) es siempre la misma.
+//
+// CÁLCULO DEL VALOR ESPERADO / MARGEN DE LA CASA:
+// E[premio] = 0.30*0 + 0.25*25 + 0.20*50 + 0.15*100 + 0.07*300 + 0.03*1000
+//           = 0 + 6.25 + 10 + 15 + 21 + 30 = 82.25 monedas
+// Sobre un coste de 100 monedas, eso es un margen de la casa de
+// (100-82.25)/100 = 17.75% — dentro del rango 15-18% pedido, así que las
+// probabilidades pedidas tal cual (sin necesidad de ajustarlas) ya cumplen
+// el objetivo.
+export const SCRATCH_OUTCOMES = [
+  { id: "none", kind: "none", tier: null, chance: 30, prize: 0 },
+  { id: "pair-low", kind: "pair", tier: "low", chance: 25, prize: 25 },
+  { id: "pair-high", kind: "pair", tier: "high", chance: 20, prize: 50 },
+  { id: "triple-low", kind: "triple", tier: "low", chance: 15, prize: 100 },
+  { id: "triple-high", kind: "triple", tier: "high", chance: 7, prize: 300 },
+  { id: "triple-pokeball", kind: "jackpot", tier: "special", chance: 3, prize: 1000 },
+];
+
+const SCRATCH_TOTAL_CHANCE = SCRATCH_OUTCOMES.reduce((sum, o) => sum + o.chance, 0);
+if (SCRATCH_TOTAL_CHANCE !== 100) {
+  throw new Error(`Las probabilidades de SCRATCH_OUTCOMES deben sumar 100 (suman ${SCRATCH_TOTAL_CHANCE})`);
+}
+
+function pickRandomFrom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// Sortea UN resultado de SCRATCH_OUTCOMES según sus probabilidades
+// declaradas. Se llama al COMPRAR la carta, antes de que el usuario rasque
+// nada: el premio ya está decidido de antemano (mismo criterio que la
+// ruleta y la tragaperras), rascar solo lo revela.
+export function rollScratchOutcome() {
+  const roll = Math.random() * 100;
+  let acc = 0;
+  for (const o of SCRATCH_OUTCOMES) {
+    acc += o.chance;
+    if (roll < acc) return o;
+  }
+  return SCRATCH_OUTCOMES[SCRATCH_OUTCOMES.length - 1]; // salvaguarda por redondeo de coma flotante
+}
+
+// Construye los 3 símbolos ocultos bajo la purpurina, COHERENTES con el
+// resultado ya sorteado (nunca al revés): para "jackpot" son 3 Pokéballs;
+// para "triple" son el mismo símbolo (al azar dentro de la gama que toque)
+// repetido 3 veces; para "pareja" son 2 copias de un símbolo (al azar dentro
+// de la gama que toque) más un tercero distinto en una posición al azar;
+// para "sin premio" son 3 símbolos distintos entre sí, sin ninguna pareja.
+export function buildScratchSymbols(outcome) {
+  const ALL = SLOT_SYMBOL_ORDER;
+  if (outcome.kind === "jackpot") return ["pokeball", "pokeball", "pokeball"];
+  if (outcome.kind === "triple") {
+    const pool = outcome.tier === "low" ? SCRATCH_LOW_TIER_SYMBOLS : SCRATCH_HIGH_TIER_SYMBOLS;
+    const s = pickRandomFrom(pool);
+    return [s, s, s];
+  }
+  if (outcome.kind === "pair") {
+    const pool = outcome.tier === "low" ? SCRATCH_LOW_TIER_SYMBOLS : SCRATCH_HIGH_TIER_SYMBOLS;
+    const pairSymbol = pickRandomFrom(pool);
+    let third;
+    do { third = pickRandomFrom(ALL); } while (third === pairSymbol);
+    const arr = [pairSymbol, pairSymbol, pairSymbol];
+    arr[Math.floor(Math.random() * 3)] = third;
+    return arr;
+  }
+  // "none": 3 símbolos distintos entre sí (sin pareja ni trío) — puramente
+  // decorativo, el premio (0) ya viene fijado por el propio outcome.
+  let a, b, c;
+  do {
+    a = pickRandomFrom(ALL); b = pickRandomFrom(ALL); c = pickRandomFrom(ALL);
+  } while (a === b || b === c || a === c);
+  return [a, b, c];
+}
+
+// Genera una carta completa (resultado + símbolos ya coherentes con él),
+// lista para mostrarse tapada y empezar a rascarse.
+export function generateScratchCard() {
+  const outcome = rollScratchOutcome();
+  const symbols = buildScratchSymbols(outcome);
+  return { outcome, symbols };
+}
