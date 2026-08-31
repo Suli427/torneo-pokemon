@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck, Dice5, ArrowLeft } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -14,6 +14,10 @@ import {
   claimDailyReward, getStreakDayNumberForToday, computePokedleReward, scorePokedleGuess, POKEDLE_MAX_ATTEMPTS,
 } from "./dailyRewards";
 import { CHANGELOG, getSortedChangelog } from "./changelog";
+import {
+  CASINO_STORAGE_KEY, loadCasinoState, ROULETTE_SECTORS, ROULETTE_SPIN_COST, ROULETTE_HISTORY_LIMIT,
+  rollRoulette, canClaimFreeRouletteSpin,
+} from "./casino";
 import {
   WEEKLY_TOURNAMENT_STORAGE_KEY, WEEKLY_TOURNAMENT_REWARD, WEEKLY_TEAM_SIZE,
   getActiveWeekKey, getNextWeeklyResetDate, selectWeeklyTheme, speciesMatchesTheme,
@@ -10847,7 +10851,7 @@ function RarityProgressCard({ rarity, pool, collection }) {
   );
 }
 
-function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPull }) {
+function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPull, freeGachaPulls = 0, setFreeGachaPulls }) {
   const [selectedType, setSelectedType] = useState(null); // null = gacha general
   const [showAllTypes, setShowAllTypes] = useState(false);
   const [drawing, setDrawing] = useState(false);
@@ -10869,7 +10873,12 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
   }, []);
 
   const pool = selectedType ? GACHA_POOL.filter((p) => p.types.includes(selectedType)) : GACHA_POOL;
-  const cost = selectedType ? TYPE_GACHA_COST : GENERAL_GACHA_COST;
+  // Créditos de tirada gratis (premio de la Ruleta de la Fortuna, ver
+  // src/casino.js): solo se aplican al gacha GENERAL, nunca a uno de tipo
+  // concreto (más caro y más específico, fuera del alcance del premio tal
+  // como se pidió).
+  const usingFreePull = !selectedType && freeGachaPulls > 0;
+  const cost = selectedType ? TYPE_GACHA_COST : (usingFreePull ? 0 : GENERAL_GACHA_COST);
   const refundTable = selectedType ? TYPE_GACHA_REFUND : GENERAL_GACHA_REFUND;
 
   // Secuencia de fases visuales (Pokéball temblando -> destello -> [oscuro,
@@ -10897,7 +10906,7 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
   }
 
   async function handleDraw() {
-    if (drawing || coins < cost) return;
+    if (drawing || (!usingFreePull && coins < cost)) return;
     setError(null);
     setDrawing(true);
     try {
@@ -10908,7 +10917,13 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
         return;
       }
       const { chosen, rarity, emptyRarities } = roll;
-      setCoins((c) => c - cost);
+      // Un crédito de tirada gratis (ver freeGachaPulls/usingFreePull, premio
+      // de la Ruleta de la Fortuna) se consume en vez de cobrar monedas;
+      // `cost` ya vale 0 en ese caso, así que `setCoins((c) => c - cost)`
+      // sería un no-op de todos modos, pero se evita para no confundir con
+      // un cobro real de 0 monedas.
+      if (usingFreePull) setFreeGachaPulls?.((n) => Math.max(0, n - 1));
+      else setCoins((c) => c - cost);
 
       // Primero se decide la especie (rareza+pool, ya resuelto arriba), y
       // DESPUÉS si esta tirada concreta es shiny; el resultado es "nuevo"
@@ -10936,7 +10951,10 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
       }
     } catch (e) {
       setError("No se pudo completar la tirada. Comprueba tu conexión e inténtalo de nuevo.");
-      setCoins((c) => c + cost); // deshace el coste si la tirada no llegó a resolverse
+      // Deshace el coste si la tirada no llegó a resolverse: el crédito
+      // gratis se devuelve, o se reembolsan las monedas si se cobraron.
+      if (usingFreePull) setFreeGachaPulls?.((n) => n + 1);
+      else setCoins((c) => c + cost);
     }
     revealTimeoutsRef.current.forEach(clearTimeout);
     setRevealPhase(null);
@@ -10944,7 +10962,7 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
     setDrawing(false);
   }
 
-  const canAfford = coins >= cost;
+  const canAfford = usingFreePull || coins >= cost;
   const visibleTypes = showAllTypes ? ALL_TYPES : ALL_TYPES.slice(0, 5);
 
   return (
@@ -10957,6 +10975,12 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
       <div className="rounded-xl p-5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
         <h3 className="font-display text-lg text-white mb-1">Gacha Pokémon</h3>
         <p className="text-xs text-[#8a8fa3] mb-4">Un único gacha general con todos los Pokémon del pool, o gachas específicos por tipo elemental (más caros, pero con más probabilidad de tocar lo que buscas). Si sale un Pokémon repetido, se reembolsan monedas según su rareza.</p>
+
+        {freeGachaPulls > 0 && (
+          <div className="mb-4 text-xs text-[#f2b705] bg-[#f2b70518] border border-[#f2b70544] rounded-lg p-2.5 flex items-center gap-2">
+            <Gift size={14} /> Tienes {freeGachaPulls} {freeGachaPulls === 1 ? "tirada gratis" : "tiradas gratis"} del gacha general (premio de la Ruleta de la Fortuna, sin coste en monedas). Se usa automáticamente en tu próxima tirada del gacha general.
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2 mb-4">
           <button
@@ -11005,12 +11029,14 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
           className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
         >
-          {drawing ? <Loader2 className="animate-spin" size={16} /> : <Coins size={16} />}
+          {drawing ? <Loader2 className="animate-spin" size={16} /> : usingFreePull ? <Gift size={16} /> : <Coins size={16} />}
           {drawing
             ? "Tirando..."
-            : canAfford
-              ? `Tirar ${selectedType ? `gacha de ${TYPE_ES[selectedType]}` : "gacha general"} · ${cost} monedas`
-              : `Te faltan ${cost - coins} monedas`}
+            : usingFreePull
+              ? "Tirar gacha general · ¡Gratis!"
+              : canAfford
+                ? `Tirar ${selectedType ? `gacha de ${TYPE_ES[selectedType]}` : "gacha general"} · ${cost} monedas`
+                : `Te faltan ${cost - coins} monedas`}
         </button>
       </div>
 
@@ -11664,6 +11690,361 @@ function DiarioTab({ api, dailyRewardsState, setDailyRewardsState, onClaimDailyR
 }
 
 /* ---------------------------------------------------------------
+   TAB: CASINO
+--------------------------------------------------------------- */
+
+// Ángulo (en grados, sentido horario desde arriba) que ocupa cada una de las
+// 8 casillas — SIEMPRE el mismo tamaño visual, independiente de sus
+// probabilidades reales (ver el comentario de ROULETTE_SECTORS).
+const ROULETTE_SECTOR_ANGLE = 360 / ROULETTE_SECTORS.length;
+
+// Duración total de la animación de giro (gira varias vueltas completas con
+// desaceleración progresiva hasta detenerse en el sector ya sorteado), en el
+// rango de 3-4s pedido.
+const ROULETTE_SPIN_DURATION_MS = 3800;
+
+// Disco de la ruleta: gradiente cónico con las 8 casillas a color (siempre
+// el mismo tamaño de 45° cada una) y sus etiquetas dispuestas en forma
+// radial alrededor del centro — mismo criterio "estilo casino real" que una
+// ruleta física, donde el texto de las casillas de la mitad inferior
+// aparece boca abajo. El giro en sí se aplica sobre este mismo elemento vía
+// `rotationDeg` (transform: rotate), con una transición CSS que solo se
+// activa mientras `spinning` es true (para que un giro nuevo no herede una
+// transición a medias del anterior).
+function RouletteWheel({ rotationDeg, spinning, justLanded, landedIndex }) {
+  const gradient = `conic-gradient(${ROULETTE_SECTORS
+    .map((s, i) => `${s.color} ${i * ROULETTE_SECTOR_ANGLE}deg ${(i + 1) * ROULETTE_SECTOR_ANGLE}deg`)
+    .join(", ")})`;
+  return (
+    <div className="relative mx-auto" style={{ width: 260, height: 260 }}>
+      {/* Puntero fijo (no gira): triángulo apuntando hacia abajo, hacia el
+          disco, en la posición de las 12 en punto. */}
+      <div
+        className="absolute z-10"
+        style={{
+          top: -6, left: "50%", transform: "translateX(-50%)",
+          width: 0, height: 0,
+          borderLeft: "12px solid transparent",
+          borderRight: "12px solid transparent",
+          borderTop: "18px solid #f2b705",
+          filter: "drop-shadow(0 0 4px #f2b70599)",
+        }}
+      />
+      <div
+        className="absolute inset-0 rounded-full overflow-hidden"
+        style={{
+          background: gradient,
+          border: "4px solid #14161f",
+          outline: "2px solid #2c2f42",
+          transform: `rotate(${rotationDeg}deg)`,
+          transition: spinning ? `transform ${ROULETTE_SPIN_DURATION_MS}ms cubic-bezier(0.12,0.85,0.32,1)` : "none",
+          boxShadow: justLanded ? `0 0 30px 6px ${ROULETTE_SECTORS[landedIndex]?.color || "#f2b705"}aa` : "0 0 20px #00000066",
+        }}
+      >
+        {ROULETTE_SECTORS.map((s, i) => {
+          const center = i * ROULETTE_SECTOR_ANGLE + ROULETTE_SECTOR_ANGLE / 2;
+          return (
+            <div key={s.id} className="absolute inset-0" style={{ transform: `rotate(${center}deg)` }}>
+              <div
+                className="absolute left-1/2 top-2 -translate-x-1/2 text-center leading-tight"
+                style={{
+                  fontSize: s.type === "jackpot" ? 12 : 11,
+                  fontWeight: 800,
+                  color: s.type === "nothing" ? "#c7cbdb" : "#0c0e15",
+                  width: 60,
+                }}
+              >
+                {s.type === "jackpot" ? "★ JACKPOT ★" : s.shortLabel}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {/* Núcleo central decorativo, encima del disco pero sin girar con él. */}
+      <div
+        className="absolute rounded-full flex items-center justify-center"
+        style={{
+          width: 44, height: 44, left: "50%", top: "50%", transform: "translate(-50%,-50%)",
+          background: "linear-gradient(160deg,#f2b705,#b8860b)", border: "3px solid #14161f",
+        }}
+      >
+        <Dice5 size={18} color="#12141d" />
+      </div>
+    </div>
+  );
+}
+
+// Partículas de celebración del JACKPOT: mismo mecanismo ya usado para un
+// resultado shiny del gacha (ver SHINY_PARTICLES/gacha-particle en
+// GachaResultModal), pero con más partículas y monedas en vez de estrellas,
+// para una celebración más notoria acorde al premio máximo de la ruleta.
+const JACKPOT_PARTICLES = [
+  { left: "5%", size: 20, delay: 0, duration: 1400 }, { left: "16%", size: 15, delay: 90, duration: 1550 },
+  { left: "27%", size: 22, delay: 180, duration: 1350 }, { left: "38%", size: 16, delay: 40, duration: 1500 },
+  { left: "49%", size: 24, delay: 260, duration: 1300 }, { left: "60%", size: 17, delay: 130, duration: 1600 },
+  { left: "71%", size: 21, delay: 220, duration: 1400 }, { left: "82%", size: 15, delay: 60, duration: 1550 },
+  { left: "93%", size: 19, delay: 310, duration: 1350 }, { left: "10%", size: 14, delay: 380, duration: 1500 },
+  { left: "45%", size: 18, delay: 420, duration: 1450 }, { left: "88%", size: 16, delay: 350, duration: 1600 },
+];
+
+function JackpotCelebration() {
+  return (
+    <div className="fixed inset-0 z-[60] pointer-events-none overflow-hidden">
+      {JACKPOT_PARTICLES.map((p, i) => (
+        <span
+          key={i}
+          className="absolute gacha-particle"
+          style={{ left: p.left, top: -20, fontSize: p.size, animationDelay: `${p.delay}ms`, animationDuration: `${p.duration}ms` }}
+        >
+          🪙
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Juego de la Ruleta de la Fortuna: un giro gratis al día (mismo reset de
+// las 10:00 hora de Madrid que Pokédle/recompensa diaria, ver
+// getDailyResetDayKey) y giros de pago sin límite, ambos con exactamente las
+// mismas 8 casillas y probabilidades (ver ROULETTE_SECTORS). El resultado se
+// sortea ANTES de animar (rollRoulette), y la animación solo gira el disco
+// hasta llegar visualmente a ese sector ya decidido.
+function RouletteGame({ coins, setCoins, casinoState, setCasinoState, queueRewardToast }) {
+  const [todayKey] = useState(getDailyResetDayKey);
+  const [spinning, setSpinning] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const rotationRef = useRef(0);
+  const [landedIndex, setLandedIndex] = useState(null);
+  const [justLanded, setJustLanded] = useState(false);
+  const [lastResult, setLastResult] = useState(null);
+  const [showJackpot, setShowJackpot] = useState(false);
+  const timeoutsRef = useRef([]);
+
+  useEffect(() => {
+    return () => { timeoutsRef.current.forEach(clearTimeout); };
+  }, []);
+
+  const canFree = canClaimFreeRouletteSpin(casinoState.roulette, todayKey);
+  const canPaid = coins >= ROULETTE_SPIN_COST;
+
+  function applyReward(sector) {
+    setCasinoState((s) => ({
+      ...s,
+      roulette: {
+        ...s.roulette,
+        history: [{ id: sector.id, label: sector.label, at: Date.now() }, ...(s.roulette.history || [])].slice(0, ROULETTE_HISTORY_LIMIT),
+      },
+      freeGachaPulls: sector.type === "gacha-pull" ? (s.freeGachaPulls || 0) + 1 : (s.freeGachaPulls || 0),
+    }));
+    if (sector.type === "coins" || sector.type === "jackpot") {
+      setCoins((c) => c + sector.amount);
+    }
+    setLastResult(sector);
+    if (sector.type === "jackpot") {
+      setShowJackpot(true);
+      timeoutsRef.current.push(setTimeout(() => setShowJackpot(false), 2600));
+      queueRewardToast?.("¡JACKPOT en la Ruleta de la Fortuna!", sector.amount, Coins, "🎰 ¡Premio de la Ruleta!");
+    } else if (sector.type === "coins") {
+      queueRewardToast?.("Premio de la Ruleta de la Fortuna", sector.amount, Coins, "🎰 ¡Premio de la Ruleta!");
+    }
+    // "Nada" y "tirada gratis del gacha" no usan el toast de +monedas (fijo
+    // a "monedas", no encajaría): su resultado ya queda claro en el propio
+    // panel de la ruleta (lastResult, más abajo).
+  }
+
+  function handleSpin(isFree) {
+    if (spinning) return;
+    if (isFree && !canFree) return;
+    if (!isFree && !canPaid) return;
+
+    setLastResult(null);
+    setJustLanded(false);
+    setSpinning(true);
+
+    // El coste (o el consumo del giro gratis diario) se aplica AL EMPEZAR a
+    // girar, no al terminar — mismo criterio que el coste del gacha en
+    // GatchaTab, para que cerrar la pestaña a mitad de la animación no deje
+    // "colar" un giro sin pagar.
+    if (isFree) {
+      setCasinoState((s) => ({ ...s, roulette: { ...s.roulette, lastFreeSpinDayKey: todayKey } }));
+    } else {
+      setCoins((c) => c - ROULETTE_SPIN_COST);
+    }
+
+    const sectorIndex = rollRoulette();
+    const sector = ROULETTE_SECTORS[sectorIndex];
+    const targetCenter = sectorIndex * ROULETTE_SECTOR_ANGLE + ROULETTE_SECTOR_ANGLE / 2;
+    // Pequeño desplazamiento aleatorio dentro de la propia casilla (nunca
+    // cerca de su borde) para que no pare siempre en el centro exacto,
+    // sin arriesgarse a acabar visualmente en la casilla vecina.
+    const jitter = (Math.random() - 0.5) * (ROULETTE_SECTOR_ANGLE * 0.5);
+    // El puntero está fijo arriba (0°); las casillas se dibujan en sentido
+    // horario, así que para traer el centro de la casilla sorteada hasta el
+    // puntero hay que girar el disco en sentido CONTRARIO a ese ángulo.
+    const requiredMod = ((360 - targetCenter - jitter) % 360 + 360) % 360;
+    const extraSpins = 6 + Math.floor(Math.random() * 3); // 6-8 vueltas completas
+    const currentMod = ((rotationRef.current % 360) + 360) % 360;
+    const delta = extraSpins * 360 + ((requiredMod - currentMod + 360) % 360);
+    const nextRotation = rotationRef.current + delta;
+    rotationRef.current = nextRotation;
+    setRotation(nextRotation);
+
+    timeoutsRef.current.push(setTimeout(() => {
+      setLandedIndex(sectorIndex);
+      setJustLanded(true);
+      timeoutsRef.current.push(setTimeout(() => setJustLanded(false), 700));
+      applyReward(sector);
+      setSpinning(false);
+    }, ROULETTE_SPIN_DURATION_MS));
+  }
+
+  return (
+    <div className="rounded-xl p-5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      {showJackpot && <JackpotCelebration />}
+      <RouletteWheel rotationDeg={rotation} spinning={spinning} justLanded={justLanded} landedIndex={landedIndex} />
+
+      {lastResult && (
+        <div
+          className="mt-4 rounded-lg p-3 text-center text-sm font-semibold"
+          style={{
+            background: lastResult.type === "jackpot" ? "#f2b70522" : lastResult.type === "nothing" ? "#1c1f2c" : "#5fae5f1a",
+            border: `1px solid ${lastResult.type === "jackpot" ? "#f2b705" : lastResult.type === "nothing" ? "#2c2f42" : "#5fae5f55"}`,
+            color: lastResult.type === "jackpot" ? "#f2b705" : lastResult.type === "nothing" ? "#8a8fa3" : "#8fe0a8",
+          }}
+        >
+          {lastResult.type === "nothing" && "Esta vez no ha tocado nada. ¡Prueba otra vez!"}
+          {lastResult.type === "coins" && `¡Has ganado ${lastResult.amount} monedas!`}
+          {lastResult.type === "jackpot" && `🎉 ¡JACKPOT! Has ganado ${lastResult.amount} monedas 🎉`}
+          {lastResult.type === "gacha-pull" && "¡Tirada gratis del gacha general! Ya la tienes acreditada en la tab Gatcha."}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3 mt-4">
+        <button
+          onClick={() => handleSpin(true)}
+          disabled={spinning || !canFree}
+          className="flex flex-col items-center justify-center gap-1 px-4 py-3 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: canFree ? "linear-gradient(135deg,#2ecc71,#1e9e58)" : "#1c1f2c", border: "1px solid #2c2f42" }}
+        >
+          <span className="flex items-center gap-1.5"><Gift size={15} /> Giro gratis</span>
+          <span className="text-[10px] font-normal opacity-80">
+            {canFree ? "Disponible hoy" : "Ya usado hoy — vuelve tras el reset de las 10:00"}
+          </span>
+        </button>
+        <button
+          onClick={() => handleSpin(false)}
+          disabled={spinning || !canPaid}
+          className="flex flex-col items-center justify-center gap-1 px-4 py-3 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          <span className="flex items-center gap-1.5">{spinning ? <Loader2 className="animate-spin" size={15} /> : <Coins size={15} />} Girar</span>
+          <span className="text-[10px] font-normal opacity-80">
+            {spinning ? "Girando..." : canPaid ? `${ROULETTE_SPIN_COST} monedas` : `Te faltan ${ROULETTE_SPIN_COST - coins} monedas`}
+          </span>
+        </button>
+      </div>
+
+      {(casinoState.roulette.history || []).length > 0 && (
+        <div className="mt-4">
+          <div className="text-[11px] font-semibold text-[#8a8fa3] mb-1.5">Últimos resultados</div>
+          <div className="flex flex-wrap gap-1.5">
+            {casinoState.roulette.history.map((h, i) => (
+              <span key={`${h.at}-${i}`} className="text-[10px] px-2 py-1 rounded-full" style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}>
+                {h.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+        {ROULETTE_SECTORS.map((s) => (
+          <div key={s.id} className="flex items-center gap-1.5 text-[10px] text-[#8a8fa3]">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }} />
+            {s.shortLabel} · {s.chance}%
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Tarjeta de UN juego dentro de la cuadrícula de la tab Casino: icono,
+// nombre, breve descripción. `available` en `false` la muestra bloqueada
+// (Tragaperras/Cartas Rasca, con espacio para añadirlos en el futuro, ver el
+// pedido) en vez de abrir nada al pulsarla.
+function CasinoGameCard({ icon: Icon, title, description, available, onClick }) {
+  return (
+    <button
+      onClick={available ? onClick : undefined}
+      disabled={!available}
+      className="rounded-xl p-4 text-left transition-all disabled:cursor-not-allowed"
+      style={{
+        background: available ? "linear-gradient(160deg,#3a3312,#14161f)" : "#14161f",
+        border: available ? "1px solid #f2b70566" : "1px solid #262a3a",
+        opacity: available ? 1 : 0.6,
+      }}
+    >
+      <div className="w-11 h-11 rounded-lg flex items-center justify-center mb-3" style={{ background: available ? "#f2b70522" : "#1c1f2c" }}>
+        {available ? <Icon size={20} color="#f2b705" /> : <Lock size={16} color="#5c6178" />}
+      </div>
+      <div className="text-white font-semibold text-sm mb-1">{title}</div>
+      <div className="text-[11px] text-[#8a8fa3] leading-snug">{description}</div>
+      {!available && <div className="text-[10px] text-[#5c6178] font-semibold uppercase tracking-wide mt-2">Próximamente</div>}
+    </button>
+  );
+}
+
+function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardToast }) {
+  const [activeGame, setActiveGame] = useState(null); // null = cuadrícula de juegos; "roulette" = Ruleta de la Fortuna
+
+  if (activeGame === "roulette") {
+    return (
+      <div className="space-y-4">
+        <button onClick={() => setActiveGame(null)} className="flex items-center gap-1.5 text-xs font-semibold text-[#8a8fa3] hover:text-white">
+          <ArrowLeft size={14} /> Volver al Casino
+        </button>
+        <div>
+          <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Dice5 size={22} color="#f2b705" /> Ruleta de la Fortuna</h2>
+          <p className="text-sm text-[#9aa0b4]">Un giro gratis cada día, o gira las veces que quieras por {ROULETTE_SPIN_COST} monedas.</p>
+        </div>
+        <RouletteGame coins={coins} setCoins={setCoins} casinoState={casinoState} setCasinoState={setCasinoState} queueRewardToast={queueRewardToast} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Dice5 size={22} color="#e3350d" /> Casino</h2>
+        <p className="text-sm text-[#9aa0b4]">Prueba tu suerte y gana monedas extra, tiradas de gacha gratis y más.</p>
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <CasinoGameCard
+          icon={Dice5}
+          title="Ruleta de la Fortuna"
+          description="Gira la ruleta y gana monedas, una tirada gratis del gacha o el JACKPOT. Un giro gratis cada día."
+          available
+          onClick={() => setActiveGame("roulette")}
+        />
+        <CasinoGameCard
+          icon={Coins}
+          title="Tragaperras"
+          description="Próximo juego del Casino: alinea símbolos para ganar premios."
+          available={false}
+        />
+        <CasinoGameCard
+          icon={Sparkles}
+          title="Cartas Rasca"
+          description="Próximo juego del Casino: rasca y descubre tu premio al instante."
+          available={false}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------
    TAB: LOGROS
 --------------------------------------------------------------- */
 
@@ -11873,6 +12254,10 @@ export default function App() {
   // src/dailyRewards.js. Comparten una única clave de localStorage y un
   // único "día actual" (reset a las 10:00 hora de Madrid).
   const [dailyRewardsState, setDailyRewardsState] = useState(loadDailyRewardsState);
+  // Casino (ver src/casino.js): por ahora solo la Ruleta de la Fortuna
+  // (giro gratis diario + historial) y el contador de créditos de tirada
+  // gratis del gacha general que puede otorgar como premio.
+  const [casinoState, setCasinoState] = useState(loadCasinoState);
   // Torneo Semanal (ver src/weeklyTournaments.js): temáticas ya vistas
   // (para no repetir la de la semana anterior) y semanas ya completadas
   // (cobradas), ambas indexadas por weekKey.
@@ -12002,6 +12387,10 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem(DAILY_REWARDS_STORAGE_KEY, JSON.stringify(dailyRewardsState)); } catch (e) { /* localStorage no disponible */ }
   }, [dailyRewardsState]);
+
+  useEffect(() => {
+    try { localStorage.setItem(CASINO_STORAGE_KEY, JSON.stringify(casinoState)); } catch (e) { /* localStorage no disponible */ }
+  }, [casinoState]);
 
   // Reutiliza la misma cola/estilo de notificación que ya usan los logros
   // (AchievementToastStack) para la recompensa diaria y el Pokédle, en vez
@@ -12277,6 +12666,7 @@ export default function App() {
     { id: "personajes", label: "Personajes", icon: Users },
     { id: "pokemon", label: "Pokémon", icon: Boxes },
     { id: "tienda", label: "Gatcha", icon: Store },
+    { id: "casino", label: "Casino", icon: Dice5 },
     { id: "diario", label: "Diario", icon: CalendarDays },
     { id: "logros", label: "Logros", icon: Award },
   ];
@@ -12460,7 +12850,22 @@ export default function App() {
           <PokemonTab api={api} collection={collection} setCollection={setCollection} onGoToGatcha={() => setTab("tienda")} />
         </div>
         <div style={{ display: tab === "tienda" ? "block" : "none" }}>
-          <GatchaTab api={api} coins={coins} setCoins={setCoins} collection={collection} setCollection={setCollection} onGachaPull={recordGachaPull} />
+          <GatchaTab
+            api={api}
+            coins={coins}
+            setCoins={setCoins}
+            collection={collection}
+            setCollection={setCollection}
+            onGachaPull={recordGachaPull}
+            freeGachaPulls={casinoState.freeGachaPulls || 0}
+            setFreeGachaPulls={(updater) => setCasinoState((s) => ({
+              ...s,
+              freeGachaPulls: typeof updater === "function" ? updater(s.freeGachaPulls || 0) : updater,
+            }))}
+          />
+        </div>
+        <div style={{ display: tab === "casino" ? "block" : "none" }}>
+          <CasinoTab coins={coins} setCoins={setCoins} casinoState={casinoState} setCasinoState={setCasinoState} queueRewardToast={queueRewardToast} />
         </div>
         <div style={{ display: tab === "diario" ? "block" : "none" }}>
           <DiarioTab
