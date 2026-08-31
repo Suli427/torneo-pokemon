@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck, Dice5, ArrowLeft } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck, Dice5, ArrowLeft, Droplet, Leaf, Zap, Circle } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -17,6 +17,7 @@ import { CHANGELOG, getSortedChangelog } from "./changelog";
 import {
   CASINO_STORAGE_KEY, loadCasinoState, ROULETTE_SECTORS, ROULETTE_SPIN_COST, ROULETTE_HISTORY_LIMIT,
   rollRoulette, canClaimFreeRouletteSpin,
+  SLOT_SYMBOLS, SLOT_SYMBOL_ORDER, SLOT_MIN_BET, SLOT_MAX_BET, spinSlotMachine, resolveSlotResult,
 } from "./casino";
 import {
   WEEKLY_TOURNAMENT_STORAGE_KEY, WEEKLY_TOURNAMENT_REWARD, WEEKLY_TEAM_SIZE,
@@ -11969,6 +11970,214 @@ function RouletteGame({ coins, setCoins, casinoState, setCasinoState, queueRewar
   );
 }
 
+/* ---------------------------------------------------------------
+   CASINO: TRAGAPERRAS (Slot Machine)
+--------------------------------------------------------------- */
+
+// Icono representativo de cada símbolo elemental (mismo criterio que el
+// resto de la app: iconos de lucide-react ya usados en otras partes para
+// conceptos similares). Pokéball no tiene entrada aquí porque usa el
+// componente PokeballIcon ya existente en vez de un icono de tipo.
+const SLOT_SYMBOL_ICONS = { fire: Flame, water: Droplet, grass: Leaf, electric: Zap, normal: Circle };
+
+// Alto de cada símbolo dentro de un carrete (también el alto de la ventana
+// visible de cada uno, que recorta el resto de la tira vía overflow
+// hidden — a diferencia de una tragaperras real de 3 filas, aquí cada
+// carrete muestra un único símbolo a la vez, como se pidió).
+const SLOT_ITEM_HEIGHT = 76;
+// Cuántas copias completas de SLOT_SYMBOL_ORDER se repiten en la tira de
+// cada carrete: suficiente margen para elegir un número de "vueltas"
+// aleatorio (6-9) sin quedarse corto.
+const SLOT_STRIP_REPEATS = 14;
+// Duración de la animación de cada carrete (con desfase de 400ms entre
+// cada uno, dentro del rango 300-500ms pedido) y su desaceleración vía
+// cubic-bezier — mismo criterio que la Ruleta de la Fortuna.
+const SLOT_REEL_STAGGER_MS = 400;
+const SLOT_REEL_BASE_DURATION_MS = 1500;
+const SLOT_REEL_DURATIONS = [0, 1, 2].map((i) => SLOT_REEL_BASE_DURATION_MS + i * SLOT_REEL_STAGGER_MS);
+
+function SlotSymbolTile({ symbolId, size = 34 }) {
+  if (symbolId === "pokeball") return <PokeballIcon size={size} />;
+  const Icon = SLOT_SYMBOL_ICONS[symbolId];
+  return <Icon size={size} color={TYPE_COLORS[symbolId]} />;
+}
+
+// Un único carrete: tira vertical con SLOT_STRIP_REPEATS copias de
+// SLOT_SYMBOL_ORDER, desplazada vía `transform: translateY` hasta que el
+// símbolo `finalSymbol` (ya sorteado de antemano, ver SlotMachineGame) quede
+// exactamente centrado en la ventana visible — mismo patrón ya usado en
+// RouletteWheel: el giro solo anima hasta un resultado ya decidido, nunca al
+// revés. `spinToken` cambia en cada tirada nueva para que React sepa que
+// debe reiniciar la posición de scroll (si no, una tirada que sortea el
+// mismo símbolo que la anterior no tendría ningún cambio de estilo que
+// animar).
+function SlotReel({ finalSymbol, cycles, spinning, durationMs }) {
+  const stripIds = useMemo(() => {
+    const arr = [];
+    for (let i = 0; i < SLOT_STRIP_REPEATS; i++) arr.push(...SLOT_SYMBOL_ORDER);
+    return arr;
+  }, []);
+  const targetIndexInCycle = SLOT_SYMBOL_ORDER.indexOf(finalSymbol);
+  const finalIndex = cycles * SLOT_SYMBOL_ORDER.length + targetIndexInCycle;
+  return (
+    <div
+      className="relative overflow-hidden rounded-lg shrink-0"
+      style={{ width: SLOT_ITEM_HEIGHT, height: SLOT_ITEM_HEIGHT, background: "#0e1018", border: "2px solid #2c2f42" }}
+    >
+      <div
+        style={{
+          transform: `translateY(-${finalIndex * SLOT_ITEM_HEIGHT}px)`,
+          transition: spinning ? `transform ${durationMs}ms cubic-bezier(0.12,0.85,0.32,1)` : "none",
+        }}
+      >
+        {stripIds.map((id, i) => (
+          <div key={i} className="flex items-center justify-center" style={{ height: SLOT_ITEM_HEIGHT }}>
+            <SlotSymbolTile symbolId={id} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Juego de la Tragaperras: apuesta LIBRE (10-1000 monedas, sin superar el
+// saldo disponible), 3 carretes independientes con las mismas 6 casillas
+// (5 elementales + Pokéball, ver SLOT_SYMBOLS) y el resultado ya sorteado
+// ANTES de animar nada (spinSlotMachine/resolveSlotResult), igual que la
+// Ruleta de la Fortuna.
+function SlotMachineGame({ coins, setCoins, queueRewardToast }) {
+  const [betInput, setBetInput] = useState(String(SLOT_MIN_BET));
+  const [spinning, setSpinning] = useState(false);
+  const [reelState, setReelState] = useState([
+    { symbol: "normal", cycles: 0 }, { symbol: "normal", cycles: 0 }, { symbol: "normal", cycles: 0 },
+  ]);
+  const [result, setResult] = useState(null);
+  const [celebration, setCelebration] = useState(null); // null | "pair" | "triple" | "jackpot"
+  const timeoutsRef = useRef([]);
+
+  useEffect(() => {
+    return () => { timeoutsRef.current.forEach(clearTimeout); };
+  }, []);
+
+  const maxBet = Math.max(0, Math.min(SLOT_MAX_BET, Math.floor(coins)));
+  const parsedBet = Math.floor(Number(betInput));
+  const betValid = Number.isFinite(parsedBet) && parsedBet >= SLOT_MIN_BET && parsedBet <= maxBet;
+
+  function handleSpin() {
+    if (spinning || !betValid) return;
+    const bet = parsedBet;
+
+    setResult(null);
+    setCelebration(null);
+    setSpinning(true);
+    // El coste se cobra al empezar a girar, no al terminar — mismo criterio
+    // que la Ruleta de la Fortuna y el Gatcha, para que cerrar la pestaña a
+    // mitad de la animación no permita "colar" una tirada sin pagar.
+    setCoins((c) => c - bet);
+
+    const reels = spinSlotMachine();
+    const outcome = resolveSlotResult(reels);
+    const nextReelState = reels.map(() => ({
+      // 6-9 vueltas completas de la tira antes de detenerse, mismo criterio
+      // "varias vueltas" ya usado en la ruleta.
+      cycles: 6 + Math.floor(Math.random() * 4),
+    })).map((r, i) => ({ symbol: reels[i], cycles: r.cycles }));
+    setReelState(nextReelState);
+
+    const totalDuration = SLOT_REEL_DURATIONS[SLOT_REEL_DURATIONS.length - 1];
+    timeoutsRef.current.push(setTimeout(() => {
+      const payout = Math.round(bet * outcome.multiplier);
+      if (payout > 0) setCoins((c) => c + payout);
+      setResult({ reels, outcome, bet, payout });
+      if (outcome.kind === "jackpot") setCelebration("jackpot");
+      else if (outcome.kind === "triple") setCelebration("triple");
+      else if (outcome.kind === "pair") setCelebration("pair");
+      if (outcome.kind === "jackpot") {
+        timeoutsRef.current.push(setTimeout(() => setCelebration(null), 2600));
+        queueRewardToast?.("¡3 Pokéballs en la Tragaperras!", payout, Coins, "🎰 ¡Premio gordo!");
+      } else if (outcome.kind === "triple") {
+        timeoutsRef.current.push(setTimeout(() => setCelebration(null), 1400));
+        queueRewardToast?.(`¡3 ${SLOT_SYMBOLS.find((s) => s.id === outcome.matchedSymbol)?.label} en la Tragaperras!`, payout, Coins, "🎰 ¡Premio de la Tragaperras!");
+      } else if (outcome.kind === "pair") {
+        timeoutsRef.current.push(setTimeout(() => setCelebration(null), 700));
+      }
+      setSpinning(false);
+    }, totalDuration + 80));
+  }
+
+  return (
+    <div className="rounded-xl p-5 relative overflow-hidden" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      {celebration === "jackpot" && <JackpotCelebration />}
+      {celebration === "triple" && (
+        <div
+          className="absolute inset-0 pointer-events-none gacha-glow-pulse"
+          style={{ background: `radial-gradient(circle, ${TYPE_COLORS[result?.outcome?.matchedSymbol] || "#f2b705"}55 0%, transparent 70%)`, animationDuration: "1200ms" }}
+        />
+      )}
+
+      <div className="flex items-center justify-center gap-3 py-2">
+        {reelState.map((r, i) => (
+          <SlotReel key={i} finalSymbol={r.symbol} cycles={r.cycles} spinning={spinning} durationMs={SLOT_REEL_DURATIONS[i]} />
+        ))}
+      </div>
+
+      {result && (
+        <div
+          className="mt-4 rounded-lg p-3 text-center text-sm font-semibold"
+          style={{
+            background: result.payout > 0 ? (result.outcome.kind === "jackpot" ? "#f2b70522" : "#5fae5f1a") : "#1c1f2c",
+            border: `1px solid ${result.payout > 0 ? (result.outcome.kind === "jackpot" ? "#f2b705" : "#5fae5f55") : "#2c2f42"}`,
+            color: result.payout > 0 ? (result.outcome.kind === "jackpot" ? "#f2b705" : "#8fe0a8") : "#8a8fa3",
+          }}
+        >
+          {result.outcome.kind === "jackpot" && `🎉 ¡PREMIO GORDO! Has ganado ${result.payout} monedas (x${result.outcome.multiplier}) 🎉`}
+          {result.outcome.kind === "triple" && `¡3 iguales! Has ganado ${result.payout} monedas (x${result.outcome.multiplier})`}
+          {result.outcome.kind === "pair" && `Pareja: recuperas ${result.payout} monedas (x${result.outcome.multiplier})`}
+          {result.outcome.kind === "none" && `Sin premio. Has perdido ${result.bet} monedas.`}
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-col sm:flex-row items-stretch sm:items-end gap-3">
+        <div className="flex-1">
+          <label className="block text-[11px] font-semibold text-[#8a8fa3] mb-1">Apuesta (monedas)</label>
+          <input
+            type="number"
+            min={SLOT_MIN_BET}
+            max={maxBet}
+            step={10}
+            value={betInput}
+            disabled={spinning}
+            onChange={(e) => setBetInput(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg text-sm text-white disabled:opacity-50"
+            style={{ background: "#0e1018", border: `1px solid ${betValid ? "#2c2f42" : "#e3350d88"}` }}
+          />
+          <div className="text-[10px] mt-1" style={{ color: betValid ? "#5c6178" : "#ff8a8a" }}>
+            Entre {SLOT_MIN_BET} y {maxBet} monedas (tu saldo actual, hasta un máximo de {SLOT_MAX_BET}).
+          </div>
+        </div>
+        <button
+          onClick={handleSpin}
+          disabled={spinning || !betValid}
+          className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+        >
+          {spinning ? <Loader2 className="animate-spin" size={16} /> : <Dice5 size={16} />}
+          {spinning ? "Girando..." : "Tirar"}
+        </button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+        {SLOT_SYMBOLS.map((s) => (
+          <div key={s.id} className="flex items-center gap-1.5 text-[10px] text-[#8a8fa3]">
+            <SlotSymbolTile symbolId={s.id} size={13} />
+            {s.label} · x{s.multiplier3} (3 iguales)
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Tarjeta de UN juego dentro de la cuadrícula de la tab Casino: icono,
 // nombre, breve descripción. `available` en `false` la muestra bloqueada
 // (Tragaperras/Cartas Rasca, con espacio para añadirlos en el futuro, ver el
@@ -12013,6 +12222,21 @@ function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardTo
     );
   }
 
+  if (activeGame === "slots") {
+    return (
+      <div className="space-y-4">
+        <button onClick={() => setActiveGame(null)} className="flex items-center gap-1.5 text-xs font-semibold text-[#8a8fa3] hover:text-white">
+          <ArrowLeft size={14} /> Volver al Casino
+        </button>
+        <div>
+          <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Coins size={22} color="#f2b705" /> Tragaperras</h2>
+          <p className="text-sm text-[#9aa0b4]">Elige tu apuesta (entre {SLOT_MIN_BET} y {SLOT_MAX_BET} monedas) y tira los 3 carretes.</p>
+        </div>
+        <SlotMachineGame coins={coins} setCoins={setCoins} queueRewardToast={queueRewardToast} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -12030,8 +12254,9 @@ function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardTo
         <CasinoGameCard
           icon={Coins}
           title="Tragaperras"
-          description="Próximo juego del Casino: alinea símbolos para ganar premios."
-          available={false}
+          description="Elige cuánto apostar y gira 3 carretes: consigue 2 o 3 símbolos iguales para ganar, o 3 Pokéballs para el premio gordo."
+          available
+          onClick={() => setActiveGame("slots")}
         />
         <CasinoGameCard
           icon={Sparkles}

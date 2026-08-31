@@ -93,3 +93,101 @@ export function loadCasinoState() {
 export function canClaimFreeRouletteSpin(rouletteState, todayKey) {
   return (rouletteState?.lastFreeSpinDayKey ?? null) !== todayKey;
 }
+
+/* ---------------------------------------------------------------
+   TRAGAPERRAS (Slot Machine)
+--------------------------------------------------------------- */
+
+export const SLOT_MIN_BET = 10;
+export const SLOT_MAX_BET = 1000;
+
+// Multiplicador de pareja (2 de los 3 carretes iguales, el tercero distinto):
+// más alto si la pareja es de Pokéball (símbolo especial) que si es de
+// cualquiera de los 5 elementales — ambos dentro del rango x1.5-x2 pedido.
+export const SLOT_PAIR_MULTIPLIER_POKEBALL = 2;
+export const SLOT_PAIR_MULTIPLIER_ELEMENTAL = 1.5;
+
+// Los 3 carretes son INDEPENDIENTES entre sí y comparten exactamente la
+// misma distribución de probabilidad por símbolo (mismo criterio que las
+// casillas de la ruleta: la probabilidad de cada símbolo es un dato de
+// diseño, no algo "visual"). `chance` de cada símbolo es su probabilidad de
+// aparecer en UN carrete (deben sumar 1 exactamente), y `multiplier3` es el
+// multiplicador sobre la apuesta cuando ese símbolo sale en los 3 carretes a
+// la vez. El color de los 5 símbolos elementales reutiliza TYPE_COLORS (la
+// misma paleta de tipos ya usada en toda la app); Pokéball usa el icono ya
+// existente (ver PokeballIcon en App.jsx) en vez de un color de tipo.
+//
+// CÁLCULO DEL MARGEN DE LA CASA (~10% pedido, es decir E[multiplicador]≈0.90):
+// con probabilidad de Pokéball q=0.10 por carrete y probabilidad e=0.18 para
+// cada uno de los 5 elementales (5*0.18 + 0.10 = 1, suman exactamente 1),
+// el valor esperado del multiplicador de una tirada es:
+//   E = 20*q³                                    (3 Pokéballs)
+//     + Σ(multiplier3_i * e³) para los 5 elementales = e³*(10+9+8+7+6) = e³*40
+//     + 3*q²*(1-q) * SLOT_PAIR_MULTIPLIER_POKEBALL   (pareja de Pokéball)
+//     + 5 * [3*e²*(1-e)] * SLOT_PAIR_MULTIPLIER_ELEMENTAL  (pareja elemental, cualquiera de los 5 tipos)
+// Sustituyendo: 20*0.001 + 40*0.005832 + 2*(3*0.01*0.9) + 1.5*(5*3*0.0324*0.82)
+//             = 0.02 + 0.23328 + 0.054 + 0.59778 = 0.90506
+// → E[multiplicador] ≈ 0.905, margen de la casa ≈ 9.49% (muy cerca del 10%
+// pedido). Ver resolveSlotResult para la fórmula de "3 iguales"/"pareja"
+// tal cual se resuelve en cada tirada real.
+export const SLOT_SYMBOLS = [
+  { id: "fire", type: "elemental", typeKey: "fire", label: "Fuego", chance: 0.18, multiplier3: 10 },
+  { id: "water", type: "elemental", typeKey: "water", label: "Agua", chance: 0.18, multiplier3: 9 },
+  { id: "grass", type: "elemental", typeKey: "grass", label: "Planta", chance: 0.18, multiplier3: 8 },
+  { id: "electric", type: "elemental", typeKey: "electric", label: "Eléctrico", chance: 0.18, multiplier3: 7 },
+  { id: "normal", type: "elemental", typeKey: "normal", label: "Normal", chance: 0.18, multiplier3: 6 },
+  { id: "pokeball", type: "pokeball", typeKey: null, label: "Pokéball", chance: 0.10, multiplier3: 20 },
+];
+
+// Orden fijo de los símbolos dentro de la "tira" de cada carrete (ver
+// SlotReel en App.jsx): puramente visual, no afecta a rollSlotReel (que ya
+// sortea por `chance`, no por posición en este array).
+export const SLOT_SYMBOL_ORDER = SLOT_SYMBOLS.map((s) => s.id);
+
+const SLOT_TOTAL_CHANCE = SLOT_SYMBOLS.reduce((sum, s) => sum + s.chance, 0);
+if (Math.abs(SLOT_TOTAL_CHANCE - 1) > 1e-9) {
+  throw new Error(`Las probabilidades de SLOT_SYMBOLS deben sumar 1 (suman ${SLOT_TOTAL_CHANCE})`);
+}
+
+// Sortea UN símbolo para UN carrete, según las probabilidades declaradas en
+// SLOT_SYMBOLS.
+export function rollSlotReel() {
+  const roll = Math.random();
+  let acc = 0;
+  for (const s of SLOT_SYMBOLS) {
+    acc += s.chance;
+    if (roll < acc) return s.id;
+  }
+  return SLOT_SYMBOLS[SLOT_SYMBOLS.length - 1].id; // salvaguarda por redondeo de coma flotante
+}
+
+// Sortea los 3 carretes de UNA tirada. Se llama una única vez, ANTES de
+// animar nada — mismo criterio que rollRoulette: el resultado ya está
+// decidido de antemano, la animación de los carretes solo gira hasta llegar
+// visualmente a estos 3 símbolos exactos.
+export function spinSlotMachine() {
+  return [rollSlotReel(), rollSlotReel(), rollSlotReel()];
+}
+
+// Resuelve el premio de una tirada ya sorteada (ver spinSlotMachine): "3
+// iguales" (jackpot si son Pokéball, "triple" elemental si no), "pareja" (2
+// de los 3 carretes iguales, el tercero distinto — solo puede haber COMO
+// MUCHO una pareja entre 3 símbolos si no son los 3 iguales, por simple
+// transitividad de la igualdad) o "sin premio". `multiplier` ya es el
+// multiplicador final sobre la apuesta (0 si no hay premio).
+export function resolveSlotResult(reels) {
+  const [a, b, c] = reels;
+  if (a === b && b === c) {
+    const symbol = SLOT_SYMBOLS.find((s) => s.id === a);
+    return { kind: symbol.type === "pokeball" ? "jackpot" : "triple", multiplier: symbol.multiplier3, matchedSymbol: a };
+  }
+  const pairs = [[a, b], [a, c], [b, c]];
+  for (const [x, y] of pairs) {
+    if (x === y) {
+      const symbol = SLOT_SYMBOLS.find((s) => s.id === x);
+      const multiplier = symbol.type === "pokeball" ? SLOT_PAIR_MULTIPLIER_POKEBALL : SLOT_PAIR_MULTIPLIER_ELEMENTAL;
+      return { kind: "pair", multiplier, matchedSymbol: x };
+    }
+  }
+  return { kind: "none", multiplier: 0, matchedSymbol: null };
+}
