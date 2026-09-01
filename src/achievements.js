@@ -3,10 +3,11 @@ import {
   Layers, Target, ShieldCheck, Gem, Sparkles, Star, Coins, PiggyBank,
   CloudRain, Wind, Moon, Zap, Boxes, Compass, Skull, Swords, ShieldHalf, Dices,
   Building2, ArrowLeftRight, HeartCrack, CalendarCheck, CalendarRange, Landmark,
+  Dice5,
 } from "lucide-react";
 
-// Las 12 categorías en las que se agrupa visualmente la tab Logros, en el
-// mismo orden en el que se definen los 60 logros más abajo.
+// Las 13 categorías en las que se agrupa visualmente la tab Logros, en el
+// mismo orden en el que se definen los 66 logros más abajo.
 export const ACHIEVEMENT_CATEGORIES = [
   { id: "general", label: "General" },
   { id: "modos", label: "Modos de Torneo" },
@@ -20,9 +21,10 @@ export const ACHIEVEMENT_CATEGORIES = [
   { id: "torre", label: "Torre Batalla" },
   { id: "draft", label: "Draft" },
   { id: "semanal", label: "Torneo Semanal" },
+  { id: "casino", label: "Casino" },
 ];
 
-// 60 logros. `reward` son monedas de torneo otorgadas UNA sola vez, al
+// 66 logros. `reward` son monedas de torneo otorgadas UNA sola vez, al
 // desbloquearse (ver src/achievementProgress.js para la lógica de
 // desbloqueo/recompensa). Escalados por dificultad de consecución: 30-60
 // triviales, 80-150 progreso moderado, 200-400 exigentes, 100-150 fijas
@@ -112,6 +114,20 @@ export const ACHIEVEMENTS = [
   { id: 58, category: "semanal", title: "Especialista Semanal", description: "Gana tu primer torneo semanal con reglas especiales.", icon: CalendarCheck, reward: 60 },
   { id: 59, category: "semanal", title: "Constancia de Hierro", description: "Gana el torneo semanal en 4 semanas distintas.", icon: CalendarRange, reward: 300 },
   { id: 60, category: "semanal", title: "Maestro de Todas las Semanas", description: "Gana al menos una vez cada una de las 10 temáticas del torneo semanal.", icon: Trophy, reward: 400 },
+
+  // ---- CASINO ----
+  // "Ruleta de Oro" (id 62) NO se llama "Golpe de Suerte" pese a que el
+  // pedido original usaba ese nombre: el id 42 (categoría Mecánicas de
+  // Combate, fulminantes) ya lo usa para un logro completamente distinto, y
+  // tener dos logros con el mismo título sería confuso en la propia lista;
+  // se eligió un nombre alternativo con el mismo espíritu (premio gordo por
+  // pura suerte) pero ligado visualmente a la Ruleta.
+  { id: 61, category: "casino", title: "Primera Apuesta", description: "Juega tu primera partida en cualquiera de los 3 juegos del Casino (Ruleta, Tragaperras o Cartas Rasca).", icon: Dice5, reward: 40 },
+  { id: 62, category: "casino", title: "Ruleta de Oro", description: "Consigue el JACKPOT de 1.000 monedas en la Ruleta de la Fortuna.", icon: Coins, reward: 150 },
+  { id: 63, category: "casino", title: "Máquina de Guerra", description: "Consigue 3 Pokéballs en la Tragaperras.", icon: Dices, reward: 150 },
+  { id: 64, category: "casino", title: "Rasca y Gana", description: "Consigue el premio máximo de 1.000 monedas (3 Pokéballs) en las Cartas Rasca.", icon: Sparkles, reward: 150 },
+  { id: 65, category: "casino", title: "Cliente Habitual", description: "Juega 50 partidas en total entre los 3 juegos del Casino.", icon: Repeat, reward: 120 },
+  { id: 66, category: "casino", title: "La Casa Siempre Gana", description: "Pierde 10 veces seguidas sin ningún premio en el Casino, combinando cualquiera de sus 3 juegos. Al menos lo intentaste.", icon: HeartCrack, reward: 80 },
 ];
 
 export function getAchievementById(id) {

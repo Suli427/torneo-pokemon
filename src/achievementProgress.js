@@ -60,6 +60,19 @@ export function buildDefaultProgress() {
     // ids de temática (ver WEEKLY_THEMES) ganados al menos una vez.
     weeklyTournamentWinsCount: 0,
     weeklyTournamentThemesWon: [],
+    // Casino (logros 61-66): total de partidas jugadas sumando los 3 juegos
+    // (Ruleta/Tragaperras/Cartas Rasca), flags de haber conseguido el premio
+    // MÁXIMO específico de cada uno, y la racha de partidas SEGUIDAS sin
+    // ningún premio (se resetea a 0 en cuanto se consigue cualquier premio,
+    // por pequeño que sea, sin importar en qué juego concreto — ver
+    // applyCasinoGame). `casinoBestLosingStreak` es la mejor/peor racha
+    // histórica alcanzada, nunca decrece.
+    casinoGamesPlayedTotal: 0,
+    casinoHasHitRouletteJackpot: false,
+    casinoHasHitSlotsJackpot: false,
+    casinoHasHitScratchJackpot: false,
+    casinoCurrentLosingStreak: 0,
+    casinoBestLosingStreak: 0,
     unlockedAchievementIds: [],
     unlockedAt: {},
   };
@@ -224,7 +237,7 @@ export function buildDerivedContext({ collection, purchasedTrainerIds, customTra
 }
 
 /* ---------------------------------------------------------------
-   CONDICIONES DE LOS 50 LOGROS
+   CONDICIONES DE LOS 66 LOGROS
 --------------------------------------------------------------- */
 
 const CONDITIONS = {
@@ -288,6 +301,12 @@ const CONDITIONS = {
   58: (p) => p.weeklyTournamentWinsCount >= 1,
   59: (p) => p.weeklyTournamentWinsCount >= 4,
   60: (p) => WEEKLY_THEMES.every((theme) => p.weeklyTournamentThemesWon.includes(theme.id)),
+  61: (p) => p.casinoGamesPlayedTotal >= 1,
+  62: (p) => p.casinoHasHitRouletteJackpot === true,
+  63: (p) => p.casinoHasHitSlotsJackpot === true,
+  64: (p) => p.casinoHasHitScratchJackpot === true,
+  65: (p) => p.casinoGamesPlayedTotal >= 50,
+  66: (p) => p.casinoBestLosingStreak >= 10,
 };
 
 export function isAchievementUnlocked(id, progress, derived) {
@@ -326,11 +345,13 @@ export function getProgressCounter(id, progress, derived) {
     case 56: return { current: Math.min(progress.draftTotalTradesAccumulated, 20), target: 20 };
     case 59: return { current: Math.min(progress.weeklyTournamentWinsCount, 4), target: 4 };
     case 60: return { current: Math.min(progress.weeklyTournamentThemesWon.length, WEEKLY_THEMES.length), target: WEEKLY_THEMES.length };
+    case 65: return { current: Math.min(progress.casinoGamesPlayedTotal, 50), target: 50 };
+    case 66: return { current: Math.min(progress.casinoBestLosingStreak, 10), target: 10 };
     default: return null;
   }
 }
 
-// Evalúa los 50 logros contra el progreso + contexto derivado actuales.
+// Evalúa los 66 logros contra el progreso + contexto derivado actuales.
 // Devuelve { progress: <nuevo progreso, con los recién desbloqueados ya
 // añadidos>, newlyUnlocked: [achievement, ...] }. NO otorga las monedas
 // (eso lo hace App.jsx con el resultado, para poder encolar también la
@@ -462,6 +483,33 @@ export function applyGachaPull(progress, { isNew, shiny }) {
     gachaPullsWithoutNewInARow: isNew ? 0 : progress.gachaPullsWithoutNewInARow + 1,
     shinyCount: shiny ? progress.shinyCount + 1 : progress.shinyCount,
   };
+}
+
+// Al resolverse cada partida de cualquiera de los 3 juegos del Casino (un
+// giro de Ruleta, una tirada de Tragaperras, o una carta rasca ya
+// completada del todo). `game` es "roulette"|"slots"|"scratch"; `won` es si
+// esa partida dio CUALQUIER premio (por pequeño que sea, incluida una
+// simple pareja en Tragaperras/Cartas Rasca o cualquier casilla de monedas
+// de la Ruleta) — determina si se rompe o se alarga la racha de partidas
+// sin premio (logro 66, sin importar en qué juego concreto ocurra cada
+// una); `hitJackpot` es si dio el premio MÁXIMO específico de ESE juego en
+// particular (JACKPOT de 1000 de la Ruleta, 3 Pokéballs de la Tragaperras, o
+// el premio máximo de 1000 de las Cartas Rasca — logros 62/63/64), y siempre
+// implica `won === true`, aunque se comprueban por separado por claridad.
+export function applyCasinoGame(progress, { game, won, hitJackpot }) {
+  const nextStreak = won ? 0 : progress.casinoCurrentLosingStreak + 1;
+  const next = {
+    ...progress,
+    casinoGamesPlayedTotal: progress.casinoGamesPlayedTotal + 1,
+    casinoCurrentLosingStreak: nextStreak,
+    casinoBestLosingStreak: Math.max(progress.casinoBestLosingStreak, nextStreak),
+  };
+  if (hitJackpot) {
+    if (game === "roulette") next.casinoHasHitRouletteJackpot = true;
+    else if (game === "slots") next.casinoHasHitSlotsJackpot = true;
+    else if (game === "scratch") next.casinoHasHitScratchJackpot = true;
+  }
+  return next;
 }
 
 // Al terminar un combate interactivo (un match completo dentro de un

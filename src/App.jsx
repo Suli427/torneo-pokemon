@@ -7,7 +7,7 @@ import {
   ACHIEVEMENT_PROGRESS_STORAGE_KEY, loadStoredAchievementProgress, reconstructProgress,
   buildDerivedContext, evaluateAchievements, getProgressCounter,
   applyTournamentResult, applyGachaPull, applyCombatMechanics,
-  applyBattleTowerRoundCleared, applyDraftSwap,
+  applyBattleTowerRoundCleared, applyDraftSwap, applyCasinoGame,
 } from "./achievementProgress";
 import {
   DAILY_REWARDS_STORAGE_KEY, loadDailyRewardsState, getDailyResetDayKey, getPokemonOfTheDay,
@@ -11811,7 +11811,7 @@ function JackpotCelebration() {
 // mismas 8 casillas y probabilidades (ver ROULETTE_SECTORS). El resultado se
 // sortea ANTES de animar (rollRoulette), y la animación solo gira el disco
 // hasta llegar visualmente a ese sector ya decidido.
-function RouletteGame({ coins, setCoins, casinoState, setCasinoState, queueRewardToast }) {
+function RouletteGame({ coins, setCoins, casinoState, setCasinoState, queueRewardToast, onCasinoGame }) {
   const [todayKey] = useState(getDailyResetDayKey);
   const [spinning, setSpinning] = useState(false);
   const [rotation, setRotation] = useState(0);
@@ -11852,6 +11852,11 @@ function RouletteGame({ coins, setCoins, casinoState, setCasinoState, queueRewar
     // "Nada" y "tirada gratis del gacha" no usan el toast de +monedas (fijo
     // a "monedas", no encajaría): su resultado ya queda claro en el propio
     // panel de la ruleta (lastResult, más abajo).
+    // Logros 61/62/66 (ver applyCasinoGame): cualquier casilla distinta de
+    // "nada" cuenta como premio a efectos de la racha sin premio, aunque no
+    // dé monedas directamente (la tirada gratis del gacha SÍ es un premio
+    // real, solo que no en forma de moneda).
+    onCasinoGame?.({ game: "roulette", won: sector.type !== "nothing", hitJackpot: sector.type === "jackpot" });
   }
 
   function handleSpin(isFree) {
@@ -12046,7 +12051,7 @@ function SlotReel({ finalSymbol, cycles, spinning, durationMs }) {
 // (5 elementales + Pokéball, ver SLOT_SYMBOLS) y el resultado ya sorteado
 // ANTES de animar nada (spinSlotMachine/resolveSlotResult), igual que la
 // Ruleta de la Fortuna.
-function SlotMachineGame({ coins, setCoins, queueRewardToast }) {
+function SlotMachineGame({ coins, setCoins, queueRewardToast, onCasinoGame }) {
   const [betInput, setBetInput] = useState(String(SLOT_MIN_BET));
   const [spinning, setSpinning] = useState(false);
   const [reelState, setReelState] = useState([
@@ -12102,6 +12107,9 @@ function SlotMachineGame({ coins, setCoins, queueRewardToast }) {
       } else if (outcome.kind === "pair") {
         timeoutsRef.current.push(setTimeout(() => setCelebration(null), 700));
       }
+      // Logros 61/63/65/66 (ver applyCasinoGame): "won" es cualquier premio
+      // (incluida una simple pareja), "hitJackpot" solo las 3 Pokéballs.
+      onCasinoGame?.({ game: "slots", won: outcome.kind !== "none", hitJackpot: outcome.kind === "jackpot" });
       setSpinning(false);
     }, totalDuration + 80));
   }
@@ -12321,7 +12329,7 @@ function ScratchCell({ symbolId, revealed, onRevealed }) {
 // generateScratchCard) que el usuario revela rascando cada zona. En cuanto
 // las 3 están reveladas se aplica el premio (una única vez, protegido por
 // `payoutAppliedRef`) y se dispara la celebración según su intensidad.
-function ScratchCardGame({ coins, setCoins, queueRewardToast }) {
+function ScratchCardGame({ coins, setCoins, queueRewardToast, onCasinoGame }) {
   const [card, setCard] = useState(null); // { outcome, symbols } | null
   const [revealedCells, setRevealedCells] = useState([false, false, false]);
   const [celebration, setCelebration] = useState(null);
@@ -12371,6 +12379,10 @@ function ScratchCardGame({ coins, setCoins, queueRewardToast }) {
     }
     // "none": ninguna celebración, el propio panel de resultado ya deja
     // claro que no ha tocado nada.
+    // Logros 61/64/65/66 (ver applyCasinoGame): "won" es cualquier premio
+    // (incluida una simple pareja), "hitJackpot" solo el premio máximo de
+    // 3 Pokéballs.
+    onCasinoGame?.({ game: "scratch", won: outcome.kind !== "none", hitJackpot: outcome.kind === "jackpot" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card, revealedCells]);
 
@@ -12460,7 +12472,7 @@ function CasinoGameCard({ icon: Icon, title, description, available, onClick }) 
   );
 }
 
-function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardToast }) {
+function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardToast, onCasinoGame }) {
   const [activeGame, setActiveGame] = useState(null); // null = cuadrícula de juegos; "roulette"/"slots"/"scratch" = juego abierto
 
   if (activeGame === "roulette") {
@@ -12473,7 +12485,7 @@ function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardTo
           <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Dice5 size={22} color="#f2b705" /> Ruleta de la Fortuna</h2>
           <p className="text-sm text-[#9aa0b4]">Un giro gratis cada día, o gira las veces que quieras por {ROULETTE_SPIN_COST} monedas.</p>
         </div>
-        <RouletteGame coins={coins} setCoins={setCoins} casinoState={casinoState} setCasinoState={setCasinoState} queueRewardToast={queueRewardToast} />
+        <RouletteGame coins={coins} setCoins={setCoins} casinoState={casinoState} setCasinoState={setCasinoState} queueRewardToast={queueRewardToast} onCasinoGame={onCasinoGame} />
       </div>
     );
   }
@@ -12488,7 +12500,7 @@ function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardTo
           <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Coins size={22} color="#f2b705" /> Tragaperras</h2>
           <p className="text-sm text-[#9aa0b4]">Elige tu apuesta (entre {SLOT_MIN_BET} y {SLOT_MAX_BET} monedas) y tira los 3 carretes.</p>
         </div>
-        <SlotMachineGame coins={coins} setCoins={setCoins} queueRewardToast={queueRewardToast} />
+        <SlotMachineGame coins={coins} setCoins={setCoins} queueRewardToast={queueRewardToast} onCasinoGame={onCasinoGame} />
       </div>
     );
   }
@@ -12503,7 +12515,7 @@ function CasinoTab({ coins, setCoins, casinoState, setCasinoState, queueRewardTo
           <h2 className="font-display text-2xl text-white mb-1 flex items-center gap-2"><Sparkles size={22} color="#f2b705" /> Cartas Rasca</h2>
           <p className="text-sm text-[#9aa0b4]">Compra una carta por {SCRATCH_CARD_COST} monedas y rasca sus 3 zonas para descubrir el premio.</p>
         </div>
-        <ScratchCardGame coins={coins} setCoins={setCoins} queueRewardToast={queueRewardToast} />
+        <ScratchCardGame coins={coins} setCoins={setCoins} queueRewardToast={queueRewardToast} onCasinoGame={onCasinoGame} />
       </div>
     );
   }
@@ -13008,6 +13020,14 @@ export default function App() {
     setAchievementProgress((p) => applyGachaPull(p, { isNew, shiny }));
   }
 
+  // Al resolverse cada partida de cualquiera de los 3 juegos del Casino (ver
+  // RouletteGame/SlotMachineGame/ScratchCardGame): alimenta el total de
+  // partidas jugadas, los flags de premio máximo por juego y la racha de
+  // partidas sin premio del progreso de logros (61-66).
+  function recordCasinoGame({ game, won, hitJackpot }) {
+    setAchievementProgress((p) => applyCasinoGame(p, { game, won, hitJackpot }));
+  }
+
   // Al terminar cada combate interactivo del usuario dentro de un torneo
   // (ver TorneoTab.finalizeRound / InteractiveBattle.buildBattleMechanicsFlags):
   // alimenta los flags de mecánicas de combate del progreso de logros.
@@ -13362,7 +13382,7 @@ export default function App() {
           />
         </div>
         <div style={{ display: tab === "casino" ? "block" : "none" }}>
-          <CasinoTab coins={coins} setCoins={setCoins} casinoState={casinoState} setCasinoState={setCasinoState} queueRewardToast={queueRewardToast} />
+          <CasinoTab coins={coins} setCoins={setCoins} casinoState={casinoState} setCasinoState={setCasinoState} queueRewardToast={queueRewardToast} onCasinoGame={recordCasinoGame} />
         </div>
         <div style={{ display: tab === "diario" ? "block" : "none" }}>
           <DiarioTab
