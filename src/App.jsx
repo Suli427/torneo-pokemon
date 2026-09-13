@@ -6249,7 +6249,7 @@ function BattleVersusScreen({ phase, userTrainer, aiTrainer }) {
 
 // Pantalla de combate interactiva: el usuario elige el movimiento de su
 // Pokémon activo en cada turno; el rival lo controla la IA (chooseMove).
-function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish, rivalStatMultiplier = 1, initialUserTeam = null, towerModifiers = null }) {
+function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish, rivalStatMultiplier = 1, initialUserTeam = null, towerModifiers = null, towerInventory = null }) {
   const [teamA, setTeamA] = useState(null);
   const [teamB, setTeamB] = useState(null);
   const [idxA, setIdxA] = useState(0);
@@ -6964,7 +6964,9 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
   }
 
   return (
-    <div className="space-y-4">
+    <div className={towerModifiers ? "flex items-start gap-3" : undefined}>
+      {towerModifiers && <TowerActiveEffectsPanel runModifiers={towerModifiers} inventory={towerInventory} />}
+      <div className="space-y-4 flex-1 min-w-0">
       <div className="flex items-center justify-between gap-3">
         <TeamStatusRow team={userTeam} activeIndex={userIdx} />
         <TeamStatusRow team={aiTeam} activeIndex={aiIdx} />
@@ -7175,6 +7177,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
           </button>
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -9913,6 +9916,138 @@ function TowerModifierSelectScreen({ offer, resetUsed, onReset, onChoose, roundL
   );
 }
 
+// Icono compacto de un efecto activo (modificador u objeto de inventario)
+// para TowerActiveEffectsPanel: solo el icono del catálogo (reutilizado, ver
+// BATTLE_TOWER_MODIFIERS) con un badge numérico si count > 1, y el nombre +
+// descripción completos en el atributo `title` nativo (tooltip del propio
+// navegador al pasar el cursor, sin tener que montar un tooltip a medida).
+function TowerEffectIcon({ id, param, count }) {
+  const mod = getTowerModifierById(id);
+  if (!mod) return null;
+  const Icon = mod.icon;
+  const paramLabel = param ? ` (${TYPE_ES[param] || STATUS_BADGE_META[param]?.label || displayName(param)})` : "";
+  const tint = mod.item ? "#8fe0a8" : "#f2b705";
+  const tooltip = `${mod.title}${paramLabel}${count > 1 ? ` x${count}` : ""} — ${mod.description}`;
+  return (
+    <div
+      title={tooltip}
+      className="relative w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+      style={{ background: tint + "18", border: `1px solid ${tint}44` }}
+    >
+      <Icon size={16} color={tint} />
+      {count > 1 && (
+        <span
+          className="absolute -top-1.5 -right-1.5 text-[9px] font-bold rounded-full px-1 min-w-[16px] text-center leading-[15px]"
+          style={{ background: "#e3350d", color: "white" }}
+        >
+          {count}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Fila con el detalle completo de un efecto (icono + nombre + descripción):
+// usada en el desplegable móvil de TowerActiveEffectsPanel, donde no hay
+// forma de "pasar el cursor" para ver un tooltip.
+function TowerEffectRow({ id, param, count }) {
+  const mod = getTowerModifierById(id);
+  if (!mod) return null;
+  const Icon = mod.icon;
+  const paramLabel = param ? ` (${TYPE_ES[param] || STATUS_BADGE_META[param]?.label || displayName(param)})` : "";
+  const tint = mod.item ? "#8fe0a8" : "#f2b705";
+  return (
+    <div className="flex items-start gap-2.5 rounded-lg p-2.5" style={{ background: "#1c1f2c" }}>
+      <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: tint + "18" }}>
+        <Icon size={15} color={tint} />
+      </div>
+      <div className="min-w-0">
+        <div className="text-xs font-semibold text-white">{mod.title}{paramLabel}{count > 1 ? ` x${count}` : ""}</div>
+        <div className="text-[11px] text-[#8a8fa3]">{mod.description}</div>
+      </div>
+    </div>
+  );
+}
+
+// Panel lateral de efectos activos durante un combate de la Torre Batalla:
+// a diferencia de TowerModifiersPanel (bloque de texto en la pantalla entre
+// rondas), este vive DENTRO de la propia pantalla de combate para poder
+// consultarse en todo momento sin abrir nada aparte (ver el pedido). Nunca
+// se muestra en otros modos: solo se renderiza si `runModifiers` no es
+// `null` (ver InteractiveBattle, donde ese prop solo llega no-nulo desde
+// BattleTowerMode).
+//
+// Responsive: en escritorio/tablet (>= sm) es una columna fija a la
+// izquierda, con su propio scroll vertical si hay muchos modificadores
+// acumulados (nunca desborda la pantalla ni empuja el resto de la
+// interfaz — ver `overflow-y-auto` + `maxHeight` de abajo). En móvil, esa
+// misma columna comprimiría demasiado los sprites/el selector de
+// movimientos en una pantalla estrecha, así que ahí se colapsa en un botón
+// flotante con el recuento total de efectos; al pulsarlo despliega la
+// lista completa (con nombre y descripción, ya que en móvil no hay forma
+// de "pasar el cursor" para ver el tooltip) en una hoja inferior con el
+// mismo tratamiento visual (fondo oscuro + blur) que el resto de modales
+// de la app.
+function TowerActiveEffectsPanel({ runModifiers, inventory }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const grouped = [];
+  for (const inst of runModifiers || []) {
+    const existing = grouped.find((g) => g.id === inst.id && g.param === inst.param);
+    if (existing) existing.count += 1;
+    else grouped.push({ id: inst.id, param: inst.param, count: 1 });
+  }
+  const itemEntries = [];
+  if ((inventory?.renacer || 0) > 0) itemEntries.push({ id: "renacer", param: undefined, count: inventory.renacer });
+  if ((inventory?.["segundo-aliento"] || 0) > 0) itemEntries.push({ id: "segundo-aliento", param: undefined, count: inventory["segundo-aliento"] });
+  const totalCount = grouped.length + itemEntries.length;
+  if (totalCount === 0) return null;
+
+  return (
+    <>
+      <div
+        className="hidden sm:flex flex-col gap-1.5 w-12 shrink-0 sticky top-2 self-start overflow-y-auto py-1"
+        style={{ maxHeight: "calc(100vh - 16px)" }}
+      >
+        {grouped.map((g, i) => <TowerEffectIcon key={`m-${i}`} {...g} />)}
+        {itemEntries.length > 0 && grouped.length > 0 && (
+          <div className="h-px w-8 mx-auto" style={{ background: "#262a3a" }} />
+        )}
+        {itemEntries.map((it, i) => <TowerEffectIcon key={`i-${i}`} {...it} />)}
+      </div>
+
+      <button
+        onClick={() => setMobileOpen(true)}
+        className="sm:hidden fixed left-3 bottom-4 z-40 flex items-center gap-1.5 px-3 py-2 rounded-full shadow-lg"
+        style={{ background: "#14161f", border: "1px solid #f2b70555", color: "#f2b705" }}
+      >
+        <Sparkles size={14} />
+        <span className="text-xs font-bold">{totalCount}</span>
+      </button>
+      {mobileOpen && (
+        <div
+          className="sm:hidden fixed inset-0 z-50 flex items-end justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setMobileOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-h-[70vh] overflow-y-auto rounded-t-2xl p-4"
+            style={{ background: "#14161f", border: "1px solid #262a3a", borderBottom: "none" }}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-semibold text-white">Efectos activos</div>
+              <button onClick={() => setMobileOpen(false)} className="text-[#8a8fa3]"><X size={18} /></button>
+            </div>
+            <div className="space-y-2">
+              {grouped.map((g, i) => <TowerEffectRow key={`m-${i}`} {...g} />)}
+              {itemEntries.map((it, i) => <TowerEffectRow key={`i-${i}`} {...it} />)}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // Panel de los modificadores activos de la run (con su contador "x veces
 // elegido", agrupando por id — ver el comentario de BATTLE_TOWER_MODIFIERS)
 // y las unidades sin usar de Renacer/Segundo Aliento. No se muestra nada si
@@ -10436,6 +10571,7 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
           rivalStatMultiplier={battleTowerStatMultiplier(currentRound)}
           initialUserTeam={carriedUserTeam}
           towerModifiers={runModifiers}
+          towerInventory={inventory}
           onFinish={handleBattleFinish}
         />
       </div>
