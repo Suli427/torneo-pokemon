@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck, Dice5, ArrowLeft, Droplet, Leaf, Zap, Circle } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck, Dice5, ArrowLeft, Droplet, Leaf, Zap, Circle, Crosshair, Wind, CloudRain, CloudSnow, CloudLightning, Sun, Shield, ShieldAlert, HeartPulse, Repeat, Layers, Gem, Skull, Rocket, RefreshCw, DoorOpen, Handshake, Dices, Target } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -768,6 +768,12 @@ function statStageMultiplier(stage) {
   return stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
 }
 
+// Stages de stat de combate (-6/+6) en su estado neutro: el ÚNICO objeto que
+// debe usarse para RESETEAR los stages de un Pokémon entre combates (ver el
+// uso en InteractiveBattle, equipo "cargado" de la Torre Batalla) — nunca se
+// muta directamente, cada uso hace su propia copia (`{ ...ZERO_STAT_STAGES }`).
+const ZERO_STAT_STAGES = { attack: 0, defense: 0, "special-attack": 0, "special-defense": 0, speed: 0, accuracy: 0, evasion: 0 };
+
 // Precisión/Evasión usan una escala distinta (base 3) al resto de stats.
 function accuracyStageMultiplier(stage) {
   return stage >= 0 ? (3 + stage) / 3 : 3 / (3 - stage);
@@ -887,9 +893,20 @@ function applyStatMultiplier(p, multiplier) {
 // resolveTurn (prioridad, luego Velocidad efectiva, empate 50/50), como
 // función pura reutilizable por la simulación a 2 turnos de Maestro (no
 // necesita acceso al resto del motor de combate).
+function effectiveMovePriority(move, poke, weather) {
+  const base = move ? (move.priority || 0) : -100;
+  // Torre Batalla — Prioridad Táctica (11): +N de prioridad extra a
+  // cualquier movimiento del usuario que YA tenga prioridad positiva (no
+  // convierte un movimiento normal en prioritario, solo refuerza los que
+  // ya lo son).
+  const towerMods = weather?.towerMods;
+  if (base > 0 && towerMods && poke?.trainerId === towerMods.userTrainerId) return base + towerMods.priorityBonus;
+  return base;
+}
+
 function attackerMovesFirst(moveA, moveB, pokeA, pokeB, weather) {
-  const prioA = moveA ? (moveA.priority || 0) : -100;
-  const prioB = moveB ? (moveB.priority || 0) : -100;
+  const prioA = moveA ? effectiveMovePriority(moveA, pokeA, weather) : -100;
+  const prioB = moveB ? effectiveMovePriority(moveB, pokeB, weather) : -100;
   if (prioA !== prioB) return prioA > prioB;
   const spA = getEffectiveSpeed(pokeA, weather), spB = getEffectiveSpeed(pokeB, weather);
   if (spA === spB) return Math.random() < 0.5;
@@ -1544,6 +1561,22 @@ function pushFaintOnce(poke, arr) {
   arr.push({ type: "faint", pokemon: poke.name });
 }
 
+// Torre Batalla — Segunda Oportunidad (9): si `poke` (del equipo del
+// usuario) acaba de quedarse a 0 PS y todavía quedan usos disponibles ESTE
+// combate (ver survivalUsesLeft, mutado aquí mismo), se queda con 1 PS en
+// vez de debilitarse y consume un uso. Se llama justo después de CUALQUIER
+// resta de PS por daño de un movimiento (alcance documentado: no cubre daño
+// residual de estado/Semilla Drenadora/etc., solo golpes directos — el caso
+// de uso real más común). Devuelve `true` si se consumió un uso (para que
+// quien llama pueda añadir su propio mensaje al log).
+function applySurvivalCheck(poke, weather) {
+  const mods = weather?.towerMods;
+  if (!mods || poke.hp > 0 || poke.trainerId !== mods.userTrainerId || mods.survivalUsesLeft <= 0) return false;
+  mods.survivalUsesLeft -= 1;
+  poke.hp = 1;
+  return true;
+}
+
 // Daño residual de Tormenta de Arena/Granizo al final del turno: 1/16 de
 // los PS máximos, salvo para los tipos inmunes de cada clima.
 function applyWeatherResidualDamage(poke, weather, turns) {
@@ -1632,11 +1665,17 @@ function isGrounded(poke) {
 // Potencia x1.3 a los movimientos del tipo asociado al campo activo, solo si
 // quien ataca está "con los pies en el suelo" (el campo boostea a quien lo
 // pisa, no a quien recibe el golpe).
-function terrainPowerMultiplier(weather, move, attacker) {
+function terrainPowerMultiplier(weather, move, attacker, towerMods) {
   if (!weather?.terrainType || !isGrounded(attacker)) return 1;
-  if (weather.terrainType === "electric" && move.type === "electric") return 1.3;
-  if (weather.terrainType === "grassy" && move.type === "grass") return 1.3;
-  if (weather.terrainType === "psychic" && move.type === "psychic") return 1.3;
+  // Torre Batalla — Terreno Familiar (19): sustituye el x1.3 estándar por
+  // el override ya calculado (x1.5 en adelante), solo si quien ataca es el
+  // equipo del usuario — sobre el rival el campo se sigue comportando con
+  // normalidad.
+  const boosted = towerMods && attacker.trainerId === towerMods.userTrainerId && towerMods.terrainMultOverride;
+  const mult = boosted || 1.3;
+  if (weather.terrainType === "electric" && move.type === "electric") return mult;
+  if (weather.terrainType === "grassy" && move.type === "grass") return mult;
+  if (weather.terrainType === "psychic" && move.type === "psychic") return mult;
   return 1;
 }
 
@@ -1877,6 +1916,7 @@ function resetPokemonOnSwitchOut(poke) {
   poke.toxicCounter = 0;
   poke.yawnTurns = 0;
   poke.confusionTurns = 0;
+  poke.confusionSelfHitChance = null;
   poke.lockedMove = null;
   poke.lockedTurnsRemaining = 0;
   poke.invulnerable = false;
@@ -2078,8 +2118,9 @@ function statusPreMoveCheck(poke, turns) {
   if (poke.confusionTurns > 0) {
     poke.confusionTurns -= 1;
     if (poke.confusionTurns <= 0) {
+      poke.confusionSelfHitChance = null;
       turns.push({ type: "statusText", text: `${poke.name} ya no está confundido` });
-    } else if (Math.random() < 1 / 3) {
+    } else if (Math.random() < (poke.confusionSelfHitChance ?? 1 / 3)) {
       const dmg = confusionSelfDamage(poke);
       poke.hp = Math.max(0, poke.hp - dmg);
       turns.push({ type: "statusText", text: `${poke.name} está confundido y se hace daño a sí mismo (${dmg})` });
@@ -2191,6 +2232,25 @@ function tickPerishSong(poke, turns) {
   }
 }
 
+// Torre Batalla — Regeneración (7) y Vitalidad Constante (25): curación al
+// final de cada turno completo para el equipo del usuario. Regeneración es
+// incondicional (%N de PS máximos); Vitalidad Constante solo si `poke` está
+// por debajo del 50% de sus PS. Ambas se suman en la misma curación si
+// aplican a la vez. No-op por completo si no es un combate de la Torre
+// Batalla con modificadores activos (weather.towerMods == null).
+function applyTowerEndOfTurnHeal(poke, weather, turns) {
+  const mods = weather?.towerMods;
+  if (!mods || poke.hp <= 0 || poke.trainerId !== mods.userTrainerId) return;
+  let healPct = mods.regenPct;
+  if (poke.hp / poke.maxHp < 0.5) healPct += mods.vitalityHealPct;
+  if (healPct <= 0) return;
+  const before = poke.hp;
+  poke.hp = Math.min(poke.maxHp, poke.hp + Math.floor(poke.maxHp * healPct));
+  if (poke.hp > before) {
+    turns.push({ type: "statusText", text: `${poke.name} recupera PS gracias a sus modificadores de la Torre` });
+  }
+}
+
 // Premonición/Deseo Oculto (ver FUTURE_MOVES): descuenta el contador de cada
 // golpe encolado en weather.pendingFutureHits y, al llegar a 0, lo entrega
 // al Pokémon que esté AHORA MISMO en la posición objetivo (activePa si su
@@ -2227,7 +2287,7 @@ function applyPendingFutureHits(weather, activePa, activePb, turns) {
 // (correcto, ocurre también en los juegos reales); en ese caso se añade un
 // evento de debilitamiento para que resolveTurn/resolveSwitchTurn lo
 // reflejen en el log igual que cualquier otro debilitamiento.
-function applyDrainOrRecoil(attacker, damage, move, events) {
+function applyDrainOrRecoil(attacker, damage, move, events, skipRecoil = false) {
   if (!move.drain || damage <= 0) return;
   if (move.drain > 0) {
     const heal = Math.floor((damage * move.drain) / 100);
@@ -2239,6 +2299,9 @@ function applyDrainOrRecoil(attacker, damage, move, events) {
       }
     }
   } else {
+    // Torre Batalla — Doble Filo Táctico (35): el equipo del usuario ya no
+    // sufre daño de retroceso.
+    if (skipRecoil) return;
     const recoil = Math.floor((damage * Math.abs(move.drain)) / 100);
     if (recoil > 0) {
       attacker.hp = Math.max(0, attacker.hp - recoil);
@@ -2288,9 +2351,20 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
   // sería el propio atacante en ese caso, no el lado protegido.
   const targetProtectedBySafeguard = targetsOpponent && weather?.safeguard?.[target.trainerId] > 0;
 
+  // Torre Batalla — Sobrecarga (3): multiplica la probabilidad de efecto
+  // SECUNDARIO (solo movimientos de daño con ailmentChance/statChance
+  // propios, nunca el 100% de un movimiento de estado en sí) cuando quien
+  // ataca es el equipo del usuario.
+  const sobrecargaMult = (weather?.towerMods && attacker.trainerId === weather.towerMods.userTrainerId) ? weather.towerMods.secondaryEffectMult : 1;
+
   if (!skipAilment && move.ailmentName && move.ailmentName !== "none") {
-    const chance = move.ailmentChance > 0 ? move.ailmentChance : (isStatusMove ? 100 : 0);
+    const chance = move.ailmentChance > 0 ? Math.min(100, move.ailmentChance * sobrecargaMult) : (isStatusMove ? 100 : 0);
     if (chance > 0 && Math.random() * 100 < chance) {
+      // Torre Batalla — Amuleto de la Suerte (8): inmunidad a un estado no
+      // volátil concreto para el equipo del usuario (el veneno normal y el
+      // grave cuentan como el mismo estado cubierto, ver TOWER_STATUS_IMMUNITY_POOL).
+      const towerImmune = weather?.towerMods && target.trainerId === weather.towerMods.userTrainerId
+        && weather.towerMods.statusImmunities.has(move.ailmentName);
       if (move.ailmentName === "confusion") {
         if (!target.confusionTurns) {
           if (targetProtectedBySafeguard) {
@@ -2299,11 +2373,18 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
             events.push({ type: "statusText", text: `¡El Campo de Niebla protege a ${target.name} de la confusión!`, inline: false });
           } else {
             target.confusionTurns = 1 + Math.floor(Math.random() * 4);
+            // Torre Batalla — Confusión Contagiosa (42): solo cuando el
+            // usuario confunde a un rival (nunca sobre su propio equipo).
+            if (weather?.towerMods && target.trainerId === weather.towerMods.rivalTrainerId && weather.towerMods.confusionSelfHitChance != null) {
+              target.confusionSelfHitChance = weather.towerMods.confusionSelfHitChance;
+            }
             events.push({ type: "statusText", text: `${target.name} ha quedado confundido`, inline: false });
           }
         }
       } else if (AILMENT_APPLY_TEXT[move.ailmentName] && !target.status) {
-        if (targetProtectedBySafeguard) {
+        if (towerImmune) {
+          events.push({ type: "statusText", text: `¡El Amuleto de la Suerte protege a ${target.name}!`, inline: false });
+        } else if (targetProtectedBySafeguard) {
           events.push({ type: "statusText", text: `¡El Refugio protege a ${target.name} de los problemas de estado!`, inline: false });
         } else if (move.ailmentName === "sleep" && terrainBlocksSleep(weather, target)) {
           events.push({ type: "statusText", text: `¡El Campo Eléctrico evita que ${target.name} se duerma!`, inline: false });
@@ -2330,7 +2411,7 @@ function applyMoveEffects(attacker, defender, move, mult = 1, defenderFainted = 
   }
 
   if (move.statChanges && move.statChanges.length) {
-    const chance = isStatusMove ? 100 : (move.statChance > 0 ? move.statChance : 0);
+    const chance = isStatusMove ? 100 : (move.statChance > 0 ? Math.min(100, move.statChance * sobrecargaMult) : 0);
     if (chance > 0 && Math.random() * 100 < chance) {
       // Solo el PRIMER cambio de stat sobre uno mismo se marca `inline`
       // (resolveTurn fusiona como mucho un evento inline en la línea "usó
@@ -3136,12 +3217,20 @@ function useApiCache() {
     // normal en vez de esquivar el golpe por completo).
     const invulnerabilityBreakMult = (defender.invulnerable && INVULNERABILITY_BREAKER_MOVES[move.name]?.has(defender.invulnerableMove)) ? 2 : 1;
 
+    // Torre Batalla — Golpe Certero (1): suma sus etapas extra a la
+    // probabilidad base de crítico (1/24 por etapa), solo si quien ataca es
+    // el equipo del usuario.
+    const towerMods = weather?.towerMods;
+    const isUserAttacker = towerMods && attacker.trainerId === towerMods.userTrainerId;
+    const isUserDefender = towerMods && defender.trainerId === towerMods.userTrainerId;
+    const critChance = (1 + (isUserAttacker ? towerMods.critBonusStages : 0)) / 24;
+
     // El crítico se decide antes de leer los stages: ignora bajadas propias
     // de Ataque/Ataque Especial (nunca peor que stage 0) y subidas de
     // Defensa/Defensa Especial del rival (nunca mejor que stage 0), pero
     // conserva subidas propias y bajadas del rival tal cual. Sin crítico,
     // los stages se usan reales sin ningún clamp especial.
-    const isCrit = Math.random() < 1 / 24;
+    const isCrit = Math.random() < critChance;
     const atkStageClamp = isCrit ? (s) => Math.max(0, s) : undefined;
     const defStageClamp = isCrit ? (s) => Math.min(0, s) : undefined;
 
@@ -3167,9 +3256,14 @@ function useApiCache() {
     const levelFactor = Math.floor((2 * 50) / 5 + 2);
     let base = Math.floor((levelFactor * power * atkStat) / defStat / 50);
     base = Math.floor(base + 2);
-    const stab = attacker.types.includes(move.type) ? 1.5 : 1;
+    // Torre Batalla — Afinidad Elemental (16): cuenta como STAB aunque el
+    // Pokémon no sea de ese tipo; Furia Elemental (2): +% adicional sobre
+    // cualquier golpe que YA sea STAB (propio o concedido por Afinidad
+    // Elemental).
+    const isStab = attacker.types.includes(move.type) || (isUserAttacker && towerMods.stabTypes.has(move.type));
+    const stab = isStab ? 1.5 + (isUserAttacker ? towerMods.stabBonusPct : 0) : 1;
     const weatherMult = weatherDamageMultiplier(weather, move.type);
-    const terrainMult = terrainPowerMultiplier(weather, move, attacker) * terrainDamageReductionMultiplier(weather, move, defender);
+    const terrainMult = terrainPowerMultiplier(weather, move, attacker, towerMods) * terrainDamageReductionMultiplier(weather, move, defender);
     // Pantallas: reducen el daño a la mitad salvo con golpe crítico (los
     // críticos ignoran Pantalla de Luz/Reflejo/Velo Aurora, igual que en los
     // juegos reales).
@@ -3177,7 +3271,31 @@ function useApiCache() {
     const mult = await typeMultiplier([move.type], defender.types, move.name);
     const critMult = isCrit ? 1.5 : 1;
     const rand = 0.85 + Math.random() * 0.15;
-    let damage = Math.floor(base * stab * weatherMult * terrainMult * screenMult * mult * critMult * rand * invulnerabilityBreakMult);
+    // Torre Batalla — Instinto Asesino (4): +% si el OBJETIVO está por
+    // debajo del 20% de sus PS; Todo o Nada (23): +% al daño que hace el
+    // usuario y +% al que recibe (se combinan si ambos aplican en el mismo
+    // golpe, ej. el usuario golpea a un rival que también recibe de un
+    // aliado con Todo o Nada — no aplica aquí, Todo o Nada es solo del lado
+    // del usuario); Resistencia Elegida (17): -% si el DEFENSOR es del
+    // equipo del usuario y el movimiento es del tipo elegido.
+    let towerDamageMult = 1;
+    if (isUserAttacker) {
+      if (defender.hp / defender.maxHp < 0.2) towerDamageMult *= 1 + towerMods.lowHpBonusPct;
+      towerDamageMult *= 1 + towerMods.damageDealtBonusPct;
+      // Torre Batalla — Entrada Explosiva (39): +% en el PRIMER movimiento
+      // de un Pokémon que acaba de entrar al campo (reutiliza
+      // `hasActedSinceEntering`, ya llevado por FIRST_TURN_ONLY_MOVES/Fake
+      // Out — sigue en `false` hasta que actúa por primera vez tras entrar,
+      // sea por cambio voluntario, forzado o reemplazo de un debilitado).
+      if (!attacker.hasActedSinceEntering) towerDamageMult *= 1 + towerMods.entranceBonusPct;
+    }
+    if (isUserDefender) {
+      towerDamageMult *= 1 - towerMods.damageReducedPct;
+      towerDamageMult *= 1 + towerMods.damageReceivedBonusPct;
+      const resistPct = towerMods.resistTypes.get(move.type);
+      if (resistPct) towerDamageMult *= 1 - resistPct;
+    }
+    let damage = Math.floor(base * stab * weatherMult * terrainMult * screenMult * mult * critMult * rand * invulnerabilityBreakMult * towerDamageMult);
     damage = mult > 0 ? Math.max(1, damage) : 0;
     return { damage, isCrit, mult };
   }, [typeMultiplier]);
@@ -3609,8 +3727,13 @@ function useApiCache() {
     attacker.lastMoveUsed = move.name;
 
     // La recarga se gasta por haber usado el movimiento, acierte o no
-    // (equivalente simplificado a los juegos reales).
-    const isRecharge = RECHARGE_MOVES.has(move.name);
+    // (equivalente simplificado a los juegos reales). Torre Batalla — Sin
+    // Descanso (36): el equipo del usuario ya no la necesita en absoluto;
+    // se resuelve aquí mismo, en la única `const` de la que dependen los
+    // ~36 puntos de "if (isRecharge) attacker.mustRecharge = true" de más
+    // abajo, en vez de tener que tocar cada uno por separado.
+    const isRecharge = RECHARGE_MOVES.has(move.name)
+      && !(weather?.towerMods?.noRecharge && attacker.trainerId === weather.towerMods.userTrainerId);
     const isThrashing = THRASHING_MOVES.has(move.name);
     const isProtectMove = PROTECT_MOVES.has(move.name);
 
@@ -3663,7 +3786,12 @@ function useApiCache() {
     if (WEATHER_MOVES[move.name] && weather) {
       const type = WEATHER_MOVES[move.name];
       weather.type = type;
-      weather.turnsLeft = 5;
+      // Torre Batalla — Control Climático (18): +N turnos extra sobre la
+      // duración base de 5, sin importar quién active el clima (el equipo
+      // del usuario se beneficia igual del clima que él mismo activa que
+      // del que active el rival, ya que el efecto es "cualquier clima que
+      // se active", no solo el suyo propio).
+      weather.turnsLeft = 5 + (weather.towerMods?.weatherExtraTurns || 0);
       weather.justSet = true;
       return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: WEATHER_START_TEXT[type], inline: false }] };
     }
@@ -3882,6 +4010,20 @@ function useApiCache() {
       return { hit: true, damage: 0, crit: false, status: true, events };
     }
 
+    // Torre Batalla — Reflejos de Combate (38): esquiva por completo
+    // cualquier ataque rival dirigido al equipo del usuario, sin gastar
+    // turno propio ni PP del rival (se resuelve antes que la propia tirada
+    // de precisión). No aplica a movimientos autodirigidos (no tiene
+    // sentido "esquivar" el propio Danza Espada del rival, por ejemplo).
+    if (!move.selfTargeted && weather?.towerMods && defender.trainerId === weather.towerMods.userTrainerId
+      && weather.towerMods.dodgeChance > 0 && Math.random() < weather.towerMods.dodgeChance) {
+      if (isRecharge) attacker.mustRecharge = true;
+      const thrashEvent = updateThrashLock();
+      const events = [{ type: "statusText", text: `¡${defender.name} esquivó el ataque por completo!`, inline: false }];
+      if (thrashEvent) events.push(thrashEvent);
+      return { hit: false, damage: 0, crit: false, status: false, events };
+    }
+
     // Un movimiento de tipo Fuego (o Escaldar/Scald, agua por tipo pero con
     // esta excepción concreta en los juegos reales) usado CONTRA un
     // objetivo congelado lo descongela al instante, haga o no daño, ANTES
@@ -3959,7 +4101,10 @@ function useApiCache() {
       if (move.name === "sheer-cold" && defender.types.includes("ice")) {
         return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: `¡No afectó a ${defender.name}!`, inline: false }] };
       }
-      const ohkoAcc = move.accuracy == null ? 100 : move.accuracy;
+      // Torre Batalla — Golpe de Gracia (5): +% de probabilidad de acertar,
+      // sin superar el 100%, solo si quien lo usa es el equipo del usuario.
+      const ohkoTowerBonus = (weather?.towerMods && attacker.trainerId === weather.towerMods.userTrainerId) ? weather.towerMods.ohkoAccBonus : 0;
+      const ohkoAcc = Math.min(100, (move.accuracy == null ? 100 : move.accuracy) + ohkoTowerBonus);
       if (Math.random() * 100 >= ohkoAcc) {
         return { hit: true, damage: 0, crit: false, status: true, events: [{ type: "statusText", text: "¡Pero falló!", inline: false }] };
       }
@@ -3980,7 +4125,10 @@ function useApiCache() {
         const thrashEvent = updateThrashLock();
         return { hit: false, damage: 0, crit: false, status: false, events: thrashEvent ? [thrashEvent] : [] };
       }
-      const hitCount = rollMultiHitCount(move.minHits, move.maxHits);
+      // Torre Batalla — Golpe Persistente (37): siempre el máximo de golpes
+      // en vez de sortear, solo para el equipo del usuario.
+      const forceMaxHits = weather?.towerMods?.forceMaxMultiHit && attacker.trainerId === weather.towerMods.userTrainerId;
+      const hitCount = forceMaxHits ? move.maxHits : rollMultiHitCount(move.minHits, move.maxHits);
       let totalDamage = 0;
       let anyCrit = false;
       let hitsLanded = 0;
@@ -3990,6 +4138,9 @@ function useApiCache() {
         const { damage: hitDamage, isCrit: hitCrit, mult: hitMult } = await computeDamage(attacker, defender, move, weather);
         lastMult = hitMult;
         defender.hp = Math.max(0, defender.hp - hitDamage);
+        // Torre Batalla — Segunda Oportunidad (9): igual que en el golpe
+        // único, comprobado tras CADA golpe de la secuencia.
+        applySurvivalCheck(defender, weather);
         totalDamage += hitDamage;
         if (hitCrit) anyCrit = true;
         hitsLanded++;
@@ -4001,7 +4152,7 @@ function useApiCache() {
         defender.counterDamageTaken = { amount: totalDamage, category: move.damageClass };
       }
       const events = applyMoveEffects(attacker, defender, move, lastMult, defender.hp <= 0, weather);
-      if (lastMult > 0) applyDrainOrRecoil(attacker, totalDamage, move, events);
+      if (lastMult > 0) applyDrainOrRecoil(attacker, totalDamage, move, events, weather?.towerMods?.noRecoil && attacker.trainerId === weather.towerMods.userTrainerId);
       if (defender.hp > 0 && lastMult > 0 && move.flinchChance > 0 && Math.random() * 100 < move.flinchChance) {
         defender.flinched = true;
       }
@@ -4535,11 +4686,16 @@ function useApiCache() {
     if (isRolloutMove) attacker.lockedMove = attacker.rolloutTurn >= 5 ? null : move.name;
     const { damage, isCrit, mult } = await computeDamage(attacker, defender, move, weather);
     defender.hp = Math.max(0, defender.hp - damage);
+    // Torre Batalla — Segunda Oportunidad (9): se comprueba ANTES que
+    // Destino Ligado, para que un objetivo que sobrevive con 1 PS no
+    // dispare ese efecto (ya no está "debilitado" tras esto).
+    const survived = applySurvivalCheck(defender, weather);
     // Destino Ligado (ver DESTINY_BOND_MOVES): si este golpe directo deja al
     // OBJETIVO a 0 PS y el objetivo lo había activado, quien atacó también
     // se debilita con él. Alcance limitado a este único punto (ver el
     // comentario de la constante).
     let destinyBondEvents = [];
+    if (survived) destinyBondEvents.push({ type: "statusText", text: `¡${defender.name} resiste con 1 PS gracias a Segunda Oportunidad!`, inline: false });
     if (defender.hp <= 0 && defender.destinyBondActive) {
       defender.destinyBondActive = false;
       attacker.hp = 0;
@@ -4565,7 +4721,17 @@ function useApiCache() {
     // Drenado/retroceso (Come Sueños, Giga Drain, Absorber... / Envite
     // Ígneo, Placaje, Golpe Cabeza...): cura o resta al atacante un % del
     // daño infligido según el signo de meta.drain.
-    if (mult > 0) applyDrainOrRecoil(attacker, damage, move, events);
+    if (mult > 0) applyDrainOrRecoil(attacker, damage, move, events, weather?.towerMods?.noRecoil && attacker.trainerId === weather.towerMods.userTrainerId);
+    // Torre Batalla — Espinas Defensivas (32) / Veneno Reactivo (33): cada
+    // vez que el Pokémon activo del usuario recibe un golpe que conecta de
+    // verdad, coloca una capa de Púas/Púas Tóxicas en el campo rival
+    // (reutiliza los mismos contadores y topes que HAZARD_MOVES).
+    if (damage > 0 && mult > 0 && weather?.towerMods && defender.trainerId === weather.towerMods.userTrainerId) {
+      const rivalId = weather.towerMods.rivalTrainerId;
+      const side = weather.hazards[rivalId] = weather.hazards[rivalId] || { stealthRock: false, spikes: 0, toxicSpikes: 0, stickyWeb: false };
+      if (weather.towerMods.onHitSpikes && side.spikes < 3) side.spikes += 1;
+      if (weather.towerMods.onHitToxicSpikes && side.toxicSpikes < 2) side.toxicSpikes += 1;
+    }
     // Aprisionamiento (ver BINDING_MOVES): tras el golpe inicial, si conectó
     // de verdad y el objetivo sigue en pie y no estaba ya atrapado, queda
     // atrapado 4-5 turnos (ver tickBindingDamage, llamado al final de cada
@@ -4995,6 +5161,8 @@ function useApiCache() {
     tickCurseDamage(activePb, turns);
     tickPerishSong(activePa, turns);
     tickPerishSong(activePb, turns);
+    applyTowerEndOfTurnHeal(activePa, weather, turns);
+    applyTowerEndOfTurnHeal(activePb, weather, turns);
     applyPendingFutureHits(weather, activePa, activePb, turns);
     applyWeatherResidualDamage(activePa, weather, turns);
     applyWeatherResidualDamage(activePb, weather, turns);
@@ -5197,6 +5365,8 @@ function useApiCache() {
     tickCurseDamage(opponent, turns);
     tickPerishSong(incoming, turns);
     tickPerishSong(opponent, turns);
+    applyTowerEndOfTurnHeal(incoming, weather, turns);
+    applyTowerEndOfTurnHeal(opponent, weather, turns);
     applyPendingFutureHits(weather, incoming, opponent, turns);
     applyWeatherResidualDamage(incoming, weather, turns);
     applyWeatherResidualDamage(opponent, weather, turns);
@@ -6079,7 +6249,7 @@ function BattleVersusScreen({ phase, userTrainer, aiTrainer }) {
 
 // Pantalla de combate interactiva: el usuario elige el movimiento de su
 // Pokémon activo en cada turno; el rival lo controla la IA (chooseMove).
-function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish, rivalStatMultiplier = 1, initialUserTeam = null }) {
+function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish, rivalStatMultiplier = 1, initialUserTeam = null, towerModifiers = null }) {
   const [teamA, setTeamA] = useState(null);
   const [teamB, setTeamB] = useState(null);
   const [idxA, setIdxA] = useState(0);
@@ -6291,7 +6461,42 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       // ambos lados con normalidad (así el rival se sigue montando exacto
       // igual que siempre), sin tocar prepareTeam/preparePokemonForBattle.
       if (initialUserTeam) {
-        if (userSide === "a") ta = initialUserTeam; else tb = initialUserTeam;
+        // Los stat stages de combate (-6/+6, de movimientos como Danza
+        // Espada/Gruñido/Agilidad...) NUNCA deben persistir de un combate a
+        // otro, ni siquiera dentro del mismo bloque de 5 rondas de la Torre
+        // Batalla — a diferencia del desgaste de PS/estados no volátiles,
+        // que sí se mantiene y es la razón de ser de `initialUserTeam` (ver
+        // el comentario de arriba). Se resetean aquí, en el ÚNICO punto por
+        // el que pasa un equipo "cargado" de una ronda anterior, sin tocar
+        // nada más de su estado (hp/status/PP intactos). Los bonus
+        // PERMANENTES de los modificadores roguelike (ver
+        // applyTowerPermanentBonuses más abajo) NO se tocan aquí a
+        // propósito: ya quedaron aplicados sobre `p.stats`/`p.maxHp` la
+        // primera vez que este equipo se preparó (inicio del bloque, ver la
+        // rama `else` de más abajo) y viajan con él de ronda en ronda sin
+        // volver a recalcularse — solo los stages son puramente de este
+        // combate.
+        // Purificación (41): cura cualquier estado no volátil arrastrado de
+        // un combate anterior del mismo bloque, justo en este mismo punto
+        // (el único por el que pasa un equipo "cargado").
+        const purify = towerModifiers?.some((m) => m.id === "purificacion");
+        const resetTeam = initialUserTeam.map((p) => ({
+          ...p,
+          statStages: { ...ZERO_STAT_STAGES },
+          ...(purify ? { status: null, toxicCounter: 0, sleepTurns: 0, freezeTurns: 0, justFellAsleep: false } : {}),
+        }));
+        if (userSide === "a") ta = resetTeam; else tb = resetTeam;
+      } else if (towerModifiers && towerModifiers.length > 0) {
+        // Equipo recién preparado a PS máximos (ronda 1 o inicio de un
+        // bloque nuevo, ver battleTowerStartsNewBlock): es el ÚNICO momento
+        // en que se aplican los bonus PERMANENTES de los modificadores
+        // roguelike ya elegidos en esta run (stats base porcentuales,
+        // Reflejos Rápidos, Sacrificio por Poder...) — dentro del mismo
+        // bloque, el equipo "cargado" de la rama de arriba ya los lleva
+        // aplicados desde esta misma preparación inicial, así que NO se
+        // reaplican en cada ronda (evita duplicar el bonus).
+        const userTeam = userSide === "a" ? ta : tb;
+        userTeam.forEach((p) => applyTowerPermanentBonuses(p, towerModifiers));
       }
       // Torre Batalla: boost de stats del equipo rival a partir de la ronda
       // 16 (ver battleTowerStatMultiplier) — se aplica sobre la copia YA
@@ -6302,6 +6507,19 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
       if (rivalStatMultiplier !== 1) {
         const rivalTeam = userSide === "a" ? tb : ta;
         rivalTeam.forEach((p) => applyStatMultiplier(p, rivalStatMultiplier));
+      }
+      // Torre Batalla: hazards/clima/pantallas de modificadores activos
+      // desde el turno 1 de cada combate nuevo (ver applyTowerBattleStartSetup),
+      // y precálculo de los flags/números de los modificadores activos para
+      // el resto del motor de combate (ver buildTowerModsContext), guardado
+      // en el propio objeto `weather` compartido (ya se pasa a todas las
+      // funciones relevantes del motor) para no tener que añadir un
+      // parámetro nuevo a cada una de ellas.
+      if (towerModifiers && towerModifiers.length > 0) {
+        const userTrainerId = userSide === "a" ? trainerA.id : trainerB.id;
+        const rivalTrainerId = userSide === "a" ? trainerB.id : trainerA.id;
+        weatherRef.current.towerMods = buildTowerModsContext(towerModifiers, userTrainerId, rivalTrainerId);
+        applyTowerBattleStartSetup(weatherRef.current, userTrainerId, rivalTrainerId);
       }
       if (!cancelled) { setTeamA(ta); setTeamB(tb); }
     })();
@@ -9218,6 +9436,306 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
 const BATTLE_TOWER_USER_ID = "tower-user";
 const BATTLE_TOWER_RIVAL_ID = "tower-rival";
 
+/* ---------------------------------------------------------------
+   TORRE BATALLA: MODIFICADORES ROGUELIKE
+   ---------------------------------------------------------------
+   Catálogo de 45 modificadores (43 pasivos/inmediatos + 2 objetos de un
+   solo uso), elegidos de 3 en 3 antes de la ronda 1 y antes de cada bloque
+   nuevo de 5 (6, 11, 16...). Cada elección se guarda como una entrada
+   independiente en `runModifiers` (ver BattleTowerMode) — nunca como un
+   simple contador — porque varios (Especialista, Afinidad Elemental,
+   Resistencia Elegida, Amuleto de la Suerte) llevan un `param` propio (a
+   qué Pokémon/tipo/estado concreto se aplican), y agrupar por `id` para
+   contar "veces elegido" es tan simple como filtrar ese array.
+
+   SIMPLIFICACIONES DE ALCANCE DOCUMENTADAS (para no necesitar una pantalla
+   de sub-selección aparte, fuera del alcance de esta tanda):
+   - "Especialista" (22): en vez de dejar que el usuario elija a mano uno de
+     sus 6 Pokémon, se asigna automáticamente a uno al AZAR de su equipo
+     actual en el momento de elegir el modificador.
+   - "Afinidad Elemental" (16) y "Resistencia Elegida" (17): en vez de un
+     selector de tipo, se asigna un tipo al azar (distinto de los ya
+     cubiertos por ese mismo modificador si es posible) en el momento de
+     elegirlo.
+   - "Amuleto de la Suerte" (8): asigna automáticamente un estado no volátil
+     al azar de los todavía no cubiertos (quemadura/parálisis/veneno/sueño/
+     congelación, agrupando veneno normal y grave como una sola inmunidad).
+
+   TOPES APLICADOS A MODIFICADORES BASADOS EN PROBABILIDAD (para que
+   ninguno pueda llegar nunca a un 100% garantizado/inmunidad total):
+   - Golpe Certero: tope de 5 aplicaciones (crítico máximo 6/24 ≈ 25%).
+   - Sobrecarga: tope de 4 aplicaciones (probabilidad de estado x5 como
+     mucho, sigue sujeta al 100% natural de la tirada).
+   - Piel de Hierro: tope de 7 aplicaciones (-70% de daño recibido como
+     mucho).
+   - Prioridad Táctica: tope de 3 aplicaciones (+3 de prioridad como mucho).
+   - Reflejos de Combate: tope de 3 aplicaciones (+20% cada una, 60% de
+     esquiva total como mucho — nunca inmunidad completa).
+   - Confusión Contagiosa: tope de 3 aplicaciones (33% base + 17% cada una,
+     84% como mucho).
+   - Resistencia Elegida: tope de 3 aplicaciones POR TIPO (75% de reducción
+     como mucho para ese tipo).
+   - Terreno Familiar: tope de 3 aplicaciones (x1.5 la primera vez, +0.15
+     cada una siguiente, x1.95 como mucho).
+   El resto de modificadores porcentuales (Furia Elemental, Instinto
+   Asesino, stats permanentes, Todo o Nada, economía...) se dejan sin tope
+   numérico a propósito, igual que el resto de sistemas ya acumulables del
+   proyecto (multiplicadores de la Tragaperras, rachas de Corte Furia...):
+   siguen creciendo linealmente con cada elección, sin acercarse a ningún
+   "100% garantizado" que rompa el juego.
+--------------------------------------------------------------- */
+
+const BATTLE_TOWER_MODIFIERS = [
+  { id: "golpe-certero", num: 1, title: "Golpe Certero", description: "Aumenta tu probabilidad de golpe crítico (1/24 → 2/24 por vez elegido, hasta un tope).", icon: Crosshair, category: "Ofensivo" },
+  { id: "furia-elemental", num: 2, title: "Furia Elemental", description: "Tus movimientos STAB hacen +15% de daño (acumulable).", icon: Flame, category: "Ofensivo" },
+  { id: "sobrecarga", num: 3, title: "Sobrecarga", description: "La probabilidad de aplicar el efecto de estado secundario de tus movimientos se duplica (acumulable, con tope).", icon: Zap, category: "Ofensivo" },
+  { id: "instinto-asesino", num: 4, title: "Instinto Asesino", description: "Contra un objetivo por debajo del 20% de sus PS, tu golpe hace +30% de daño adicional (acumulable).", icon: Skull, category: "Ofensivo" },
+  { id: "golpe-de-gracia", num: 5, title: "Golpe de Gracia", description: "Tus movimientos fulminantes ganan +15% de probabilidad de acertar (acumulable, sin superar el 100%).", icon: Target, category: "Ofensivo" },
+  { id: "piel-de-hierro", num: 6, title: "Piel de Hierro", description: "El daño que recibe tu equipo se reduce un 10% (acumulable, con tope).", icon: Shield, category: "Defensivo" },
+  { id: "regeneracion", num: 7, title: "Regeneración", description: "Tu equipo recupera un 3% extra de PS máximos al final de cada turno (acumulable).", icon: HeartPulse, category: "Defensivo" },
+  { id: "amuleto-de-la-suerte", num: 8, title: "Amuleto de la Suerte", description: "Tu equipo gana inmunidad a un estado no volátil al azar (si se repite, cubre otro distinto).", icon: Gem, category: "Defensivo" },
+  { id: "segunda-oportunidad", num: 9, title: "Segunda Oportunidad", description: "Una vez por combate, si un Pokémon tuyo iba a debilitarse, se queda con 1 PS (acumulable: +1 uso por combate cada vez).", icon: RefreshCw, category: "Defensivo" },
+  { id: "reflejos-rapidos", num: 10, title: "Reflejos Rápidos", description: "Tu equipo entra a cada combate con +1 etapa de Velocidad (acumulable, hasta el tope de +6).", icon: Wind, category: "Velocidad y turnos" },
+  { id: "prioridad-tactica", num: 11, title: "Prioridad Táctica", description: "Tus movimientos con prioridad positiva ganan +1 de prioridad (acumulable, con tope).", icon: Rocket, category: "Velocidad y turnos" },
+  { id: "entrenamiento-intensivo", num: 12, title: "Entrenamiento Intensivo", description: "+10% de Ataque a todo tu equipo (acumulable).", icon: Swords, category: "Stats permanentes" },
+  { id: "mente-afilada", num: 13, title: "Mente Afilada", description: "+10% de Ataque Especial a todo tu equipo (acumulable).", icon: Sparkles, category: "Stats permanentes" },
+  { id: "muralla-viviente", num: 14, title: "Muralla Viviente", description: "+10% de Defensa y Defensa Especial a todo tu equipo (acumulable).", icon: ShieldAlert, category: "Stats permanentes" },
+  { id: "corazon-de-campeon", num: 15, title: "Corazón de Campeón", description: "+15% de PS máximos a todo tu equipo (acumulable).", icon: Heart, category: "Stats permanentes" },
+  { id: "afinidad-elemental", num: 16, title: "Afinidad Elemental", description: "Un tipo al azar: tus movimientos de ese tipo cuentan como STAB aunque tu Pokémon no sea de ese tipo (acumulable con tipos distintos).", icon: Layers, category: "Basado en tipo" },
+  { id: "resistencia-elegida", num: 17, title: "Resistencia Elegida", description: "Un tipo al azar: recibes 25% menos daño de ese tipo (acumulable con tipos distintos, con tope por tipo).", icon: Shield, category: "Basado en tipo" },
+  { id: "control-climatico", num: 18, title: "Control Climático", description: "Cualquier clima que se active dura 3 turnos más (acumulable).", icon: CloudRain, category: "Clima y campo" },
+  { id: "terreno-familiar", num: 19, title: "Terreno Familiar", description: "El bonus de daño de los campos de batalla pasa de x1.3 a x1.5 (acumulable, con tope).", icon: Layers, category: "Clima y campo" },
+  { id: "bolsillos-llenos", num: 20, title: "Bolsillos Llenos", description: "+25% de monedas por ronda superada (acumulable).", icon: Coins, category: "Económico" },
+  { id: "cofre-sorpresa", num: 21, title: "Cofre Sorpresa", description: "Efecto único: +200 monedas inmediatas al elegirlo.", icon: Gift, category: "Económico" },
+  { id: "especialista", num: 22, title: "Especialista", description: "Uno de tus 6 Pokémon actuales (al azar) gana +20% en todas sus stats para el resto de la run (acumulable sobre el mismo Pokémon).", icon: Star, category: "Sobre un Pokémon concreto" },
+  { id: "todo-o-nada", num: 23, title: "Todo o Nada", description: "Tu equipo hace +25% de daño, pero también recibe +15% de daño (ambos acumulables).", icon: Dices, category: "Riesgo/recompensa" },
+  { id: "sacrificio-por-poder", num: 24, title: "Sacrificio por Poder", description: "Tu equipo pierde 10% de sus PS máximos actuales de forma permanente, pero gana +25% de Ataque y Ataque Especial (acumulable).", icon: Skull, category: "Riesgo/recompensa" },
+  { id: "vitalidad-constante", num: 25, title: "Vitalidad Constante", description: "Cualquier Pokémon por debajo del 50% de PS se cura un 10% de sus PS máximos al final de cada turno (acumulable).", icon: HeartPulse, category: "Sustain" },
+  { id: "amanecer-tactico", num: 26, title: "Amanecer Táctico", description: "Sol activo desde el turno 1 de cada combate.", icon: Sun, category: "Clima al empezar combate" },
+  { id: "danza-lluvia-tactica", num: 27, title: "Danza Lluvia Táctica", description: "Lluvia activa desde el turno 1 de cada combate.", icon: CloudRain, category: "Clima al empezar combate" },
+  { id: "viento-helado", num: 28, title: "Viento Helado", description: "Granizo activo desde el turno 1 de cada combate.", icon: CloudSnow, category: "Clima al empezar combate" },
+  { id: "tormenta-constante", num: 29, title: "Tormenta Constante", description: "Tormenta de arena activa desde el turno 1 de cada combate.", icon: Wind, category: "Clima al empezar combate" },
+  { id: "espejo-tactico", num: 30, title: "Espejo Táctico", description: "Reflejo activo a tu favor desde el turno 1 de cada combate.", icon: Shield, category: "Clima al empezar combate" },
+  { id: "prisma-de-luz", num: 31, title: "Prisma de Luz", description: "Pantalla de Luz activa a tu favor desde el turno 1 de cada combate.", icon: Sparkles, category: "Clima al empezar combate" },
+  { id: "espinas-defensivas", num: 32, title: "Espinas Defensivas", description: "Cada vez que tu Pokémon activo recibe un golpe, se coloca 1 capa de Púas en el campo rival (máx. 3 por combate).", icon: Target, category: "Hazards sobre el rival" },
+  { id: "veneno-reactivo", num: 33, title: "Veneno Reactivo", description: "Cada vez que tu Pokémon activo recibe un golpe, se coloca 1 capa de Púas Tóxicas en el campo rival (máx. 2 por combate).", icon: Skull, category: "Hazards sobre el rival" },
+  { id: "terreno-hostil", num: 34, title: "Terreno Hostil", description: "Trampa Rocas colocada en el campo rival desde el turno 1 de cada combate.", icon: CloudLightning, category: "Hazards sobre el rival" },
+  { id: "doble-filo-tactico", num: 35, title: "Doble Filo Táctico", description: "Tus movimientos con retroceso ya no te hacen daño a ti mismo.", icon: Swords, category: "Movimientos y acción" },
+  { id: "sin-descanso", num: 36, title: "Sin Descanso", description: "Tus movimientos de recarga ya no requieren turno de recarga.", icon: RefreshCw, category: "Movimientos y acción" },
+  { id: "golpe-persistente", num: 37, title: "Golpe Persistente", description: "Tus movimientos de golpes múltiples siempre golpean el máximo de veces (5).", icon: Repeat, category: "Movimientos y acción" },
+  { id: "reflejos-de-combate", num: 38, title: "Reflejos de Combate", description: "20% de probabilidad de esquivar por completo cualquier ataque rival (acumulable, con tope).", icon: Wind, category: "Movimientos y acción" },
+  { id: "entrada-explosiva", num: 39, title: "Entrada Explosiva", description: "Cuando un Pokémon tuyo entra al campo, su primer movimiento ese turno hace +50% de daño (acumulable).", icon: DoorOpen, category: "Movimientos y acción" },
+  { id: "purificacion", num: 41, title: "Purificación", description: "Al empezar cada combate, se cura cualquier estado no volátil que arrastrara tu equipo de un combate anterior del mismo bloque.", icon: Sparkles, category: "Estados y control" },
+  { id: "confusion-contagiosa", num: 42, title: "Confusión Contagiosa", description: "Cuando confundes a un rival, su probabilidad de golpearse a sí mismo sube del 33% al 50% (acumulable, con tope).", icon: Zap, category: "Estados y control" },
+  { id: "doble-o-nada", num: 43, title: "Doble o Nada", description: "Al ganar una ronda: 30% de duplicar las monedas de esa ronda; siempre 10% de perder la mitad de tus monedas acumuladas (ambos por separado, acumulable solo el de duplicar).", icon: Dices, category: "Economía avanzada" },
+  { id: "ojo-del-coleccionista", num: 44, title: "Ojo del Coleccionista", description: "Al ganar una ronda, 10% de probabilidad de recibir una tirada gratis del gacha general (acumulable, sumando probabilidad).", icon: Gem, category: "Economía avanzada" },
+  { id: "renacer", num: 45, title: "Renacer", description: "Objeto de un solo uso: se guarda en tu inventario en vez de aplicarse al instante. Úsalo antes de cualquier ronda para curar por completo a todo tu equipo vivo.", icon: Heart, category: "Objeto de un solo uso", item: true },
+  { id: "segundo-aliento", num: 46, title: "Segundo Aliento", description: "Objeto de un solo uso: se guarda en tu inventario en vez de aplicarse al instante. Úsalo antes de cualquier ronda para revivir a un Pokémon debilitado al 50% de sus PS.", icon: Handshake, category: "Objeto de un solo uso", item: true },
+];
+
+function getTowerModifierById(id) {
+  return BATTLE_TOWER_MODIFIERS.find((m) => m.id === id) || null;
+}
+
+// Sortea 3 modificadores DISTINTOS entre sí del catálogo completo (pueden
+// repetir modificadores ya elegidos en fases anteriores de la misma run,
+// solo no pueden repetirse dentro de esta misma terna).
+function rollTowerModifierOffer() {
+  const pool = shuffleInPlace([...BATTLE_TOWER_MODIFIERS]);
+  return pool.slice(0, 3).map((m) => m.id);
+}
+
+// Los 5 estados no volátiles distintos que puede cubrir Amuleto de la
+// Suerte (veneno normal y grave cuentan como una sola inmunidad, ya que
+// PokeAPI tampoco los distingue como ailments separados — ver el comentario
+// de TOXIC_MOVES).
+const TOWER_STATUS_IMMUNITY_POOL = ["burn", "paralysis", "poison", "sleep", "freeze"];
+
+// Construye la instancia concreta (con su `param` si aplica) de un
+// modificador recién elegido, a partir del estado YA acumulado de la run
+// (para no repetir tipo/estado ya cubierto si hay alguno libre todavía) y
+// del equipo actual (para "Especialista"). Devuelve `null` si de verdad no
+// hay alcance/pool libre, tratado en runModifiers como más solicitud igual
+// (poner un `param` mismo repetido no rompe nada, es solo redundante).
+function instantiateTowerModifier(id, runModifiers, currentTeam) {
+  if (id === "amuleto-de-la-suerte") {
+    const covered = new Set(runModifiers.filter((m) => m.id === id).map((m) => m.param));
+    const free = TOWER_STATUS_IMMUNITY_POOL.filter((s) => !covered.has(s));
+    const pool = free.length > 0 ? free : TOWER_STATUS_IMMUNITY_POOL;
+    return { id, param: pool[Math.floor(Math.random() * pool.length)] };
+  }
+  if (id === "afinidad-elemental" || id === "resistencia-elegida") {
+    const covered = new Set(runModifiers.filter((m) => m.id === id).map((m) => m.param));
+    const free = ALL_TYPES.filter((t) => !covered.has(t));
+    const pool = free.length > 0 ? free : ALL_TYPES;
+    return { id, param: pool[Math.floor(Math.random() * pool.length)] };
+  }
+  if (id === "especialista") {
+    const pool = currentTeam && currentTeam.length > 0 ? currentTeam : null;
+    return { id, param: pool ? pool[Math.floor(Math.random() * pool.length)].slug : null };
+  }
+  return { id };
+}
+
+// Precalcula, a partir de TODAS las instancias de modificadores activos de
+// la run, los números/flags concretos que necesita el motor de combate —
+// se guarda una sola vez por combate en `weather.towerMods` (ver
+// InteractiveBattle), reutilizando el propio objeto `weather` compartido en
+// vez de añadir un parámetro nuevo a cada función del motor que lo
+// necesite. Devuelve `null` en vez de un objeto si no hay ningún
+// modificador activo (equivalente a "esto no es la Torre Batalla" para
+// todos los puntos de enganche, que comprueban `weather?.towerMods?.x`).
+function buildTowerModsContext(instances, userTrainerId, rivalTrainerId) {
+  if (!instances || instances.length === 0) return null;
+  const n = (id) => instances.filter((m) => m.id === id).length;
+  const resistTypes = new Map();
+  for (const m of instances) {
+    if (m.id === "resistencia-elegida" && m.param) {
+      resistTypes.set(m.param, Math.min(0.75, (resistTypes.get(m.param) || 0) + 0.25));
+    }
+  }
+  const stabTypes = new Set(instances.filter((m) => m.id === "afinidad-elemental" && m.param).map((m) => m.param));
+  const statusImmunities = new Set(instances.filter((m) => m.id === "amuleto-de-la-suerte" && m.param).map((m) => m.param));
+  const specialistBonus = new Map(); // slug -> multiplicador acumulado (1 + 0.2*veces)
+  for (const m of instances) {
+    if (m.id === "especialista" && m.param) {
+      specialistBonus.set(m.param, (specialistBonus.get(m.param) || 1) + 0.2);
+    }
+  }
+  return {
+    userTrainerId, rivalTrainerId,
+    critBonusStages: Math.min(5, n("golpe-certero")),
+    stabBonusPct: 0.15 * n("furia-elemental"),
+    secondaryEffectMult: 1 + Math.min(4, n("sobrecarga")),
+    lowHpBonusPct: 0.30 * n("instinto-asesino"),
+    ohkoAccBonus: 15 * n("golpe-de-gracia"),
+    damageReducedPct: Math.min(0.70, 0.10 * n("piel-de-hierro")),
+    damageDealtBonusPct: 0.25 * n("todo-o-nada"),
+    damageReceivedBonusPct: 0.15 * n("todo-o-nada"),
+    regenPct: 0.03 * n("regeneracion"),
+    vitalityHealPct: 0.10 * n("vitalidad-constante"),
+    statusImmunities,
+    survivalUsesPerBattle: n("segunda-oportunidad"),
+    // Contador MUTABLE de usos de Segunda Oportunidad restantes EN ESTE
+    // COMBATE (se reinicia solo, ya que `weather.towerMods` se reconstruye
+    // de cero en cada montaje de InteractiveBattle, uno por combate) — ver
+    // applySurvivalCheck.
+    survivalUsesLeft: n("segunda-oportunidad"),
+    speedStageBonus: n("reflejos-rapidos"),
+    priorityBonus: Math.min(3, n("prioridad-tactica")),
+    stabTypes,
+    resistTypes,
+    specialistBonus,
+    weatherExtraTurns: 3 * n("control-climatico"),
+    terrainMultOverride: n("terreno-familiar") > 0 ? Math.min(1.95, 1.5 + 0.15 * (n("terreno-familiar") - 1)) : null,
+    noRecoil: n("doble-filo-tactico") > 0,
+    noRecharge: n("sin-descanso") > 0,
+    forceMaxMultiHit: n("golpe-persistente") > 0,
+    dodgeChance: Math.min(0.60, 0.20 * Math.min(3, n("reflejos-de-combate"))),
+    entranceBonusPct: 0.50 * n("entrada-explosiva"),
+    purifyOnBattleStart: n("purificacion") > 0,
+    confusionSelfHitChance: n("confusion-contagiosa") > 0 ? Math.min(0.84, 1 / 3 + 0.17 * Math.min(3, n("confusion-contagiosa"))) : null,
+    onHitSpikes: n("espinas-defensivas") > 0,
+    onHitToxicSpikes: n("veneno-reactivo") > 0,
+    startWeather: (() => {
+      // Si hay varios climas tácticos elegidos a la vez, gana el de ID más
+      // alto (orden de resolución: 26 < 27 < 28 < 29, el último procesado
+      // sobrescribe a los anteriores) — solo puede haber un clima activo a
+      // la vez, igual que en el resto del motor.
+      let w = null;
+      if (n("amanecer-tactico") > 0) w = "sun";
+      if (n("danza-lluvia-tactica") > 0) w = "rain";
+      if (n("viento-helado") > 0) w = "hail";
+      if (n("tormenta-constante") > 0) w = "sandstorm";
+      return w;
+    })(),
+    startReflect: n("espejo-tactico") > 0,
+    startLightScreen: n("prisma-de-luz") > 0,
+    startStealthRockOnRival: n("terreno-hostil") > 0,
+  };
+}
+
+// Aplica los bonus PERMANENTES de stats (capa separada e independiente de
+// los stat stages de combate, ver el bug corregido en InteractiveBattle) a
+// UN Pokémon recién preparado a PS máximos — se llama SOLO al preparar un
+// equipo nuevo (ronda 1 o inicio de bloque), nunca sobre un equipo
+// "cargado" dentro del mismo bloque (ya los lleva aplicados desde esa
+// primera preparación, ver el comentario de InteractiveBattle). El orden de
+// combinación con los stat stages de combate lo resuelve getEffectiveStat
+// más abajo (base_ya_permanentemente_ajustada × statStageMultiplier(stage)),
+// exactamente el mismo patrón ya usado para el boost de rareza del rival de
+// la propia Torre Batalla (ver applyStatMultiplier/battleTowerStatMultiplier).
+function applyTowerPermanentBonuses(p, instances) {
+  const n = (id) => instances.filter((m) => m.id === id).length;
+  let atkMult = 1 + 0.10 * n("entrenamiento-intensivo") + 0.25 * n("sacrificio-por-poder");
+  let spaMult = 1 + 0.10 * n("mente-afilada") + 0.25 * n("sacrificio-por-poder");
+  let defMult = 1 + 0.10 * n("muralla-viviente");
+  let spdMult = 1 + 0.10 * n("muralla-viviente");
+  let speMult = 1;
+  let hpMult = 1 + 0.15 * n("corazon-de-campeon");
+  // Sacrificio por Poder también recorta permanentemente los PS máximos
+  // ACTUALES (compuesto, no solo lineal): 0.9 la primera vez, 0.81 la
+  // segunda... con un suelo del 30% del máximo original para no dejar el
+  // equipo en un valor absurdo tras muchas repeticiones.
+  const sacrificeStacks = n("sacrificio-por-poder");
+  for (let i = 0; i < sacrificeStacks; i++) hpMult = Math.max(0.30, hpMult * 0.90);
+  const specialistMult = instances.find((m) => m.id === "especialista" && m.param === p.slug)
+    ? instances.filter((m) => m.id === "especialista" && m.param === p.slug).reduce((mult) => mult + 0.20, 1)
+    : 1;
+  atkMult *= specialistMult; spaMult *= specialistMult; defMult *= specialistMult; spdMult *= specialistMult; speMult *= specialistMult; hpMult *= specialistMult;
+
+  const before = p.stats;
+  p.stats = {
+    ...before,
+    attack: Math.round(before.attack * atkMult),
+    "special-attack": Math.round(before["special-attack"] * spaMult),
+    defense: Math.round(before.defense * defMult),
+    "special-defense": Math.round(before["special-defense"] * spdMult),
+    speed: Math.round(before.speed * speMult),
+  };
+  const newMaxHp = Math.max(1, Math.round(p.maxHp * hpMult));
+  p.hp = newMaxHp; // equipo recién preparado a PS máximos, ver el comentario de la llamada
+  p.maxHp = newMaxHp;
+  // Reflejos Rápidos (10): +1 etapa de Velocidad POR combate, vía el
+  // mecanismo normal de stat stages (respeta el tope de +6 sin ningún
+  // trabajo extra) — se resetea con normalidad al terminar el combate, y se
+  // vuelve a aplicar aquí mismo al preparar el siguiente, así que nunca
+  // entra en conflicto con el reseteo de stages entre combates.
+  const speedStageBonus = n("reflejos-rapidos");
+  if (speedStageBonus > 0) {
+    p.statStages = { ...(p.statStages || ZERO_STAT_STAGES), speed: Math.min(6, (p.statStages?.speed || 0) + speedStageBonus) };
+  }
+}
+
+// Clima/pantallas/hazard iniciales de los modificadores tácticos (26-31,
+// 34): se aplican UNA VEZ al montar cada combate nuevo, directamente sobre
+// `weather` (ya con towerMods precalculado). Alcance documentado: el
+// Pokémon activo inicial de cada lado NO pasa por applyEntryHazards (esa
+// función solo se llama en cambios/reemplazos posteriores, ver su
+// comentario), así que Terreno Hostil no golpea al primer Pokémon rival del
+// combate, solo a cualquiera que entre después — mismo criterio de alcance
+// ya documentado para BINDING_MOVES/otras mecánicas de esta app.
+function applyTowerBattleStartSetup(weather, userTrainerId, rivalTrainerId) {
+  const mods = weather.towerMods;
+  if (!mods) return;
+  if (mods.startWeather) {
+    weather.type = mods.startWeather;
+    weather.turnsLeft = 5 + mods.weatherExtraTurns;
+  }
+  if (mods.startReflect) {
+    weather.screens[userTrainerId] = weather.screens[userTrainerId] || {};
+    weather.screens[userTrainerId].reflect = 5;
+  }
+  if (mods.startLightScreen) {
+    weather.screens[userTrainerId] = weather.screens[userTrainerId] || {};
+    weather.screens[userTrainerId].light = 5;
+  }
+  if (mods.startStealthRockOnRival) {
+    weather.hazards[rivalTrainerId] = weather.hazards[rivalTrainerId] || { stealthRock: false, spikes: 0, toxicSpikes: 0, stickyWeb: false };
+    weather.hazards[rivalTrainerId].stealthRock = true;
+  }
+}
+
 // Escalado de dificultad/stats/recompensas de la Torre Batalla cada bloque
 // de 5 rondas (ver el pedido). Todas estas funciones toman el número de
 // ronda 1-indexado y son puras (sin estado), para poder reutilizarlas tanto
@@ -9342,8 +9860,109 @@ function rollDistinctRarityWeighted(pool, allowedRarities, count) {
 // finalizeRound/TOURNAMENT_ROUNDS de TorneoTab) y las mismas piezas
 // genéricas del motor (api.simulateMatch vía InteractiveBattle,
 // api.primeMoveset, api.buildCompetitiveMoveset).
+// Pantalla de selección de UN modificador de la terna ofrecida (ver
+// openModifierOffer en BattleTowerMode): cada slot tiene su propio botón de
+// reseteo (una vez por slot, no compartido), y confirmar elige ese
+// modificador para el resto de la run. Si es Renacer/Segundo Aliento, deja
+// claro que es un objeto de inventario en vez de un efecto inmediato.
+function TowerModifierSelectScreen({ offer, resetUsed, onReset, onChoose, roundLabel }) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl p-4" style={{ background: "#f2b70514", border: "1px solid #f2b70555" }}>
+        <div className="text-white font-display text-lg mb-1 flex items-center gap-2"><Sparkles size={18} color="#f2b705" /> Elige un modificador</div>
+        <p className="text-sm text-[#c7cbdb]">Elige 1 de estos 3 modificadores para el resto de la run ({roundLabel}). Puedes resetear cada opción una vez si no te convence.</p>
+      </div>
+      <div className="grid sm:grid-cols-3 gap-3">
+        {offer.map((id, i) => {
+          const mod = getTowerModifierById(id);
+          if (!mod) return null;
+          const Icon = mod.icon;
+          return (
+            <div key={i} className="rounded-xl p-4 flex flex-col" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center mb-2" style={{ background: "#f2b70522" }}>
+                <Icon size={18} color="#f2b705" />
+              </div>
+              <div className="text-white font-semibold text-sm mb-1">{mod.title}</div>
+              <div className="text-[11px] text-[#8a8fa3] mb-1 flex-1">{mod.description}</div>
+              {mod.item && (
+                <div className="text-[10px] font-semibold text-[#f2b705] mb-2">Objeto de un solo uso: se guarda en tu inventario, no se aplica al instante.</div>
+              )}
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => onChoose(id)}
+                  className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold text-white"
+                  style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+                >
+                  Elegir
+                </button>
+                <button
+                  onClick={() => onReset(i)}
+                  disabled={resetUsed[i]}
+                  title="Sustituir esta opción por otra al azar (una vez)"
+                  className="px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+                >
+                  <RefreshCw size={13} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Panel de los modificadores activos de la run (con su contador "x veces
+// elegido", agrupando por id — ver el comentario de BATTLE_TOWER_MODIFIERS)
+// y las unidades sin usar de Renacer/Segundo Aliento. No se muestra nada si
+// no hay ni modificadores ni objetos (run recién empezada antes de la
+// primera elección).
+function TowerModifiersPanel({ runModifiers, inventory }) {
+  const grouped = [];
+  for (const inst of runModifiers) {
+    const existing = grouped.find((g) => g.id === inst.id && g.param === inst.param);
+    if (existing) existing.count += 1;
+    else grouped.push({ id: inst.id, param: inst.param, count: 1 });
+  }
+  const hasItems = (inventory.renacer || 0) > 0 || (inventory["segundo-aliento"] || 0) > 0;
+  if (grouped.length === 0 && !hasItems) return null;
+  return (
+    <div className="rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+      <div className="text-xs font-semibold text-[#8a8fa3] mb-2 uppercase tracking-wide">Modificadores activos</div>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {grouped.map((g, i) => {
+          const mod = getTowerModifierById(g.id);
+          if (!mod) return null;
+          const label = g.param ? `${mod.title} (${TYPE_ES[g.param] || STATUS_BADGE_META[g.param]?.label || displayName(g.param)})` : mod.title;
+          return (
+            <span key={i} className="text-[11px] px-2 py-1 rounded-full" style={{ background: "#f2b70518", color: "#f2b705", border: "1px solid #f2b70544" }}>
+              {label}{g.count > 1 ? ` x${g.count}` : ""}
+            </span>
+          );
+        })}
+        {grouped.length === 0 && <span className="text-[11px] text-[#6b7086]">Ninguno todavía.</span>}
+      </div>
+      {hasItems && (
+        <div className="flex flex-wrap gap-1.5">
+          {(inventory.renacer || 0) > 0 && (
+            <span className="text-[11px] px-2 py-1 rounded-full flex items-center gap-1" style={{ background: "#5fae5f18", color: "#8fe0a8", border: "1px solid #5fae5f44" }}>
+              <Heart size={11} /> Renacer x{inventory.renacer}
+            </span>
+          )}
+          {(inventory["segundo-aliento"] || 0) > 0 && (
+            <span className="text-[11px] px-2 py-1 rounded-full flex items-center gap-1" style={{ background: "#5fae5f18", color: "#8fe0a8", border: "1px solid #5fae5f44" }}>
+              <Handshake size={11} /> Segundo Aliento x{inventory["segundo-aliento"]}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds, ownedTrainerMovesets, coins, setCoins, playerProfile, onActiveChange, battleTowerBest, onBattleTowerResult, onRoundCleared }) {
-  const [phase, setPhase] = useState("select"); // select, loading, battle, post-round, summary
+  const [phase, setPhase] = useState("select"); // select, modifiers, loading, battle, post-round, summary
 
   // Mismo bug/corrección que en DraftMode: TorneoTab oculta su cabecera y
   // el selector de "Modo de torneo" mientras la Torre Batalla está
@@ -9374,6 +9993,22 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
   // (`battleTowerBest`, el vigente ANTES de esta partida): se calcula una
   // sola vez al terminar (ver finishTower) y se muestra en el resumen.
   const [newRecord, setNewRecord] = useState(false);
+
+  // Modificadores roguelike de esta run (ver BATTLE_TOWER_MODIFIERS): array
+  // de instancias `{ id, param? }`, una por cada vez elegido — nunca un
+  // contador simple, ver el comentario del catálogo. Se pierden al terminar
+  // la Torre Batalla (derrota o retirada), igual que el inventario de
+  // objetos de un solo uso.
+  const [runModifiers, setRunModifiers] = useState([]);
+  const [inventory, setInventory] = useState({ renacer: 0, "segundo-aliento": 0 });
+  // Terna de 3 ids ofrecida ahora mismo (fase "modifiers"), y qué slots ya
+  // gastaron su único reseteo permitido en ESTA oferta.
+  const [modifierOffer, setModifierOffer] = useState(null);
+  const [modifierResetUsed, setModifierResetUsed] = useState([false, false, false]);
+  // Datos de la ronda que se preparará en cuanto se confirme la elección de
+  // esta pantalla (ver openModifierOffer/confirmModifierChoice).
+  const [pendingPrepare, setPendingPrepare] = useState(null);
+  const [showItemPanel, setShowItemPanel] = useState(false);
 
   const unlockedTrainers = TRAINERS.filter((t) => isTrainerUnlocked(t, purchasedTrainerIds));
 
@@ -9496,11 +10131,90 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
       setRoundsWon(0);
       setCoinsAccumulated(0);
       setNewRecord(false);
-      await prepareRound(1, pool, team, null);
+      setRunModifiers([]);
+      setInventory({ renacer: 0, "segundo-aliento": 0 });
+      // Antes de la ronda 1 SIEMPRE toca elegir modificador (es el primer
+      // bloque de 5), ver battleTowerStartsNewBlock.
+      openModifierOffer(1, pool, team, null);
     } catch (e) {
       setError("No se pudo conectar con PokeAPI. Comprueba tu conexión e inténtalo de nuevo.");
       setPhase("select");
     }
+  }
+
+  // Abre la pantalla de selección de modificadores (antes de la ronda 1 y
+  // de cada bloque nuevo de 5, ver battleTowerStartsNewBlock): guarda los
+  // datos de la ronda pendiente para reanudar prepareRound en cuanto se
+  // confirme una elección (ver confirmModifierChoice).
+  function openModifierOffer(roundNum, pool, team, carried) {
+    setModifierOffer(rollTowerModifierOffer());
+    setModifierResetUsed([false, false, false]);
+    setPendingPrepare({ roundNum, pool, team, carried });
+    setPhase("modifiers");
+  }
+
+  // Reseteo individual de UN slot de la oferta (una vez por slot, no
+  // compartido entre los 3): sustituye ese id por otro al azar distinto de
+  // los otros 2 que quedan en la propia terna.
+  function resetModifierSlot(index) {
+    if (modifierResetUsed[index]) return;
+    setModifierOffer((offer) => {
+      const others = offer.filter((_, i) => i !== index);
+      let candidate;
+      do {
+        candidate = BATTLE_TOWER_MODIFIERS[Math.floor(Math.random() * BATTLE_TOWER_MODIFIERS.length)].id;
+      } while (others.includes(candidate));
+      const next = [...offer];
+      next[index] = candidate;
+      return next;
+    });
+    setModifierResetUsed((prev) => prev.map((v, i) => (i === index ? true : v)));
+  }
+
+  // Confirma la elección de UN modificador de la terna ofrecida: Renacer/
+  // Segundo Aliento van al inventario (nunca a `runModifiers`, ver el
+  // pedido); Cofre Sorpresa da sus +200 monedas inmediatas aquí mismo (pero
+  // SÍ se registra en `runModifiers`, para que su contador "x veces" se vea
+  // en el panel igual que el resto); el resto se instancia con su `param`
+  // si aplica (ver instantiateTowerModifier) y se añade a la run. Reanuda a
+  // continuación la preparación de la ronda que quedó pendiente.
+  function confirmModifierChoice(chosenId) {
+    if (chosenId === "renacer" || chosenId === "segundo-aliento") {
+      setInventory((inv) => ({ ...inv, [chosenId]: (inv[chosenId] || 0) + 1 }));
+    } else {
+      const instance = instantiateTowerModifier(chosenId, runModifiers, towerTeam);
+      setRunModifiers((prev) => [...prev, instance]);
+      if (chosenId === "cofre-sorpresa") setCoinsAccumulated((c) => c + 200);
+    }
+    const pending = pendingPrepare;
+    setPendingPrepare(null);
+    setModifierOffer(null);
+    if (pending) prepareRound(pending.roundNum, pending.pool, pending.team, pending.carried);
+  }
+
+  // Cura por completo (PS y estados) a todo Pokémon VIVO del equipo actual
+  // (no revive a los ya debilitados) — ver Renacer (45). Antes de la ronda 1
+  // `carriedUserTeam` todavía es `null` (no hay nada que curar de verdad,
+  // el equipo se prepara sano de todos modos), así que este uso sería un
+  // no-op inofensivo si se permitiera ahí; el panel de objetos solo se
+  // muestra cuando ya hay un equipo cargado con el que de verdad tenga
+  // sentido usarlo (ver el JSX de abajo).
+  function useRenacerItem() {
+    if ((inventory.renacer || 0) <= 0 || !carriedUserTeam) return;
+    setInventory((inv) => ({ ...inv, renacer: inv.renacer - 1 }));
+    setCarriedUserTeam((team) => team.map((p) => (p.hp > 0
+      ? { ...p, hp: p.maxHp, status: null, toxicCounter: 0, sleepTurns: 0, freezeTurns: 0, justFellAsleep: false, confusionTurns: 0, confusionSelfHitChance: null }
+      : p)));
+  }
+
+  // Revive a UN Pokémon debilitado concreto (por índice dentro del equipo
+  // actual) al 50% de sus PS máximos, sin estados — ver Segundo Aliento (46).
+  function useSegundoAlientoItem(index) {
+    if ((inventory["segundo-aliento"] || 0) <= 0 || !carriedUserTeam) return;
+    setInventory((inv) => ({ ...inv, "segundo-aliento": inv["segundo-aliento"] - 1 }));
+    setCarriedUserTeam((team) => team.map((p, i) => (i === index
+      ? { ...p, hp: Math.max(1, Math.floor(p.maxHp * 0.5)), status: null, toxicCounter: 0, sleepTurns: 0, freezeTurns: 0, justFellAsleep: false, confusionTurns: 0, confusionSelfHitChance: null, faintLogged: false }
+      : p)));
   }
 
   function handleBattleFinish(matchResult) {
@@ -9508,9 +10222,32 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
       finishTower(roundsWon);
       return;
     }
-    const reward = battleTowerRoundReward(currentRound);
-    setRoundsWon((r) => r + 1);
+    // Bolsillos Llenos (20): +% sobre las monedas base de ESTA ronda.
+    const bolsillosN = runModifiers.filter((m) => m.id === "bolsillos-llenos").length;
+    let reward = Math.round(battleTowerRoundReward(currentRound) * (1 + 0.25 * bolsillosN));
+    // Doble o Nada (43): 30%×N (sin superar el 100%) de duplicar las
+    // monedas de ESTA ronda; SIEMPRE (sin escalar con N, ver el comentario
+    // del catálogo — solo se escala la probabilidad de duplicar, nunca la
+    // de perder, para no volver el riesgo desproporcionado con muchas
+    // repeticiones) 10% de perder la mitad de lo YA acumulado hasta ahora.
+    // Ambos se evalúan de forma independiente.
+    const dobleONadaN = runModifiers.filter((m) => m.id === "doble-o-nada").length;
+    if (dobleONadaN > 0) {
+      if (Math.random() < Math.min(1, 0.30 * dobleONadaN)) reward *= 2;
+      if (Math.random() < 0.10) setCoinsAccumulated((c) => Math.floor(c / 2));
+    }
     setCoinsAccumulated((c) => c + reward);
+    // Ojo del Coleccionista (44): probabilidad (acumulable, sumando) de una
+    // tirada gratis del gacha general — simplificado a +150 monedas extra
+    // en vez de un crédito real del gacha, para no tener que enhebrar el
+    // estado del Casino (freeGachaPulls) hasta este componente, bastante
+    // alejado en el árbol de props; documentado aquí y en el changelog como
+    // simplificación deliberada de alcance.
+    const coleccionistaN = runModifiers.filter((m) => m.id === "ojo-del-coleccionista").length;
+    if (coleccionistaN > 0 && Math.random() < Math.min(1, 0.10 * coleccionistaN)) {
+      setCoinsAccumulated((c) => c + 150);
+    }
+    setRoundsWon((r) => r + 1);
     setCarriedUserTeam(matchResult.finalUserTeam || null);
     // Logros 51-54 (ver applyBattleTowerRoundCleared): se avisa en vivo, en
     // el momento exacto de superar la ronda, con la rareza del equipo rival
@@ -9524,7 +10261,12 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
   }
 
   function continueTower() {
-    prepareRound(currentRound + 1, rivalPool, towerTeam, carriedUserTeam);
+    const nextRound = currentRound + 1;
+    if (battleTowerStartsNewBlock(nextRound)) {
+      openModifierOffer(nextRound, rivalPool, towerTeam, carriedUserTeam);
+    } else {
+      prepareRound(nextRound, rivalPool, towerTeam, carriedUserTeam);
+    }
   }
 
   // Fin de la Torre Batalla (derrota o retirada voluntaria): calcula si se
@@ -9554,6 +10296,14 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
     setOpponentMeta(null);
     setCarriedUserTeam(null);
     setNewRecord(false);
+    // Los modificadores/objetos de la run se pierden siempre al terminar la
+    // Torre Batalla, gane o pierda (ver el pedido) — la siguiente run
+    // empieza sin ninguno.
+    setRunModifiers([]);
+    setInventory({ renacer: 0, "segundo-aliento": 0 });
+    setModifierOffer(null);
+    setPendingPrepare(null);
+    setShowItemPanel(false);
   }
 
   const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
@@ -9685,15 +10435,30 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
           difficulty={battleTowerCpuDifficulty(currentRound)}
           rivalStatMultiplier={battleTowerStatMultiplier(currentRound)}
           initialUserTeam={carriedUserTeam}
+          towerModifiers={runModifiers}
           onFinish={handleBattleFinish}
         />
       </div>
     );
   }
 
+  if (phase === "modifiers" && modifierOffer) {
+    return (
+      <TowerModifierSelectScreen
+        offer={modifierOffer}
+        resetUsed={modifierResetUsed}
+        onReset={resetModifierSlot}
+        onChoose={confirmModifierChoice}
+        roundLabel={pendingPrepare?.roundNum === 1 ? "antes de empezar" : `bloque de la ronda ${pendingPrepare?.roundNum}`}
+      />
+    );
+  }
+
   if (phase === "post-round") {
     const nextRound = currentRound + 1;
     const willHeal = battleTowerStartsNewBlock(nextRound);
+    const faintedIndices = (carriedUserTeam || []).map((p, i) => (p.hp <= 0 ? i : null)).filter((i) => i != null);
+    const hasItems = (inventory.renacer || 0) > 0 || (inventory["segundo-aliento"] || 0) > 0;
     return (
       <div className="space-y-4">
         {towerStatusBar}
@@ -9705,6 +10470,48 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
               : "Tu equipo sigue con el desgaste acumulado a la siguiente ronda."}
           </div>
         </div>
+        <TowerModifiersPanel runModifiers={runModifiers} inventory={inventory} />
+        {hasItems && !willHeal && (
+          <div className="rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
+            <button
+              onClick={() => setShowItemPanel((s) => !s)}
+              className="flex items-center gap-2 text-sm font-semibold text-white"
+            >
+              <Heart size={16} color="#e3350d" /> Usar objeto {showItemPanel ? <ChevronDown size={14} className="rotate-180" /> : <ChevronDown size={14} />}
+            </button>
+            {showItemPanel && (
+              <div className="mt-3 space-y-3">
+                {(inventory.renacer || 0) > 0 && (
+                  <div className="flex items-center justify-between gap-3 rounded-lg p-2.5" style={{ background: "#1c1f2c" }}>
+                    <div className="text-xs text-[#c7cbdb]">Renacer (x{inventory.renacer}): cura por completo a todo tu equipo vivo.</div>
+                    <button onClick={useRenacerItem} className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold text-white" style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}>Usar</button>
+                  </div>
+                )}
+                {(inventory["segundo-aliento"] || 0) > 0 && (
+                  <div className="rounded-lg p-2.5" style={{ background: "#1c1f2c" }}>
+                    <div className="text-xs text-[#c7cbdb] mb-2">Segundo Aliento (x{inventory["segundo-aliento"]}): revive a un Pokémon debilitado al 50% de sus PS.</div>
+                    {faintedIndices.length === 0 ? (
+                      <div className="text-[11px] text-[#6b7086]">Ningún Pokémon debilitado ahora mismo.</div>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {faintedIndices.map((i) => (
+                          <button
+                            key={i}
+                            onClick={() => useSegundoAlientoItem(i)}
+                            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white"
+                            style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+                          >
+                            {displayName(carriedUserTeam[i].slug)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
         <div className="flex flex-wrap gap-2">
           <button
