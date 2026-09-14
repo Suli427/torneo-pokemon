@@ -475,6 +475,13 @@ export const CHANGELOG = [
     detail: "Se añade un panel lateral izquierdo, visible SOLO durante los combates de la Torre Batalla (nunca en Torneo/Draft, que no tienen modificadores roguelike), con cada modificador activo de la run (icono del catálogo + contador \"xN\" si se ha elegido más de una vez) y las unidades sin usar de Renacer/Segundo Aliento. En escritorio/tablet es una columna fija compacta con solo iconos (nombre y descripción completos como tooltip nativo al pasar el cursor) y su propio scroll vertical si hay muchos modificadores acumulados, para no desbordar la pantalla ni empujar el resto de la interfaz de combate. En móvil, esa misma columna comprimiría demasiado los sprites y el selector de movimientos en una pantalla estrecha, así que ahí se colapsa en un botón flotante con el recuento total de efectos; al pulsarlo despliega una hoja inferior con la lista completa (icono, nombre y descripción de cada uno), con el mismo tratamiento visual que el resto de modales de la app. Al vivir dentro de la propia pantalla de combate y recibir el inventario como prop desde la Torre Batalla, el panel siempre refleja el inventario real: si se usa un Renacer o Segundo Aliento entre rondas, el combate siguiente ya arranca con el panel actualizado sin ningún paso extra.",
     date: "2026-09-13T13:39:06+02:00",
   },
+  {
+    id: 67,
+    title: "Corrección de balance: Reflejos de Combate",
+    summary: "El modificador Reflejos de Combate de la Torre Batalla subía demasiado rápido (+20% de esquiva por vez, hasta 60%); ahora sube +10% por vez, con un tope duro del 50%.",
+    detail: "Reflejos de Combate (38) escalaba +20% de probabilidad de esquiva total por cada vez elegido, con un tope de 3 aplicaciones (60% como máximo). Se corrige a +10% por vez elegido, con el tope de aplicaciones útiles subido a 5 (10%, 20%, 30%, 40%, 50%): a partir de la 5ª vez, elegirlo de nuevo ya no aumenta la probabilidad por encima de ese 50% duro. Cambiado tanto en el cálculo real (`dodgeChance` en `buildTowerModsContext`) como en la descripción del modificador que ve el jugador en la pantalla de selección, para que coincidan.",
+    date: "2026-09-14T17:05:48+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

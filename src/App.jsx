@@ -9472,7 +9472,7 @@ const BATTLE_TOWER_RIVAL_ID = "tower-rival";
    - Piel de Hierro: tope de 7 aplicaciones (-70% de daño recibido como
      mucho).
    - Prioridad Táctica: tope de 3 aplicaciones (+3 de prioridad como mucho).
-   - Reflejos de Combate: tope de 3 aplicaciones (+20% cada una, 60% de
+   - Reflejos de Combate: tope de 5 aplicaciones (+10% cada una, 50% de
      esquiva total como mucho — nunca inmunidad completa).
    - Confusión Contagiosa: tope de 3 aplicaciones (33% base + 17% cada una,
      84% como mucho).
@@ -9526,7 +9526,7 @@ const BATTLE_TOWER_MODIFIERS = [
   { id: "doble-filo-tactico", num: 35, title: "Doble Filo Táctico", description: "Tus movimientos con retroceso ya no te hacen daño a ti mismo.", icon: Swords, category: "Movimientos y acción" },
   { id: "sin-descanso", num: 36, title: "Sin Descanso", description: "Tus movimientos de recarga ya no requieren turno de recarga.", icon: RefreshCw, category: "Movimientos y acción" },
   { id: "golpe-persistente", num: 37, title: "Golpe Persistente", description: "Tus movimientos de golpes múltiples siempre golpean el máximo de veces (5).", icon: Repeat, category: "Movimientos y acción" },
-  { id: "reflejos-de-combate", num: 38, title: "Reflejos de Combate", description: "20% de probabilidad de esquivar por completo cualquier ataque rival (acumulable, con tope).", icon: Wind, category: "Movimientos y acción" },
+  { id: "reflejos-de-combate", num: 38, title: "Reflejos de Combate", description: "+10% de probabilidad de esquivar por completo cualquier ataque rival por vez elegido (acumulable, tope del 50%).", icon: Wind, category: "Movimientos y acción" },
   { id: "entrada-explosiva", num: 39, title: "Entrada Explosiva", description: "Cuando un Pokémon tuyo entra al campo, su primer movimiento ese turno hace +50% de daño (acumulable).", icon: DoorOpen, category: "Movimientos y acción" },
   { id: "purificacion", num: 41, title: "Purificación", description: "Al empezar cada combate, se cura cualquier estado no volátil que arrastrara tu equipo de un combate anterior del mismo bloque.", icon: Sparkles, category: "Estados y control" },
   { id: "confusion-contagiosa", num: 42, title: "Confusión Contagiosa", description: "Cuando confundes a un rival, su probabilidad de golpearse a sí mismo sube del 33% al 50% (acumulable, con tope).", icon: Zap, category: "Estados y control" },
@@ -9634,7 +9634,7 @@ function buildTowerModsContext(instances, userTrainerId, rivalTrainerId) {
     noRecoil: n("doble-filo-tactico") > 0,
     noRecharge: n("sin-descanso") > 0,
     forceMaxMultiHit: n("golpe-persistente") > 0,
-    dodgeChance: Math.min(0.60, 0.20 * Math.min(3, n("reflejos-de-combate"))),
+    dodgeChance: 0.10 * Math.min(5, n("reflejos-de-combate")),
     entranceBonusPct: 0.50 * n("entrada-explosiva"),
     purifyOnBattleStart: n("purificacion") > 0,
     confusionSelfHitChance: n("confusion-contagiosa") > 0 ? Math.min(0.84, 1 / 3 + 0.17 * Math.min(3, n("confusion-contagiosa"))) : null,
