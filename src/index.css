@@ -10,6 +10,71 @@ html, body, #root {
   background: #0c0e15;
 }
 
+/* Fase 4 del rediseño "carta coleccionable": textura de fondo GLOBAL en
+   `body`, no en cada tab por separado. Ninguna tab pone su propio
+   `background` opaco encima (el `<main>` de App.jsx no tiene fondo propio),
+   así que esta única regla llega automáticamente a Torneo/Logros/Casino/
+   Torre Batalla/Draft/Personajes/Pokémon/Gatcha/Diario sin tocar el código
+   de cada una — evita rehacer el fondo pantalla por pantalla y, de paso,
+   garantiza que ninguna quede "descolgada" del resto. Dos resplandores
+   radiales muy tenues (esquina superior izquierda en un rojo apagado,
+   inferior derecha en un dorado apagado — los dos acentos de color ya
+   establecidos en el resto del rediseño) más un patrón diagonal casi
+   imperceptible a modo de textura de "tapete de cartas", todo con opacidad
+   deliberadamente baja para no interferir con la legibilidad del contenido
+   real por encima.*/
+body {
+  background-color: #0c0e15;
+  background-image:
+    radial-gradient(ellipse 900px 600px at 8% -5%, #e3350d14 0%, transparent 60%),
+    radial-gradient(ellipse 900px 700px at 95% 105%, #f2b70512 0%, transparent 60%),
+    repeating-linear-gradient(135deg, #ffffff05 0px, #ffffff05 1px, transparent 1px, transparent 28px);
+  background-attachment: fixed;
+}
+
+/* Pulido general de botones (Fase 4): un único punto de enganche para TODA
+   la app en vez de repetir la misma transición/estado de pulsado en cada
+   botón — sutil relieve al pulsar (escala) y una transición suave para
+   cualquier cambio de color/sombra que ya traiga cada botón por su cuenta.
+   No toca ningún color: cada botón sigue con su propia paleta semántica ya
+   establecida (rojo = acción principal, dorado = premium/pago, rojo tenue =
+   destructivo...), esto solo añade la MISMA sensación táctil a todos. */
+button {
+  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+button:not(:disabled):active {
+  transform: scale(0.97);
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Scrollbar a juego con la paleta oscura/dorada del resto del rediseño, en
+   vez del scrollbar por defecto del sistema — se nota sobre todo en los
+   paneles con `overflow-y-auto` ya existentes (cuadrícula de colección,
+   listas de movimientos, clasificación, desplegables...). Firefox vía
+   `scrollbar-color` (con fallback silencioso donde no se soporte);
+   WebKit/Blink vía pseudo-elementos. */
+* {
+  scrollbar-color: #3a3f57 #14161f;
+  scrollbar-width: thin;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #14161f;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3f57;
+  border-radius: 999px;
+  border: 2px solid #14161f;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4c5066;
+}
+
 .font-display {
   font-family: 'Rajdhani', sans-serif;
   letter-spacing: 0.01em;

@@ -5661,14 +5661,14 @@ function NovedadesModal({ open, onClose, readIds, onMarkRead, onMarkAllRead }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
       <div
         className="relative max-w-4xl w-full max-h-[85vh] rounded-2xl p-6 overflow-y-auto"
-        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #f2b70544", boxShadow: "0 0 24px #00000066" }}
         onClick={(e) => e.stopPropagation()}
       >
         <button onClick={onClose} className="absolute top-4 right-4 text-[#7c8199] hover:text-white">
           <X size={20} />
         </button>
         <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
-          <h2 className="font-display text-2xl text-white flex items-center gap-2"><ScrollText size={22} color="#e3350d" /> Novedades</h2>
+          <h2 className="font-card-name text-2xl text-white flex items-center gap-2"><ScrollText size={22} color="#e3350d" /> Novedades</h2>
           {anyUnread && (
             <button
               onClick={onMarkAllRead}
@@ -5709,13 +5709,13 @@ function AboutCreatorModal({ open, onClose }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
       <div
         className="relative max-w-lg w-full max-h-[85vh] overflow-y-auto rounded-2xl p-6"
-        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}
+        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #f2b70544", boxShadow: "0 0 24px #00000066" }}
         onClick={(e) => e.stopPropagation()}
       >
         <button onClick={onClose} className="absolute top-4 right-4 text-[#7c8199] hover:text-white">
           <X size={20} />
         </button>
-        <h2 className="font-display text-2xl text-white flex items-center gap-2 mb-4">
+        <h2 className="font-card-name text-2xl text-white flex items-center gap-2 mb-4">
           <Heart size={22} color="#e3350d" /> Acerca del creador
         </h2>
         <div className="text-sm text-[#c7cbdb] space-y-3 leading-relaxed">
@@ -10151,7 +10151,7 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
           style={{ background: "#14161f", border: "1px solid #f2b70555" }}
         >
           <Sparkles size={16} color="#f2b705" className="shrink-0" />
-          <span className="text-xs font-semibold text-white flex-1 min-w-0">Modificadores activos ({grouped.length})</span>
+          <span className="font-card-name text-xs text-white flex-1 min-w-0">Modificadores activos ({grouped.length})</span>
           <ChevronDown size={14} color="#8a8fa3" className={open ? "rotate-180" : ""} style={{ transition: "transform 0.15s" }} />
         </button>
         {open && (
@@ -10183,7 +10183,7 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
             style={{ background: "#14161f", border: "1px solid #262a3a", borderBottom: "none" }}
           >
             <div className="flex items-center justify-between mb-3">
-              <div className="text-sm font-semibold text-white">Modificadores activos ({grouped.length})</div>
+              <div className="font-card-name text-sm text-white">Modificadores activos ({grouped.length})</div>
               <button onClick={() => setMobileOpen(false)} className="text-[#8a8fa3]"><X size={18} /></button>
             </div>
             <div className="space-y-2">
@@ -14330,9 +14330,25 @@ export default function App() {
 
   return (
     <div className="w-full min-h-screen" style={{ background: "#0c0e15", fontFamily: "Inter, sans-serif" }}>
-      <header className="px-5 py-4 flex items-center justify-between border-b sticky top-0 z-40" style={{ borderColor: "#1e2130", background: "linear-gradient(180deg,#12141d,#0c0e15)" }}>
+      {/* Fase 4 del rediseño "carta coleccionable": la cabecera entera NO se
+          convierte en una carta (a propósito, ver el pedido), solo se le da
+          un detalle metálico/dorado sutil coherente con el resto del
+          sistema — un borde inferior con un ligero tinte dorado en vez del
+          gris plano de antes, y el logo dentro de un pequeño círculo con
+          borde dorado, mismo lenguaje visual que la "gema" de rareza de
+          CardFrame (círculo oscuro + borde de color fino). */}
+      <header
+        className="px-5 py-4 flex items-center justify-between sticky top-0 z-40"
+        style={{
+          borderBottom: "1px solid #f2b70533",
+          background: "linear-gradient(180deg,#12141d,#0c0e15)",
+          boxShadow: "0 1px 12px #00000066",
+        }}
+      >
         <div className="flex items-center gap-2.5">
-          <PokeballIcon size={26} />
+          <div className="rounded-full flex items-center justify-center shrink-0" style={{ width: 34, height: 34, background: "#0e1018", border: "1.5px solid #f2b70566" }}>
+            <PokeballIcon size={20} />
+          </div>
           <div>
             <div className="font-display text-xl text-white leading-none flex items-center gap-2">
               PokéArena
