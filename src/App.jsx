@@ -25,7 +25,7 @@ import {
   getActiveWeekKey, getNextWeeklyResetDate, selectWeeklyTheme, speciesMatchesTheme,
   loadWeeklyTournamentState, recordActiveWeekTheme, isWeeklyTournamentCompleted, markWeeklyTournamentCompleted,
 } from "./weeklyTournaments";
-import CardFrame from "./components/CardFrame.jsx";
+import CardFrame, { CARD_RARITY_META } from "./components/CardFrame.jsx";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -150,6 +150,32 @@ const TRAINERS = [
 // combinando ambas fuentes donde haga falta.
 function isTrainerUnlocked(trainer, purchasedTrainerIds) {
   return !trainer.locked || purchasedTrainerIds.includes(trainer.id);
+}
+
+// Fase 3 del rediseño "carta coleccionable" (ver CardFrame.jsx): los
+// entrenadores no tienen una rareza real como los Pokémon (GACHA_POOL), así
+// que se les asigna una según este criterio, documentado también en el
+// changelog:
+//   - Un entrenador propio del usuario (`isCustomTrainer`, ver el reskin de
+//     `effectiveTrainers`, o un objeto de `customTrainers` directamente):
+//     Pseudolegendario siempre, para que destaque como algo personal.
+//   - Los 4 desbloqueados por defecto (`locked: false`: Ash, Gary, Paul,
+//     Máximo): Poco Común.
+//   - El resto (comprables, `locked: true`) se reparte en 3 tramos por
+//     PRECIO, con cortes elegidos para repartir los 17 comprables actuales
+//     en grupos parejos (6/6/5) — ver TRAINERS para los precios reales:
+//       Raro:       precio <= 900  (Trip 700, Sabino/Cameron 750, Benito 800, Cintia/Alain 900)
+//       Épico:      900 < precio <= 1050 (Mirto/Acromo 950, Iris/N 1000, Lance/Helio 1050)
+//       Legendario: precio > 1050 (Dianta/Giovanni 1100, Plubio 1150, Lionel 1200, Rojo 1400)
+//     Nunca se usa Común (ningún entrenador queda por debajo de Poco Común)
+//     ni Pseudolegendario para el roster (reservada a los propios).
+function trainerRarity(trainer) {
+  if (trainer?.isCustomTrainer) return "pseudo-legendary";
+  if (!trainer?.locked) return "uncommon";
+  const price = trainer.price ?? 0;
+  if (price <= 900) return "rare";
+  if (price <= 1050) return "epic";
+  return "legendary";
 }
 
 // Prefijo común a TODAS las claves de localStorage de la app (ver cada
@@ -8434,18 +8460,24 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
           {mode === "B" ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {unlockedTrainers.map((t) => (
+                // Selección marcada con un anillo exterior del color propio
+                // del entrenador (fuera del CardFrame en sí, que ya tiene su
+                // propio borde/resplandor de rareza — ver trainerRarity) en
+                // vez de sustituir el borde de la tarjeta, para no competir
+                // visualmente con el marco de rareza.
                 <button
                   key={t.id}
                   onClick={() => { setUserTrainerId(t.id); setPlayAsCustomId(null); }}
-                  className="rounded-xl p-4 text-left transition-all"
-                  style={{
-                    background: (userTrainerId === t.id && !playAsCustomId) ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
-                    border: (userTrainerId === t.id && !playAsCustomId) ? `1.5px solid ${t.color}` : "1px solid #262a3a",
-                  }}
+                  className="text-left transition-all rounded-2xl"
+                  style={{ boxShadow: (userTrainerId === t.id && !playAsCustomId) ? `0 0 0 2px ${t.color}` : "none" }}
                 >
-                  <TrainerAvatar trainer={t} size={36} className="text-sm mb-2" />
-                  <div className="text-white font-semibold text-sm">{t.name}</div>
-                  <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+                  <CardFrame rarity={trainerRarity(t)} className="h-full block">
+                    <div className="p-3 flex flex-col items-center text-center">
+                      <TrainerAvatar trainer={t} size={48} className="text-lg mb-2" />
+                      <div className="font-card-name text-white text-sm leading-tight mb-1">{t.name}</div>
+                      <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+                    </div>
+                  </CardFrame>
                 </button>
               ))}
             </div>
@@ -8710,7 +8742,17 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
                     {phase === "finished" && idx === 0 ? <Trophy size={15} color="#f2b705" /> : idx + 1}
                   </span>
                   <span className="flex items-center gap-2 text-white font-medium">
-                    <TrainerAvatar trainer={t} size={24} className="text-[11px]" playerAvatar={t.isCustomTrainer ? playerProfile.avatar : null} />
+                    {/* Fase 3 del rediseño "carta coleccionable": una fila
+                        de clasificación es una lista compacta, no el sitio
+                        para un CardFrame completo (rompería el alto de fila
+                        y la lectura rápida de la tabla) — en vez de eso, un
+                        fino anillo con el color de rareza del entrenador
+                        (ver trainerRarity/CARD_RARITY_META) alrededor del
+                        avatar ya existente, como nota sutil coherente con
+                        el resto del sistema sin reestructurar la tabla. */}
+                    <span className="rounded-full p-0.5 shrink-0" style={{ background: CARD_RARITY_META[trainerRarity(t)]?.color || "#8a8fa3" }}>
+                      <TrainerAvatar trainer={t} size={22} className="text-[10px]" playerAvatar={t.isCustomTrainer ? playerProfile.avatar : null} />
+                    </span>
                     {t.name}
                     {isUser && (
                       <span className="flex items-center gap-1 text-[10px] pl-1.5 pr-2 py-0.5 rounded-full bg-[#e3350d33] text-[#ff8a6a]">
@@ -10569,30 +10611,32 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
               <button
                 key={ct.id}
                 onClick={() => setTowerTrainerId(`custom:${ct.id}`)}
-                className="rounded-xl p-4 text-left transition-all"
-                style={{
-                  background: towerTrainerId === `custom:${ct.id}` ? "linear-gradient(160deg, #2ecc7133, #14161f)" : "#14161f",
-                  border: towerTrainerId === `custom:${ct.id}` ? "1.5px solid #2ecc71" : "1px solid #262a3a",
-                }}
+                className="text-left transition-all rounded-2xl"
+                style={{ boxShadow: towerTrainerId === `custom:${ct.id}` ? "0 0 0 2px #2ecc71" : "none" }}
               >
-                <PlayerAvatar avatar={playerProfile.avatar} size={36} color="#2ecc71" />
-                <div className="text-white font-semibold text-sm mt-2">{ct.name}</div>
-                <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+                <CardFrame rarity="pseudo-legendary" className="h-full block">
+                  <div className="p-3 flex flex-col items-center text-center">
+                    <PlayerAvatar avatar={playerProfile.avatar} size={48} color="#2ecc71" />
+                    <div className="font-card-name text-white text-sm leading-tight mt-2 mb-1">{ct.name}</div>
+                    <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
+                  </div>
+                </CardFrame>
               </button>
             ))}
             {unlockedTrainers.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTowerTrainerId(t.id)}
-                className="rounded-xl p-4 text-left transition-all"
-                style={{
-                  background: towerTrainerId === t.id ? `linear-gradient(160deg, ${t.color}33, #14161f)` : "#14161f",
-                  border: towerTrainerId === t.id ? `1.5px solid ${t.color}` : "1px solid #262a3a",
-                }}
+                className="text-left transition-all rounded-2xl"
+                style={{ boxShadow: towerTrainerId === t.id ? `0 0 0 2px ${t.color}` : "none" }}
               >
-                <TrainerAvatar trainer={t} size={36} className="text-sm" />
-                <div className="text-white font-semibold text-sm mt-2">{t.name}</div>
-                <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+                <CardFrame rarity={trainerRarity(t)} className="h-full block">
+                  <div className="p-3 flex flex-col items-center text-center">
+                    <TrainerAvatar trainer={t} size={48} className="text-lg" />
+                    <div className="font-card-name text-white text-sm leading-tight mt-2 mb-1">{t.name}</div>
+                    <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+                  </div>
+                </CardFrame>
               </button>
             ))}
           </div>
@@ -11389,59 +11433,70 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
           const unlocked = isTrainerUnlocked(t, purchasedTrainerIds);
           const canAfford = coins >= (t.price ?? 0);
           return (
-            <div key={t.id} className="rounded-xl p-4 relative overflow-hidden" style={{ background: "#14161f", border: "1px solid #262a3a", opacity: unlocked ? 1 : 0.6 }}>
-              <div className="flex items-center gap-3 mb-3">
-                <TrainerAvatar trainer={t} size={44} className="text-lg" />
-                <div>
-                  <div className="text-white font-semibold flex items-center gap-2">{t.name} {!unlocked && <Lock size={13} color="#8a8fa3" />}</div>
-                  <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
+            // Fase 3 del rediseño "carta coleccionable": el marco de
+            // CardFrame (borde/resplandor/gema de rareza, ver
+            // trainerRarity) se muestra SIEMPRE a toda intensidad, tenga o
+            // no el jugador este entrenador desbloqueado — así se ve "qué
+            // tipo de carta es" incluso sin poseerla todavía (mismo criterio
+            // que una carta bloqueada en un juego de coleccionables real).
+            // Lo único que se atenúa (opacity 0.6, igual que antes de esta
+            // fase) es el CONTENIDO de dentro — avatar, equipo, botón de
+            // compra incluido — nunca el marco en sí.
+            <CardFrame key={t.id} rarity={trainerRarity(t)} className="h-full block">
+              <div className="p-4 flex flex-col h-full" style={{ opacity: unlocked ? 1 : 0.6 }}>
+                <div className="flex justify-center mb-2">
+                  <TrainerAvatar trainer={t} size={64} className="text-2xl" />
                 </div>
-              </div>
-              <div className="flex flex-wrap gap-2 mb-3">
-                {t.team.map((slug, i) => {
-                  const p = sprites[slug];
-                  // Editable para CUALQUIER entrenador que el usuario
-                  // pueda jugar, esté desbloqueado por defecto (Ash/Gary/
-                  // Paul/Máximo) o comprado: antes solo se permitía para
-                  // los comprados (t.locked), y como los 4 gratuitos nunca
-                  // pasan por el flujo de compra, nunca se les creaba
-                  // entrada en ownedTrainerMovesets ni se les ofrecía la
-                  // opción de editar.
-                  const editable = unlocked;
-                  return (
-                    <button
-                      key={`${slug}-${i}`}
-                      type="button"
-                      onClick={() => {
-                        if (!editable) return;
-                        // Inicialización perezosa: si este entrenador
-                        // todavía no tiene entrada en
-                        // ownedTrainerMovesets (los 4 gratuitos nunca
-                        // pasaron por purchaseTrainer, que es donde se
-                        // inicializaba hasta ahora), se crea aquí mismo a
-                        // partir de TRAINER_MOVESETS antes de abrir el
-                        // editor.
-                        onEnsureTrainerMovesetsInitialized(t.id);
-                        setEditingTrainerMon({ trainerId: t.id, slug });
-                      }}
-                      disabled={!editable}
-                      className="w-12 h-12 rounded-lg flex items-center justify-center relative disabled:cursor-default"
-                      style={{ background: "#0e1018", border: editable ? "1px solid #3a3f57" : "1px solid #22263a" }}
-                      title={editable ? `${displayName(slug)} · editar movimientos` : displayName(slug)}
-                    >
-                      {!unlocked ? <Lock size={14} color="#4c5066" /> : p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
-                    </button>
-                  );
-                })}
-              </div>
-              {unlocked && (
-                <p className="text-[10px] text-[#6b7086] mb-2">Toca un Pokémon para editar sus movimientos.</p>
-              )}
-              {!unlocked && (
+                <div className="font-card-name text-white text-base text-center leading-tight mb-1 flex items-center justify-center gap-1.5">
+                  {t.name} {!unlocked && <Lock size={13} color="#8a8fa3" />}
+                </div>
+                <div className="text-[11px] text-[#8a8fa3] text-center mb-3">{t.subtitle}</div>
+                <div className="h-px w-full mb-3" style={{ background: "#262a3a" }} />
+                <div className="flex flex-wrap gap-2 justify-center mb-3 flex-1">
+                  {t.team.map((slug, i) => {
+                    const p = sprites[slug];
+                    // Editable para CUALQUIER entrenador que el usuario
+                    // pueda jugar, esté desbloqueado por defecto (Ash/Gary/
+                    // Paul/Máximo) o comprado: antes solo se permitía para
+                    // los comprados (t.locked), y como los 4 gratuitos nunca
+                    // pasan por el flujo de compra, nunca se les creaba
+                    // entrada en ownedTrainerMovesets ni se les ofrecía la
+                    // opción de editar.
+                    const editable = unlocked;
+                    return (
+                      <button
+                        key={`${slug}-${i}`}
+                        type="button"
+                        onClick={() => {
+                          if (!editable) return;
+                          // Inicialización perezosa: si este entrenador
+                          // todavía no tiene entrada en
+                          // ownedTrainerMovesets (los 4 gratuitos nunca
+                          // pasaron por purchaseTrainer, que es donde se
+                          // inicializaba hasta ahora), se crea aquí mismo a
+                          // partir de TRAINER_MOVESETS antes de abrir el
+                          // editor.
+                          onEnsureTrainerMovesetsInitialized(t.id);
+                          setEditingTrainerMon({ trainerId: t.id, slug });
+                        }}
+                        disabled={!editable}
+                        className="w-12 h-12 rounded-lg flex items-center justify-center relative disabled:cursor-default"
+                        style={{ background: "#0e1018", border: editable ? "1px solid #3a3f57" : "1px solid #22263a" }}
+                        title={editable ? `${displayName(slug)} · editar movimientos` : displayName(slug)}
+                      >
+                        {!unlocked ? <Lock size={14} color="#4c5066" /> : p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                      </button>
+                    );
+                  })}
+                </div>
+                {unlocked && (
+                  <p className="text-[10px] text-[#6b7086] text-center mb-2">Toca un Pokémon para editar sus movimientos.</p>
+                )}
+                {!unlocked && (
                 <button
                   onClick={() => setConfirmTrainer(t)}
                   disabled={!canAfford}
-                  className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:cursor-not-allowed"
+                  className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:cursor-not-allowed self-center"
                   style={{
                     background: canAfford ? "#f2b70522" : "#1c1f2c",
                     color: canAfford ? "#f2b705" : "#6b7086",
@@ -11450,8 +11505,9 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                 >
                   {canAfford ? `Desbloquear · ${t.price} monedas` : `Te faltan ${t.price - coins} monedas`}
                 </button>
-              )}
-            </div>
+                )}
+              </div>
+            </CardFrame>
           );
         })}
       </div>
@@ -11463,81 +11519,85 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
           sobre el `id` concreto de la tarjeta pulsada. */}
       <div className="grid sm:grid-cols-2 gap-4">
         {customTrainers.map((ct) => (
-          <div key={ct.id} className="w-full rounded-xl p-4" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <PlayerAvatar avatar={playerProfile.avatar} size={44} color="#2ecc71" />
-                <div className="min-w-0">
-                  <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
-                    <span className="truncate">{ct.name}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
-                  </div>
-                  <div className="text-[11px] text-[#8a8fa3]">Creado a partir de tu colección de gacha</div>
+          // Rareza fija Pseudolegendario para cualquier entrenador propio
+          // (ver trainerRarity): siempre destaca por encima del roster
+          // comprable, nunca oculto/atenuado (a diferencia de las tarjetas
+          // de arriba, un entrenador propio SIEMPRE está "desbloqueado" por
+          // definición).
+          <CardFrame key={ct.id} rarity="pseudo-legendary" className="h-full block">
+            <div className="p-4 flex flex-col h-full">
+              <div className="flex justify-center mb-2">
+                <PlayerAvatar avatar={playerProfile.avatar} size={64} color="#2ecc71" />
+              </div>
+              <div className="font-card-name text-white text-base text-center leading-tight mb-1 truncate">{ct.name}</div>
+              <div className="flex justify-center mb-1.5">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
+              </div>
+              <div className="text-[11px] text-[#8a8fa3] text-center mb-3">Creado a partir de tu colección de gacha</div>
+              <div className="h-px w-full mb-3" style={{ background: "#262a3a" }} />
+              <div className="flex flex-wrap gap-2 justify-center mb-3">
+                <button
+                  onClick={() => setEditingTeamTrainerId(ct.id)}
+                  disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
+                  className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+                >
+                  {ct.team.length === 0 ? "Configurar equipo" : "Editar equipo"}
+                </button>
+                <button
+                  onClick={() => setEditingNameTrainerId(ct.id)}
+                  className="text-xs px-3 py-1.5 rounded-full font-semibold"
+                  style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+                >
+                  Editar nombre
+                </button>
+                <button
+                  onClick={() => setShareTrainerId(ct.id)}
+                  disabled={ct.team.length !== 6}
+                  title={ct.team.length !== 6 ? "Necesitas el equipo completo (6 Pokémon) para compartirlo" : "Genera un código para compartir este equipo"}
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+                >
+                  <Share2 size={12} /> Compartir equipo
+                </button>
+                <button
+                  onClick={() => setClearTeamTrainerId(ct.id)}
+                  disabled={ct.team.length === 0}
+                  title="Vacía el equipo sin borrar al entrenador"
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
+                >
+                  <Trash2 size={12} /> Borrar equipo
+                </button>
+                <button
+                  onClick={() => setDeleteTrainerId(ct.id)}
+                  title="Elimina este entrenador por completo (libera un hueco)"
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold"
+                  style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
+                >
+                  <X size={12} /> Eliminar entrenador
+                </button>
+              </div>
+              {ct.team.length === 0 ? (
+                <div className="rounded-lg p-3 text-xs text-[#ff8a8a] flex-1" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+                  Sin equipo asignado. Configúralo para poder jugar con {ct.name}.
                 </div>
-              </div>
+              ) : (
+                <div className="flex flex-wrap gap-2 justify-center flex-1">
+                  {ct.team.map(({ slug, shiny }, i) => {
+                    const p = sprites[slug];
+                    const sprite = shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
+                    return (
+                      <div key={`${slug}-${i}`} className="relative w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: shiny ? "1px solid #f2b70588" : "1px solid #22263a" }} title={displayName(slug) + (shiny ? " (shiny)" : "")}>
+                        {sprite ? <img src={sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                        {shiny && <Star size={10} fill="#f2b705" color="#f2b705" className="absolute top-0.5 right-0.5" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <div className="flex flex-wrap gap-2 mb-3">
-              <button
-                onClick={() => setEditingTeamTrainerId(ct.id)}
-                disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
-                className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
-              >
-                {ct.team.length === 0 ? "Configurar equipo" : "Editar equipo"}
-              </button>
-              <button
-                onClick={() => setEditingNameTrainerId(ct.id)}
-                className="text-xs px-3 py-1.5 rounded-full font-semibold"
-                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
-              >
-                Editar nombre
-              </button>
-              <button
-                onClick={() => setShareTrainerId(ct.id)}
-                disabled={ct.team.length !== 6}
-                title={ct.team.length !== 6 ? "Necesitas el equipo completo (6 Pokémon) para compartirlo" : "Genera un código para compartir este equipo"}
-                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
-              >
-                <Share2 size={12} /> Compartir equipo
-              </button>
-              <button
-                onClick={() => setClearTeamTrainerId(ct.id)}
-                disabled={ct.team.length === 0}
-                title="Vacía el equipo sin borrar al entrenador"
-                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
-              >
-                <Trash2 size={12} /> Borrar equipo
-              </button>
-              <button
-                onClick={() => setDeleteTrainerId(ct.id)}
-                title="Elimina este entrenador por completo (libera un hueco)"
-                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold"
-                style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
-              >
-                <X size={12} /> Eliminar entrenador
-              </button>
-            </div>
-            {ct.team.length === 0 ? (
-              <div className="rounded-lg p-3 text-xs text-[#ff8a8a]" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
-                Sin equipo asignado. Configúralo para poder jugar con {ct.name}.
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {ct.team.map(({ slug, shiny }, i) => {
-                  const p = sprites[slug];
-                  const sprite = shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
-                  return (
-                    <div key={`${slug}-${i}`} className="relative w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: shiny ? "1px solid #f2b70588" : "1px solid #22263a" }} title={displayName(slug) + (shiny ? " (shiny)" : "")}>
-                      {sprite ? <img src={sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
-                      {shiny && <Star size={10} fill="#f2b705" color="#f2b705" className="absolute top-0.5 right-0.5" />}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          </CardFrame>
         ))}
 
         {customTrainers.length < CUSTOM_TRAINERS_MAX ? (
