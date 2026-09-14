@@ -482,6 +482,13 @@ export const CHANGELOG = [
     detail: "Reflejos de Combate (38) escalaba +20% de probabilidad de esquiva total por cada vez elegido, con un tope de 3 aplicaciones (60% como máximo). Se corrige a +10% por vez elegido, con el tope de aplicaciones útiles subido a 5 (10%, 20%, 30%, 40%, 50%): a partir de la 5ª vez, elegirlo de nuevo ya no aumenta la probabilidad por encima de ese 50% duro. Cambiado tanto en el cálculo real (`dodgeChance` en `buildTowerModsContext`) como en la descripción del modificador que ve el jugador en la pantalla de selección, para que coincidan.",
     date: "2026-09-14T17:05:48+02:00",
   },
+  {
+    id: 68,
+    title: "Desplegable de modificadores activos en la Torre Batalla",
+    summary: "El panel lateral de la Torre Batalla pasa de iconos con tooltip (había que pasar el cursor por encima para saber qué eran) a un desplegable claramente identificado, con la descripción de cada modificador ya calculada según las veces que se ha elegido.",
+    detail: "Se sustituye la fila de iconos sueltos del panel lateral de combate por una cabecera de desplegable inconfundible sin pasar el cursor por encima: \"⚡ Modificadores activos (N)\" con flecha de expandir/colapsar. Al abrirla, cada modificador aparece con su icono, nombre, un badge \"xN\" SOLO si se ha elegido más de una vez, y una descripción con el efecto YA ESCALADO según esas repeticiones (p. ej. Piel de Hierro x3 ahora dice \"Daño recibido: -30%\" en vez de solo \"-10%\") — se añade `describeTowerModifierEffect`, que replica exactamente las mismas fórmulas y topes que ya usan `buildTowerModsContext`/`applyTowerPermanentBonuses`/`handleBattleFinish` para los 45 modificadores. Las unidades de Renacer/Segundo Aliento en inventario aparecen en la misma lista, distinguidas con un tinte verde y una etiqueta \"OBJETO\" en vez del badge \"xN\" (que en un objeto significaría otra cosa: unidades guardadas, no veces elegido). El desplegable empieza siempre colapsado al entrar a cada combate — se aprovecha que `InteractiveBattle` se remonta por completo entre rondas, así que no hace falta persistir el estado. Se mantiene la solución responsive ya existente: en móvil sigue colapsado en un botón flotante que despliega la misma lista en una hoja inferior.",
+    date: "2026-09-14T17:13:35+02:00",
+  },
 ];
 
 // Orden mostrado en la interfaz: de más reciente a más antigua por fecha

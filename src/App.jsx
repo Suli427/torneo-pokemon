@@ -9916,54 +9916,136 @@ function TowerModifierSelectScreen({ offer, resetUsed, onReset, onChoose, roundL
   );
 }
 
-// Icono compacto de un efecto activo (modificador u objeto de inventario)
-// para TowerActiveEffectsPanel: solo el icono del catálogo (reutilizado, ver
-// BATTLE_TOWER_MODIFIERS) con un badge numérico si count > 1, y el nombre +
-// descripción completos en el atributo `title` nativo (tooltip del propio
-// navegador al pasar el cursor, sin tener que montar un tooltip a medida).
-function TowerEffectIcon({ id, param, count }) {
-  const mod = getTowerModifierById(id);
-  if (!mod) return null;
-  const Icon = mod.icon;
-  const paramLabel = param ? ` (${TYPE_ES[param] || STATUS_BADGE_META[param]?.label || displayName(param)})` : "";
-  const tint = mod.item ? "#8fe0a8" : "#f2b705";
-  const tooltip = `${mod.title}${paramLabel}${count > 1 ? ` x${count}` : ""} — ${mod.description}`;
-  return (
-    <div
-      title={tooltip}
-      className="relative w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-      style={{ background: tint + "18", border: `1px solid ${tint}44` }}
-    >
-      <Icon size={16} color={tint} />
-      {count > 1 && (
-        <span
-          className="absolute -top-1.5 -right-1.5 text-[9px] font-bold rounded-full px-1 min-w-[16px] text-center leading-[15px]"
-          style={{ background: "#e3350d", color: "white" }}
-        >
-          {count}
-        </span>
-      )}
-    </div>
-  );
+// Formatea una fracción (0-1) como porcentaje con como mucho 1 decimal, sin
+// arrastrar el ruido de coma flotante de sumas como 0.1+0.1+0.1 — usado por
+// describeTowerModifierEffect de abajo.
+function towerPct(x) {
+  return `${Math.round(x * 1000) / 10}%`;
 }
 
-// Fila con el detalle completo de un efecto (icono + nombre + descripción):
-// usada en el desplegable móvil de TowerActiveEffectsPanel, donde no hay
-// forma de "pasar el cursor" para ver un tooltip.
-function TowerEffectRow({ id, param, count }) {
+// Construye la descripción del efecto de UN modificador ya ESCALADA según
+// `count` (veces elegido), replicando exactamente las mismas fórmulas que
+// buildTowerModsContext/applyTowerPermanentBonuses/handleBattleFinish (esas
+// son la fuente de verdad; si se cambia un número ahí, hay que cambiarlo
+// también aquí) — así el desplegable de la Torre Batalla nunca muestra el
+// efecto BASE de un modificador acumulable, sino el real ya aplicado. Los
+// modificadores que activan una regla fija (clima/pantalla/hazard al
+// empezar combate, "ya no hay retroceso", etc.) no escalan con las
+// repeticiones: para esos se cae al `default`, que devuelve la descripción
+// base del catálogo y avisa si `count > 1` de que la repetición no suma
+// nada, para que no parezca un efecto perdido.
+function describeTowerModifierEffect(id, param, count) {
+  switch (id) {
+    case "golpe-certero": {
+      const stages = Math.min(5, count);
+      return `Probabilidad de golpe crítico: ${1 + stages}/24 (${towerPct((1 + stages) / 24)}).`;
+    }
+    case "furia-elemental":
+      return `Movimientos STAB: +${towerPct(0.15 * count)} de daño.`;
+    case "sobrecarga":
+      return `Probabilidad de efecto secundario de tus movimientos x${1 + Math.min(4, count)}.`;
+    case "instinto-asesino":
+      return `+${towerPct(0.30 * count)} de daño contra objetivos por debajo del 20% de PS.`;
+    case "golpe-de-gracia":
+      return `+${Math.min(100, 15 * count)} de precisión en movimientos fulminantes (sin superar el 100%).`;
+    case "piel-de-hierro":
+      return `Daño recibido: -${towerPct(Math.min(0.70, 0.10 * count))}.`;
+    case "regeneracion":
+      return `+${towerPct(0.03 * count)} de PS máximos curados al final de cada turno.`;
+    case "amuleto-de-la-suerte":
+      return `Inmunidad a: ${param ? (STATUS_BADGE_META[param]?.label || displayName(param)) : "un estado al azar"}.`;
+    case "segunda-oportunidad":
+      return `${count} uso${count > 1 ? "s" : ""} por combate para sobrevivir con 1 PS en vez de debilitarse.`;
+    case "reflejos-rapidos":
+      return `+${Math.min(6, count)} etapas de Velocidad al entrar a cada combate (tope +6).`;
+    case "prioridad-tactica":
+      return `+${Math.min(3, count)} de prioridad en tus movimientos ya prioritarios (tope +3).`;
+    case "entrenamiento-intensivo":
+      return `+${towerPct(0.10 * count)} de Ataque a todo tu equipo.`;
+    case "mente-afilada":
+      return `+${towerPct(0.10 * count)} de Ataque Especial a todo tu equipo.`;
+    case "muralla-viviente":
+      return `+${towerPct(0.10 * count)} de Defensa y Defensa Especial a todo tu equipo.`;
+    case "corazon-de-campeon":
+      return `+${towerPct(0.15 * count)} de PS máximos a todo tu equipo.`;
+    case "afinidad-elemental":
+      return `Tipo ${param ? (TYPE_ES[param] || displayName(param)) : "elegido"}: cuenta como STAB aunque tu Pokémon no sea de ese tipo.`;
+    case "resistencia-elegida":
+      return `-${towerPct(Math.min(0.75, 0.25 * count))} de daño de tipo ${param ? (TYPE_ES[param] || displayName(param)) : "elegido"}.`;
+    case "control-climatico":
+      return `Cualquier clima que se active dura +${3 * count} turnos.`;
+    case "terreno-familiar":
+      return `Bonus de daño de campos de batalla: x${Math.min(1.95, 1.5 + 0.15 * (count - 1)).toFixed(2)}.`;
+    case "bolsillos-llenos":
+      return `+${towerPct(0.25 * count)} de monedas por ronda superada.`;
+    case "cofre-sorpresa":
+      return `+${200 * count} monedas ya recibidas (efecto de un solo uso por cada vez elegido).`;
+    case "especialista":
+      return `${param ? displayName(param) : "El Pokémon elegido"}: +${20 * count}% en todas sus stats.`;
+    case "todo-o-nada":
+      return `+${towerPct(0.25 * count)} de daño hecho, +${towerPct(0.15 * count)} de daño recibido.`;
+    case "sacrificio-por-poder": {
+      const hpMult = Math.max(0.30, Math.pow(0.90, count));
+      return `+${towerPct(0.25 * count)} de Ataque/Ataque Especial; PS máximos actuales x${hpMult.toFixed(2)} (suelo del 30%).`;
+    }
+    case "vitalidad-constante":
+      return `Pokémon por debajo del 50% de PS: +${towerPct(0.10 * count)} de PS máximos curados al final de cada turno.`;
+    case "entrada-explosiva":
+      return `Primer movimiento tras entrar al campo: +${towerPct(0.50 * count)} de daño.`;
+    case "confusion-contagiosa":
+      return `Probabilidad de que un rival confuso se golpee a sí mismo: ${towerPct(Math.min(0.84, 1 / 3 + 0.17 * Math.min(3, count)))}.`;
+    case "reflejos-de-combate":
+      return `${towerPct(0.10 * Math.min(5, count))} de probabilidad de esquivar por completo cualquier ataque rival.`;
+    case "doble-o-nada":
+      return `${towerPct(Math.min(1, 0.30 * count))} de duplicar las monedas de la ronda ganada; 10% fijo (no escala) de perder la mitad de las acumuladas.`;
+    case "ojo-del-coleccionista":
+      return `${towerPct(Math.min(1, 0.10 * count))} de probabilidad de una tirada gratis del gacha al ganar una ronda.`;
+    case "renacer":
+      return "Cura por completo (PS y estado) a todo tu equipo vivo.";
+    case "segundo-aliento":
+      return "Revive a un Pokémon debilitado, devolviéndolo al 50% de sus PS.";
+    default: {
+      const mod = getTowerModifierById(id);
+      const base = mod?.description || "";
+      return count > 1 ? `${base} (ya activo; elegirlo de nuevo no aumenta el efecto)` : base;
+    }
+  }
+}
+
+// Fila de UN efecto activo dentro del desplegable de TowerActiveEffectsPanel:
+// icono, nombre (+ parámetro si aplica), contador "xN" SOLO si count > 1
+// (ver el pedido — nada de contador para una sola elección), y la
+// descripción YA ESCALADA (ver describeTowerModifierEffect). Los objetos de
+// inventario (`isItem`) se distinguen con un tinte verde y una pequeña
+// etiqueta "OBJETO" en vez del contador "xN" (que en un modificador pasivo
+// significa "veces elegido", pero aquí significaría "unidades guardadas" —
+// conceptos distintos, así que se muestran con badges distintos para no
+// confundirlos) junto al número de unidades disponibles.
+function TowerEffectListRow({ id, param, count, isItem }) {
   const mod = getTowerModifierById(id);
   if (!mod) return null;
   const Icon = mod.icon;
   const paramLabel = param ? ` (${TYPE_ES[param] || STATUS_BADGE_META[param]?.label || displayName(param)})` : "";
-  const tint = mod.item ? "#8fe0a8" : "#f2b705";
+  const tint = isItem ? "#8fe0a8" : "#f2b705";
   return (
     <div className="flex items-start gap-2.5 rounded-lg p-2.5" style={{ background: "#1c1f2c" }}>
       <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: tint + "18" }}>
         <Icon size={15} color={tint} />
       </div>
-      <div className="min-w-0">
-        <div className="text-xs font-semibold text-white">{mod.title}{paramLabel}{count > 1 ? ` x${count}` : ""}</div>
-        <div className="text-[11px] text-[#8a8fa3]">{mod.description}</div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+          <span className="text-xs font-semibold text-white">{mod.title}{paramLabel}</span>
+          {!isItem && count > 1 && (
+            <span className="text-[10px] font-bold px-1.5 rounded-full" style={{ background: "#e3350d", color: "white" }}>x{count}</span>
+          )}
+          {isItem && (
+            <>
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide" style={{ background: tint + "22", color: tint }}>Objeto</span>
+              <span className="text-[10px] font-bold px-1.5 rounded-full" style={{ background: tint + "33", color: tint }}>x{count} disponible{count > 1 ? "s" : ""}</span>
+            </>
+          )}
+        </div>
+        <div className="text-[11px] text-[#8a8fa3] leading-snug">{describeTowerModifierEffect(id, param, count)}</div>
       </div>
     </div>
   );
@@ -9977,18 +10059,26 @@ function TowerEffectRow({ id, param, count }) {
 // `null` (ver InteractiveBattle, donde ese prop solo llega no-nulo desde
 // BattleTowerMode).
 //
+// Un desplegable claramente identificable ("Modificadores activos (N)" +
+// flecha) en vez de solo iconos con tooltip al pasar el cursor (versión
+// anterior de este panel): el usuario tiene que poder reconocerlo sin
+// necesidad de pasar el cursor por encima. `open` empieza SIEMPRE en
+// `false`: como InteractiveBattle se desmonta y remonta por completo entre
+// combates (ver su comentario), esto ya equivale a "colapsado por defecto
+// al entrar a cada combate nuevo" sin ningún trabajo extra — no hace falta
+// persistir la preferencia entre combates.
+//
 // Responsive: en escritorio/tablet (>= sm) es una columna fija a la
-// izquierda, con su propio scroll vertical si hay muchos modificadores
-// acumulados (nunca desborda la pantalla ni empuja el resto de la
-// interfaz — ver `overflow-y-auto` + `maxHeight` de abajo). En móvil, esa
-// misma columna comprimiría demasiado los sprites/el selector de
-// movimientos en una pantalla estrecha, así que ahí se colapsa en un botón
-// flotante con el recuento total de efectos; al pulsarlo despliega la
-// lista completa (con nombre y descripción, ya que en móvil no hay forma
-// de "pasar el cursor" para ver el tooltip) en una hoja inferior con el
-// mismo tratamiento visual (fondo oscuro + blur) que el resto de modales
-// de la app.
+// izquierda con su propia cabecera de desplegable; la lista, al abrirse,
+// tiene su propio scroll vertical si hay muchos modificadores acumulados
+// (nunca desborda la pantalla ni empuja el resto de la interfaz). En
+// móvil, esa misma columna comprimiría demasiado los sprites/el selector
+// de movimientos en una pantalla estrecha, así que ahí se colapsa en un
+// botón flotante con el recuento total de efectos; al pulsarlo despliega
+// la misma lista completa en una hoja inferior, con el mismo tratamiento
+// visual (fondo oscuro + blur) que el resto de modales de la app.
 function TowerActiveEffectsPanel({ runModifiers, inventory }) {
+  const [open, setOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const grouped = [];
   for (const inst of runModifiers || []) {
@@ -10002,17 +10092,33 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
   const totalCount = grouped.length + itemEntries.length;
   if (totalCount === 0) return null;
 
+  const listRows = (
+    <>
+      {grouped.map((g, i) => <TowerEffectListRow key={`m-${i}`} {...g} />)}
+      {itemEntries.map((it, i) => <TowerEffectListRow key={`i-${i}`} {...it} isItem />)}
+    </>
+  );
+
   return (
     <>
-      <div
-        className="hidden sm:flex flex-col gap-1.5 w-12 shrink-0 sticky top-2 self-start overflow-y-auto py-1"
-        style={{ maxHeight: "calc(100vh - 16px)" }}
-      >
-        {grouped.map((g, i) => <TowerEffectIcon key={`m-${i}`} {...g} />)}
-        {itemEntries.length > 0 && grouped.length > 0 && (
-          <div className="h-px w-8 mx-auto" style={{ background: "#262a3a" }} />
+      <div className="hidden sm:block w-64 shrink-0 sticky top-2 self-start" style={{ maxHeight: "calc(100vh - 16px)" }}>
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-left"
+          style={{ background: "#14161f", border: "1px solid #f2b70555" }}
+        >
+          <Sparkles size={16} color="#f2b705" className="shrink-0" />
+          <span className="text-xs font-semibold text-white flex-1 min-w-0">Modificadores activos ({grouped.length})</span>
+          <ChevronDown size={14} color="#8a8fa3" className={open ? "rotate-180" : ""} style={{ transition: "transform 0.15s" }} />
+        </button>
+        {open && (
+          <div
+            className="mt-2 rounded-xl p-2 space-y-1.5 overflow-y-auto"
+            style={{ background: "#0e1018", border: "1px solid #262a3a", maxHeight: "calc(100vh - 70px)" }}
+          >
+            {listRows}
+          </div>
         )}
-        {itemEntries.map((it, i) => <TowerEffectIcon key={`i-${i}`} {...it} />)}
       </div>
 
       <button
@@ -10034,12 +10140,11 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
             style={{ background: "#14161f", border: "1px solid #262a3a", borderBottom: "none" }}
           >
             <div className="flex items-center justify-between mb-3">
-              <div className="text-sm font-semibold text-white">Efectos activos</div>
+              <div className="text-sm font-semibold text-white">Modificadores activos ({grouped.length})</div>
               <button onClick={() => setMobileOpen(false)} className="text-[#8a8fa3]"><X size={18} /></button>
             </div>
             <div className="space-y-2">
-              {grouped.map((g, i) => <TowerEffectRow key={`m-${i}`} {...g} />)}
-              {itemEntries.map((it, i) => <TowerEffectRow key={`i-${i}`} {...it} />)}
+              {listRows}
             </div>
           </div>
         </div>
