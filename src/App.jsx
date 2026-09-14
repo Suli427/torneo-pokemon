@@ -25,6 +25,7 @@ import {
   getActiveWeekKey, getNextWeeklyResetDate, selectWeeklyTheme, speciesMatchesTheme,
   loadWeeklyTournamentState, recordActiveWeekTheme, isWeeklyTournamentCompleted, markWeeklyTournamentCompleted,
 } from "./weeklyTournaments";
+import CardFrame from "./components/CardFrame.jsx";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -11782,6 +11783,22 @@ function GachaRevealOverlay({ phase, rarity }) {
 // resultado nuevo — como `result` pasa por `null` al cerrar el anterior
 // (ver GatchaTab), cada tirada es un montaje limpio y las animaciones CSS
 // (aplicadas sin condición de "ya reproducida") vuelven a arrancar solas.
+// Fase 2 del rediseño "carta coleccionable" (ver CardFrame.jsx): un
+// resultado NUEVO (no repetido) se presenta dentro del marco de carta de su
+// rareza real (+ shiny si aplica) — sustituye al recuadro genérico de
+// antes. Un REPETIDO se deja explícitamente FUERA del marco de carta, con
+// el mismo recuadro sobrio de siempre: un repetido ya es un evento
+// "menor" en sí mismo (se resuelve con un reembolso de monedas en vez de
+// una entrada nueva en la colección), así que no tiene sentido darle el
+// mismo tratamiento vistoso reservado para una captura de verdad — de
+// paso, evita reforzar visualmente el resultado menos deseado de una
+// tirada con el marco más elaborado del sistema. Documentado aquí a
+// propósito, ver el pedido de la Fase 2.
+//
+// El marco de carta se añade COMO CAPA ENVOLVENTE del `sprite`/animaciones
+// ya existentes (destello de rareza, partículas shiny, aparición con
+// fundido+escala) — ninguna de esas animaciones se toca, solo se anidan
+// dentro de `CardFrame` en vez de dentro de un div con borde manual.
 function GachaResultModal({ result, onClose }) {
   if (!result) return null;
   const meta = RARITY_META[result.rarity];
@@ -11789,89 +11806,107 @@ function GachaResultModal({ result, onClose }) {
   const isNewShiny = !result.repeat && result.shiny;
   const isShinyRepeat = result.repeat && result.shiny;
   const celebrate = isNewShiny || isShinyRepeat;
+
+  const body = (
+    <div
+      className="relative p-6 text-center overflow-hidden"
+      style={{ background: celebrate ? "linear-gradient(160deg,#3a3312,#12141d)" : "linear-gradient(160deg,#1b1e2b,#12141d)" }}
+    >
+      {result.emptyRarities.length > 0 && (
+        <div className="mb-3 text-[11px] text-[#f2b705] bg-[#f2b70518] border border-[#f2b70544] rounded-lg p-2">
+          {result.emptyRarities.map((r) => RARITY_META[r].label).join(", ")}: sin Pokémon disponibles en este gacha, se ha vuelto a sortear.
+        </div>
+      )}
+
+      {result.sprite && (
+        <div className="relative flex items-center justify-center mb-2" style={{ minHeight: 120 }}>
+          {/* Destello de fondo según la rareza obtenida: mismo color ya
+              asociado a esa rareza en RARITY_META, tamaño/opacidad
+              creciente con lo rara que sea (ver GACHA_REVEAL_META). */}
+          <div
+            className="absolute rounded-full gacha-glow-pulse"
+            style={{
+              width: revealMeta.glowSize,
+              height: revealMeta.glowSize,
+              background: `radial-gradient(circle, ${meta.color}${celebrate ? "dd" : "99"} 0%, transparent 70%)`,
+              animationDuration: `${revealMeta.revealDurationMs * 2}ms`,
+            }}
+          />
+          {/* Partículas de un resultado shiny: se SUMAN al destello de
+              rareza normal, nunca lo sustituyen (ver el pedido). */}
+          {result.shiny && SHINY_PARTICLES.map((p, i) => (
+            <span
+              key={i}
+              className="gacha-particle"
+              style={{ left: p.left, fontSize: p.size, animationDelay: `${p.delay}ms`, animationDuration: `${p.duration}ms` }}
+            >
+              ✨
+            </span>
+          ))}
+          <img
+            src={result.sprite}
+            alt={result.name}
+            className="relative w-28 h-28 object-contain gacha-sprite-reveal"
+            style={{
+              animationDuration: `${revealMeta.revealDurationMs}ms`,
+              filter: celebrate ? "drop-shadow(0 0 10px #f2b705aa)" : undefined,
+            }}
+          />
+        </div>
+      )}
+
+      {isNewShiny ? (
+        <h3 className="font-card-name text-xl mb-1" style={{ color: "#f2b705" }}>¡✨ Has conseguido un {result.name} SHINY! ✨</h3>
+      ) : isShinyRepeat ? (
+        <h3 className="font-display text-xl mb-1" style={{ color: "#f2b705" }}>✨ ¡Repetido SHINY de {result.name}!</h3>
+      ) : result.repeat ? (
+        <h3 className="font-display text-xl text-white mb-1">Ya tenías a {result.name}</h3>
+      ) : (
+        <h3 className="font-card-name text-xl text-white mb-1">¡Has conseguido a {result.name}!</h3>
+      )}
+
+      <div className="flex justify-center mb-3">
+        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide" style={{ background: meta.color + "26", color: meta.color, border: `1px solid ${meta.color}66` }}>
+          {meta.label}
+        </span>
+      </div>
+
+      {isShinyRepeat ? (
+        <p className="text-sm leading-relaxed" style={{ color: "#f2b705" }}>
+          Recibes <span className="font-bold">{result.refund}</span> monedas (x4 por ser repetido shiny).
+        </p>
+      ) : result.repeat ? (
+        <p className="text-sm text-[#9aa0b4] leading-relaxed">
+          Como repetido, se te reembolsan <span className="text-[#f2b705] font-bold">{result.refund}</span> monedas de torneo.
+        </p>
+      ) : (
+        <p className="text-sm text-[#9aa0b4] leading-relaxed">Se ha añadido a tu colección en la tab Pokémon, con 4 movimientos aprendibles.</p>
+      )}
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="relative max-w-sm w-[90%] rounded-2xl p-6 text-center overflow-hidden"
-        style={{
-          background: celebrate ? "linear-gradient(160deg,#3a3312,#12141d)" : "linear-gradient(160deg,#1b1e2b,#12141d)",
-          border: celebrate ? "1px solid #f2b705" : "1px solid #2c2f42",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button onClick={onClose} className="absolute top-3 right-3 text-[#7c8199] hover:text-white">
-          <X size={18} />
+      <div className="relative max-w-sm w-[90%]" onClick={(e) => e.stopPropagation()}>
+        {/* Botón de cierre FUERA del marco de carta a propósito: la gema de
+            rareza de CardFrame ocupa esa misma esquina superior derecha
+            (ver CardFrame.jsx) — se saca un poco fuera del borde de la
+            carta en vez de solaparse con ella. */}
+        <button
+          onClick={onClose}
+          className="absolute -top-3 -right-3 z-30 w-7 h-7 rounded-full flex items-center justify-center text-[#7c8199] hover:text-white"
+          style={{ background: "#14161f", border: "1px solid #2c2f42" }}
+        >
+          <X size={16} />
         </button>
-
-        {result.emptyRarities.length > 0 && (
-          <div className="mb-3 text-[11px] text-[#f2b705] bg-[#f2b70518] border border-[#f2b70544] rounded-lg p-2">
-            {result.emptyRarities.map((r) => RARITY_META[r].label).join(", ")}: sin Pokémon disponibles en este gacha, se ha vuelto a sortear.
+        {result.repeat ? (
+          <div className="rounded-2xl overflow-hidden" style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}>
+            {body}
           </div>
-        )}
-
-        {result.sprite && (
-          <div className="relative flex items-center justify-center mb-2" style={{ minHeight: 120 }}>
-            {/* Destello de fondo según la rareza obtenida: mismo color ya
-                asociado a esa rareza en RARITY_META, tamaño/opacidad
-                creciente con lo rara que sea (ver GACHA_REVEAL_META). */}
-            <div
-              className="absolute rounded-full gacha-glow-pulse"
-              style={{
-                width: revealMeta.glowSize,
-                height: revealMeta.glowSize,
-                background: `radial-gradient(circle, ${meta.color}${celebrate ? "dd" : "99"} 0%, transparent 70%)`,
-                animationDuration: `${revealMeta.revealDurationMs * 2}ms`,
-              }}
-            />
-            {/* Partículas de un resultado shiny: se SUMAN al destello de
-                rareza normal, nunca lo sustituyen (ver el pedido). */}
-            {result.shiny && SHINY_PARTICLES.map((p, i) => (
-              <span
-                key={i}
-                className="gacha-particle"
-                style={{ left: p.left, fontSize: p.size, animationDelay: `${p.delay}ms`, animationDuration: `${p.duration}ms` }}
-              >
-                ✨
-              </span>
-            ))}
-            <img
-              src={result.sprite}
-              alt={result.name}
-              className="relative w-28 h-28 object-contain gacha-sprite-reveal"
-              style={{
-                animationDuration: `${revealMeta.revealDurationMs}ms`,
-                filter: celebrate ? "drop-shadow(0 0 10px #f2b705aa)" : undefined,
-              }}
-            />
-          </div>
-        )}
-
-        {isNewShiny ? (
-          <h3 className="font-display text-xl mb-1" style={{ color: "#f2b705" }}>¡✨ Has conseguido un {result.name} SHINY! ✨</h3>
-        ) : isShinyRepeat ? (
-          <h3 className="font-display text-xl mb-1" style={{ color: "#f2b705" }}>✨ ¡Repetido SHINY de {result.name}!</h3>
-        ) : result.repeat ? (
-          <h3 className="font-display text-xl text-white mb-1">Ya tenías a {result.name}</h3>
         ) : (
-          <h3 className="font-display text-xl text-white mb-1">¡Has conseguido a {result.name}!</h3>
-        )}
-
-        <div className="flex justify-center mb-3">
-          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide" style={{ background: meta.color + "26", color: meta.color, border: `1px solid ${meta.color}66` }}>
-            {meta.label}
-          </span>
-        </div>
-
-        {isShinyRepeat ? (
-          <p className="text-sm leading-relaxed" style={{ color: "#f2b705" }}>
-            Recibes <span className="font-bold">{result.refund}</span> monedas (x4 por ser repetido shiny).
-          </p>
-        ) : result.repeat ? (
-          <p className="text-sm text-[#9aa0b4] leading-relaxed">
-            Como repetido, se te reembolsan <span className="text-[#f2b705] font-bold">{result.refund}</span> monedas de torneo.
-          </p>
-        ) : (
-          <p className="text-sm text-[#9aa0b4] leading-relaxed">Se ha añadido a tu colección en la tab Pokémon, con 4 movimientos aprendibles.</p>
+          <CardFrame rarity={result.rarity} shiny={!!result.shiny} className="block">
+            {body}
+          </CardFrame>
         )}
       </div>
     </div>
@@ -12271,6 +12306,24 @@ function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
   );
 }
 
+// Formato "carta coleccionable" (Fase 2 del rediseño — ver CardFrame.jsx):
+// sprite grande arriba, nombre en la tipografía de carta (Cinzel,
+// `.font-card-name`), badges de tipo, línea divisoria, y los movimientos
+// asignados en el bloque inferior. Puramente de presentación: el
+// comportamiento (filtros en PokemonTab, apertura de MoveEditModal al
+// pulsar "Editar movimientos") es exactamente el mismo de antes, solo
+// cambia cómo se ve.
+//
+// `animated={false}` en CardFrame: con una colección grande y varias
+// entradas Legendario a la vez, animar el gradiente holográfico de todas
+// simultáneamente en una cuadrícula con scroll es el único coste de
+// repintado real de este componente (ver el comentario de `animated` en
+// CardFrame.jsx) — aquí se opta por la variante estática en vez de, por
+// ejemplo, un IntersectionObserver para animar solo lo visible: es más
+// simple, con el mismo resultado práctico (la cuadrícula tiene su propio
+// scroll interno con max-h-[70vh], así que de todas formas rara vez se ven
+// más de 6-9 tarjetas a la vez), y dejar la versión animada reservada para
+// cuando en el futuro haya una vista de detalle de una carta concreta.
 function PokemonCard({ entry, api, onUpdateMoves }) {
   const [poke, setPoke] = useState(null);
   const [showEditMoves, setShowEditMoves] = useState(false);
@@ -12285,55 +12338,34 @@ function PokemonCard({ entry, api, onUpdateMoves }) {
   }, [api, entry.slug]);
 
   const rarityInfo = GACHA_POOL.find((g) => g.slug === entry.slug);
-  const rarityMeta = rarityInfo ? RARITY_META[rarityInfo.rarity] : null;
   const sprite = entry.shiny ? (poke?.shinySprite || poke?.sprite) : poke?.sprite;
 
   return (
-    <div
-      className="rounded-xl p-4 relative overflow-hidden"
-      style={{
-        background: "#14161f",
-        border: entry.shiny ? "1.5px solid #f2b705" : "1px solid #262a3a",
-        boxShadow: entry.shiny ? "0 0 14px #f2b70533" : undefined,
-      }}
-    >
-      {entry.shiny && (
-        <div className="absolute top-2 right-2 flex items-center gap-1 text-[10px] font-bold" style={{ color: "#f2b705" }}>
-          <Star size={12} fill="#f2b705" /> SHINY
+    <CardFrame rarity={rarityInfo?.rarity || "common"} shiny={!!entry.shiny} animated={false} className="h-full block">
+      <div className="p-3 flex flex-col h-full">
+        <div className="rounded-lg mb-2 flex items-center justify-center" style={{ background: "#0e1018", minHeight: 96 }}>
+          {sprite ? <img src={sprite} alt={poke?.name} className="w-20 h-20 object-contain" /> : <Loader2 className="animate-spin my-8" size={18} color="#4c5066" />}
         </div>
-      )}
-      <div className="flex items-center gap-3 mb-2">
-        <div className="w-14 h-14 rounded-lg flex items-center justify-center shrink-0" style={{ background: "#0e1018", border: "1px solid #22263a" }}>
-          {sprite ? <img src={sprite} alt={poke?.name} className="w-12 h-12 object-contain" /> : <Loader2 className="animate-spin" size={16} color="#4c5066" />}
+        <div className="font-card-name text-white text-sm text-center leading-tight truncate mb-1.5">{poke?.name || displayName(entry.slug)}</div>
+        <div className="flex gap-1 justify-center flex-wrap mb-2">
+          {(poke?.types || rarityInfo?.types || []).map((t) => <TypeBadge key={t} type={t} />)}
         </div>
-        <div className="min-w-0">
-          <div className="text-white font-semibold text-sm truncate">{poke?.name || displayName(entry.slug)}</div>
-          <div className="flex gap-1 mt-1 flex-wrap">
-            {(poke?.types || rarityInfo?.types || []).map((t) => <TypeBadge key={t} type={t} />)}
-          </div>
+        <div className="h-px w-full mb-2" style={{ background: "#262a3a" }} />
+        <div className="flex flex-wrap gap-1 justify-center mb-3 flex-1">
+          {entry.moves.map((m) => (
+            <span key={m} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "#1c1f2c", color: "#9aa0b4", border: "1px solid #262a3a" }}>
+              {displayMoveName(m)}
+            </span>
+          ))}
         </div>
+        <button
+          onClick={() => setShowEditMoves(true)}
+          className="text-[11px] px-2.5 py-1 rounded-full font-semibold self-center"
+          style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+        >
+          Editar movimientos
+        </button>
       </div>
-      {rarityMeta && (
-        <div className="mb-2">
-          <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide" style={{ background: rarityMeta.color + "26", color: rarityMeta.color, border: `1px solid ${rarityMeta.color}66` }}>
-            {rarityMeta.label}
-          </span>
-        </div>
-      )}
-      <div className="flex flex-wrap gap-1 mb-2">
-        {entry.moves.map((m) => (
-          <span key={m} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "#1c1f2c", color: "#9aa0b4", border: "1px solid #262a3a" }}>
-            {displayMoveName(m)}
-          </span>
-        ))}
-      </div>
-      <button
-        onClick={() => setShowEditMoves(true)}
-        className="text-[11px] px-2.5 py-1 rounded-full font-semibold"
-        style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
-      >
-        Editar movimientos
-      </button>
 
       <MoveEditModal
         open={showEditMoves}
@@ -12342,7 +12374,7 @@ function PokemonCard({ entry, api, onUpdateMoves }) {
         onConfirm={(moves) => { onUpdateMoves(entry, moves); setShowEditMoves(false); }}
         onClose={() => setShowEditMoves(false)}
       />
-    </div>
+    </CardFrame>
   );
 }
 

@@ -282,6 +282,14 @@ html, body, #root {
   background-size: 300% 300%;
   animation: card-holo-shift 6s ease-in-out infinite;
 }
+/* Variante sin animación (ver `animated` en CardFrame.jsx): misma paleta y
+   tamaño de fondo, congelada en un único frame — usada en la cuadrícula de
+   la colección de Pokémon para que muchas cartas Legendario a la vez no
+   disparen repintados continuos por `background-position`. */
+.card-holo-overlay.card-holo-static {
+  animation: none;
+  background-position: 35% 50%;
+}
 
 @keyframes card-shiny-pulse {
   0%, 100% { opacity: 0.6; transform: scale(1); }

@@ -68,7 +68,20 @@ function EpicCorner({ position, color }) {
 // del div exterior asomando por el hueco, sin depender de trucos de
 // `background-clip` con bordes en degradado (poco fiables entre
 // navegadores para animarlos).
-export default function CardFrame({ rarity = "common", shiny = false, children, className = "" }) {
+// `animated`: controla SOLO la animación del gradiente holográfico de
+// Legendario (`card-holo-overlay`, ver index.css) — nada más de este
+// componente se anima, así que el resto de rarezas lo ignora por completo.
+// Pensado para Fase 2 (colección de Pokémon): con muchas cartas Legendario
+// a la vez en una cuadrícula grande, animar el `background-position` de
+// todas ellas en bucle es la única parte de este componente que dispara
+// repintados continuos (el destello Shiny anima `transform`/`opacity`, que
+// el navegador acelera por composición — barato incluso con muchas
+// instancias a la vez, así que ESE no se desactiva nunca). Por eso se
+// expone como prop en vez de decidirlo aquí dentro: la vista de cuadrícula
+// puede pasar `animated={false}` (gradiente estático, misma paleta y
+// aspecto, sin bucle) y reservar `animated` (por defecto `true`) para
+// cuando se abre esa carta en concreto en detalle/edición.
+export default function CardFrame({ rarity = "common", shiny = false, animated = true, children, className = "" }) {
   const meta = CARD_RARITY_META[rarity] || CARD_RARITY_META.common;
   const gemColor = meta.color;
 
@@ -80,7 +93,9 @@ export default function CardFrame({ rarity = "common", shiny = false, children, 
         boxShadow: meta.glow ? `0 0 16px ${meta.color}77` : "none",
       }}
     >
-      {meta.holo && <div className="absolute inset-0 rounded-2xl card-holo-overlay" />}
+      {meta.holo && (
+        <div className={`absolute inset-0 rounded-2xl card-holo-overlay${animated ? "" : " card-holo-static"}`} />
+      )}
 
       <div className="relative rounded-[13px] overflow-hidden h-full" style={{ background: "#14161f" }}>
         {children}
