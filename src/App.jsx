@@ -25,7 +25,13 @@ import {
   getActiveWeekKey, getNextWeeklyResetDate, selectWeeklyTheme, speciesMatchesTheme,
   loadWeeklyTournamentState, recordActiveWeekTheme, isWeeklyTournamentCompleted, markWeeklyTournamentCompleted,
 } from "./weeklyTournaments";
-import CardFrame, { CARD_RARITY_META } from "./components/CardFrame.jsx";
+// Fase 6 del rediseño: CardFrame.jsx (sistema "carta coleccionable" TCG,
+// Fases 1-4) deja de importarse aquí — ya no se usa en ningún sitio de
+// App.jsx tras sustituirlo por PixelFrame en colección/gacha/entrenadores
+// (ver el pedido). El archivo NO se borra del proyecto: puede que quede
+// algún resto sin tocar hasta la Fase 7, así que se deja disponible por si
+// hiciera falta reimportarlo.
+import PixelFrame, { PIXEL_RARITY_META, PixelCursor } from "./components/PixelFrame.jsx";
 
 /* ---------------------------------------------------------------
    DATOS
@@ -8470,27 +8476,36 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
           <>
           {mode === "B" ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {unlockedTrainers.map((t) => (
-                // Selección marcada con un anillo exterior del color propio
-                // del entrenador (fuera del CardFrame en sí, que ya tiene su
-                // propio borde/resplandor de rareza — ver trainerRarity) en
-                // vez de sustituir el borde de la tarjeta, para no competir
-                // visualmente con el marco de rareza.
-                <button
-                  key={t.id}
-                  onClick={() => { setUserTrainerId(t.id); setPlayAsCustomId(null); }}
-                  className="text-left transition-all rounded-2xl"
-                  style={{ boxShadow: (userTrainerId === t.id && !playAsCustomId) ? `0 0 0 2px ${t.color}` : "none" }}
-                >
-                  <CardFrame rarity={trainerRarity(t)} className="h-full block">
-                    <div className="p-3 flex flex-col items-center text-center">
-                      <TrainerAvatar trainer={t} size={48} className="text-lg mb-2" />
-                      <div className="font-card-name text-white text-sm leading-tight mb-1">{t.name}</div>
-                      <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
-                    </div>
-                  </CardFrame>
-                </button>
-              ))}
+              {unlockedTrainers.map((t) => {
+                // Fase 6: PixelFrame en vez de CardFrame (ver trainerRarity,
+                // sin cambios de criterio, solo de marco visual). Selección
+                // marcada con un anillo exterior duro del color propio del
+                // entrenador (fuera del marco en sí, que ya tiene su propio
+                // borde de rareza) MÁS el cursor `▶` de la Fase 5 junto al
+                // nombre — aquí sí existe un "seleccionado" real
+                // (userTrainerId), a diferencia de la cuadrícula de
+                // colección (ver el comentario de PokemonCard).
+                const selected = userTrainerId === t.id && !playAsCustomId;
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => { setUserTrainerId(t.id); setPlayAsCustomId(null); }}
+                    className="text-left transition-all"
+                    style={{ boxShadow: selected ? `0 0 0 2px ${t.color}` : "none" }}
+                  >
+                    <PixelFrame rarity={trainerRarity(t)} className="h-full block">
+                      <div className="p-3 flex flex-col items-center text-center">
+                        <TrainerAvatar trainer={t} size={48} className="text-lg mb-2" />
+                        <div className="flex items-center gap-1 mb-1">
+                          {selected && <PixelCursor size={11} />}
+                          <div className="font-pixel-body text-sm leading-tight" style={{ color: "var(--pixel-text)" }}>{t.name}</div>
+                        </div>
+                        <div className="font-pixel-body text-[11px]" style={{ color: "#8a8fa3" }}>{t.subtitle}</div>
+                      </div>
+                    </PixelFrame>
+                  </button>
+                );
+              })}
             </div>
           ) : mode === "A" ? (
             playableCustomTrainers.length > 0 ? (
@@ -8753,15 +8768,16 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
                     {phase === "finished" && idx === 0 ? <Trophy size={15} color="#f2b705" /> : idx + 1}
                   </span>
                   <span className="flex items-center gap-2 text-white font-medium">
-                    {/* Fase 3 del rediseño "carta coleccionable": una fila
-                        de clasificación es una lista compacta, no el sitio
-                        para un CardFrame completo (rompería el alto de fila
-                        y la lectura rápida de la tabla) — en vez de eso, un
-                        fino anillo con el color de rareza del entrenador
-                        (ver trainerRarity/CARD_RARITY_META) alrededor del
-                        avatar ya existente, como nota sutil coherente con
-                        el resto del sistema sin reestructurar la tabla. */}
-                    <span className="rounded-full p-0.5 shrink-0" style={{ background: CARD_RARITY_META[trainerRarity(t)]?.color || "#8a8fa3" }}>
+                    {/* Fase 6 del rediseño: color de PIXEL_RARITY_META en
+                        vez de CARD_RARITY_META (mismo criterio de la Fase 3
+                        de dejar esta fila como lista compacta en vez de un
+                        PixelFrame completo, que rompería el alto de fila).
+                        Se mantiene `rounded-full` en el anillo en sí (no es
+                        una tarjeta/botón/contenedor del nuevo sistema, solo
+                        un aro ajustado al avatar circular de TrainerAvatar,
+                        que tampoco cambia aquí) para no dejarlo con
+                        esquinas cuadradas alrededor de un círculo. */}
+                    <span className="rounded-full p-0.5 shrink-0" style={{ background: PIXEL_RARITY_META[trainerRarity(t)]?.color || "#8a8fa3" }}>
                       <TrainerAvatar trainer={t} size={22} className="text-[10px]" playerAvatar={t.isCustomTrainer ? playerProfile.avatar : null} />
                     </span>
                     {t.name}
@@ -10618,38 +10634,50 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
             <Users size={18} color="#2ec4b6" /> Elige con qué equipo jugar
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {customTrainers.filter(hasCustomTrainerTeam).map((ct) => (
-              <button
-                key={ct.id}
-                onClick={() => setTowerTrainerId(`custom:${ct.id}`)}
-                className="text-left transition-all rounded-2xl"
-                style={{ boxShadow: towerTrainerId === `custom:${ct.id}` ? "0 0 0 2px #2ecc71" : "none" }}
-              >
-                <CardFrame rarity="pseudo-legendary" className="h-full block">
-                  <div className="p-3 flex flex-col items-center text-center">
-                    <PlayerAvatar avatar={playerProfile.avatar} size={48} color="#2ecc71" />
-                    <div className="font-card-name text-white text-sm leading-tight mt-2 mb-1">{ct.name}</div>
-                    <div className="text-[11px] text-[#8a8fa3]">Tu entrenador propio</div>
-                  </div>
-                </CardFrame>
-              </button>
-            ))}
-            {unlockedTrainers.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTowerTrainerId(t.id)}
-                className="text-left transition-all rounded-2xl"
-                style={{ boxShadow: towerTrainerId === t.id ? `0 0 0 2px ${t.color}` : "none" }}
-              >
-                <CardFrame rarity={trainerRarity(t)} className="h-full block">
-                  <div className="p-3 flex flex-col items-center text-center">
-                    <TrainerAvatar trainer={t} size={48} className="text-lg" />
-                    <div className="font-card-name text-white text-sm leading-tight mt-2 mb-1">{t.name}</div>
-                    <div className="text-[11px] text-[#8a8fa3]">{t.subtitle}</div>
-                  </div>
-                </CardFrame>
-              </button>
-            ))}
+            {customTrainers.filter(hasCustomTrainerTeam).map((ct) => {
+              const selected = towerTrainerId === `custom:${ct.id}`;
+              return (
+                <button
+                  key={ct.id}
+                  onClick={() => setTowerTrainerId(`custom:${ct.id}`)}
+                  className="text-left transition-all"
+                  style={{ boxShadow: selected ? "0 0 0 2px #2ecc71" : "none" }}
+                >
+                  <PixelFrame rarity="pseudo-legendary" className="h-full block">
+                    <div className="p-3 flex flex-col items-center text-center">
+                      <PlayerAvatar avatar={playerProfile.avatar} size={48} color="#2ecc71" />
+                      <div className="flex items-center gap-1 mt-2 mb-1">
+                        {selected && <PixelCursor size={11} />}
+                        <div className="font-pixel-body text-sm leading-tight" style={{ color: "var(--pixel-text)" }}>{ct.name}</div>
+                      </div>
+                      <div className="font-pixel-body text-[11px]" style={{ color: "#8a8fa3" }}>Tu entrenador propio</div>
+                    </div>
+                  </PixelFrame>
+                </button>
+              );
+            })}
+            {unlockedTrainers.map((t) => {
+              const selected = towerTrainerId === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setTowerTrainerId(t.id)}
+                  className="text-left transition-all"
+                  style={{ boxShadow: selected ? `0 0 0 2px ${t.color}` : "none" }}
+                >
+                  <PixelFrame rarity={trainerRarity(t)} className="h-full block">
+                    <div className="p-3 flex flex-col items-center text-center">
+                      <TrainerAvatar trainer={t} size={48} className="text-lg" />
+                      <div className="flex items-center gap-1 mt-2 mb-1">
+                        {selected && <PixelCursor size={11} />}
+                        <div className="font-pixel-body text-sm leading-tight" style={{ color: "var(--pixel-text)" }}>{t.name}</div>
+                      </div>
+                      <div className="font-pixel-body text-[11px]" style={{ color: "#8a8fa3" }}>{t.subtitle}</div>
+                    </div>
+                  </PixelFrame>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -11444,25 +11472,27 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
           const unlocked = isTrainerUnlocked(t, purchasedTrainerIds);
           const canAfford = coins >= (t.price ?? 0);
           return (
-            // Fase 3 del rediseño "carta coleccionable": el marco de
-            // CardFrame (borde/resplandor/gema de rareza, ver
-            // trainerRarity) se muestra SIEMPRE a toda intensidad, tenga o
-            // no el jugador este entrenador desbloqueado — así se ve "qué
-            // tipo de carta es" incluso sin poseerla todavía (mismo criterio
-            // que una carta bloqueada en un juego de coleccionables real).
-            // Lo único que se atenúa (opacity 0.6, igual que antes de esta
-            // fase) es el CONTENIDO de dentro — avatar, equipo, botón de
-            // compra incluido — nunca el marco en sí.
-            <CardFrame key={t.id} rarity={trainerRarity(t)} className="h-full block">
+            // Fase 6 del rediseño: PixelFrame en vez de CardFrame, mismo
+            // criterio de siempre (ver trainerRarity) y el mismo criterio de
+            // "bloqueado" ya establecido en la Fase 3 — el marco se muestra
+            // SIEMPRE a toda intensidad, tenga o no el jugador este
+            // entrenador desbloqueado; solo el CONTENIDO de dentro se
+            // atenúa (opacity 0.6). Los iconos de equipo pasan a
+            // `pixelSprite` (antes official-artwork) para no romper la
+            // coherencia visual dentro de una tarjeta ya pixel-art — el
+            // pedido solo pedía no tocar el sprite del ENTRENADOR (ya es
+            // pixel art de Showdown), no dice nada de los Pokémon de su
+            // equipo, y dejarlos en alta resolución desentonaría aquí.
+            <PixelFrame key={t.id} rarity={trainerRarity(t)} className="h-full block">
               <div className="p-4 flex flex-col h-full" style={{ opacity: unlocked ? 1 : 0.6 }}>
                 <div className="flex justify-center mb-2">
                   <TrainerAvatar trainer={t} size={64} className="text-2xl" />
                 </div>
-                <div className="font-card-name text-white text-base text-center leading-tight mb-1 flex items-center justify-center gap-1.5">
+                <div className="font-pixel-body text-base text-center leading-tight mb-1 flex items-center justify-center gap-1.5" style={{ color: "var(--pixel-text)" }}>
                   {t.name} {!unlocked && <Lock size={13} color="#8a8fa3" />}
                 </div>
-                <div className="text-[11px] text-[#8a8fa3] text-center mb-3">{t.subtitle}</div>
-                <div className="h-px w-full mb-3" style={{ background: "#262a3a" }} />
+                <div className="font-pixel-body text-[11px] text-center mb-3" style={{ color: "#8a8fa3" }}>{t.subtitle}</div>
+                <div className="h-[2px] w-full mb-3" style={{ background: "#00000055" }} />
                 <div className="flex flex-wrap gap-2 justify-center mb-3 flex-1">
                   {t.team.map((slug, i) => {
                     const p = sprites[slug];
@@ -11491,34 +11521,34 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                           setEditingTrainerMon({ trainerId: t.id, slug });
                         }}
                         disabled={!editable}
-                        className="w-12 h-12 rounded-lg flex items-center justify-center relative disabled:cursor-default"
-                        style={{ background: "#0e1018", border: editable ? "1px solid #3a3f57" : "1px solid #22263a" }}
+                        className="w-12 h-12 flex items-center justify-center relative disabled:cursor-default"
+                        style={{ background: "var(--pixel-bg)", border: `2px solid ${editable ? "#3a3f57" : "#22263a"}` }}
                         title={editable ? `${displayName(slug)} · editar movimientos` : displayName(slug)}
                       >
-                        {!unlocked ? <Lock size={14} color="#4c5066" /> : p?.sprite ? <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                        {!unlocked ? <Lock size={14} color="#4c5066" /> : p?.pixelSprite ? <img src={p.pixelSprite} alt={p.name} className="pixel-render" style={{ width: 32, height: 32 }} /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
                       </button>
                     );
                   })}
                 </div>
                 {unlocked && (
-                  <p className="text-[10px] text-[#6b7086] text-center mb-2">Toca un Pokémon para editar sus movimientos.</p>
+                  <p className="font-pixel-body text-[10px] text-center mb-2" style={{ color: "#6b7086" }}>Toca un Pokémon para editar sus movimientos.</p>
                 )}
                 {!unlocked && (
                 <button
                   onClick={() => setConfirmTrainer(t)}
                   disabled={!canAfford}
-                  className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:cursor-not-allowed self-center"
+                  className="font-pixel-body text-xs px-3 py-1.5 font-semibold disabled:cursor-not-allowed self-center"
                   style={{
-                    background: canAfford ? "#f2b70522" : "#1c1f2c",
-                    color: canAfford ? "#f2b705" : "#6b7086",
-                    border: canAfford ? "1px solid #f2b70555" : "1px solid #262a3a",
+                    background: "var(--pixel-bg)",
+                    color: canAfford ? "var(--pixel-gold)" : "#6b7086",
+                    border: `2px solid ${canAfford ? "var(--pixel-gold)" : "#262a3a"}`,
                   }}
                 >
                   {canAfford ? `Desbloquear · ${t.price} monedas` : `Te faltan ${t.price - coins} monedas`}
                 </button>
                 )}
               </div>
-            </CardFrame>
+            </PixelFrame>
           );
         })}
       </div>
@@ -11535,30 +11565,30 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
           // comprable, nunca oculto/atenuado (a diferencia de las tarjetas
           // de arriba, un entrenador propio SIEMPRE está "desbloqueado" por
           // definición).
-          <CardFrame key={ct.id} rarity="pseudo-legendary" className="h-full block">
+          <PixelFrame key={ct.id} rarity="pseudo-legendary" className="h-full block">
             <div className="p-4 flex flex-col h-full">
               <div className="flex justify-center mb-2">
                 <PlayerAvatar avatar={playerProfile.avatar} size={64} color="#2ecc71" />
               </div>
-              <div className="font-card-name text-white text-base text-center leading-tight mb-1 truncate">{ct.name}</div>
+              <div className="font-pixel-body text-base text-center leading-tight mb-1 truncate" style={{ color: "var(--pixel-text)" }}>{ct.name}</div>
               <div className="flex justify-center mb-1.5">
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0" style={{ background: "#2ecc7133", color: "#2ecc71" }}>TU ENTRENADOR</span>
+                <span className="font-pixel-body text-[10px] px-1.5 py-0.5 font-bold shrink-0" style={{ background: "#00000033", color: "#5cc95c", border: "1px solid #5cc95c" }}>TU ENTRENADOR</span>
               </div>
-              <div className="text-[11px] text-[#8a8fa3] text-center mb-3">Creado a partir de tu colección de gacha</div>
-              <div className="h-px w-full mb-3" style={{ background: "#262a3a" }} />
+              <div className="font-pixel-body text-[11px] text-center mb-3" style={{ color: "#8a8fa3" }}>Creado a partir de tu colección de gacha</div>
+              <div className="h-[2px] w-full mb-3" style={{ background: "#00000055" }} />
               <div className="flex flex-wrap gap-2 justify-center mb-3">
                 <button
                   onClick={() => setEditingTeamTrainerId(ct.id)}
                   disabled={collection.length < CUSTOM_TRAINER_MIN_POKEMON}
-                  className="text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+                  className="font-pixel-body text-xs px-3 py-1.5 font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a3f57" }}
                 >
                   {ct.team.length === 0 ? "Configurar equipo" : "Editar equipo"}
                 </button>
                 <button
                   onClick={() => setEditingNameTrainerId(ct.id)}
-                  className="text-xs px-3 py-1.5 rounded-full font-semibold"
-                  style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+                  className="font-pixel-body text-xs px-3 py-1.5 font-semibold"
+                  style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a3f57" }}
                 >
                   Editar nombre
                 </button>
@@ -11566,8 +11596,8 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                   onClick={() => setShareTrainerId(ct.id)}
                   disabled={ct.team.length !== 6}
                   title={ct.team.length !== 6 ? "Necesitas el equipo completo (6 Pokémon) para compartirlo" : "Genera un código para compartir este equipo"}
-                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+                  className="font-pixel-body flex items-center gap-1 text-xs px-3 py-1.5 font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a3f57" }}
                 >
                   <Share2 size={12} /> Compartir equipo
                 </button>
@@ -11575,40 +11605,40 @@ function PersonajesTab({ api, coins, purchasedTrainerIds, onPurchase, collection
                   onClick={() => setClearTeamTrainerId(ct.id)}
                   disabled={ct.team.length === 0}
                   title="Vacía el equipo sin borrar al entrenador"
-                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
+                  className="font-pixel-body flex items-center gap-1 text-xs px-3 py-1.5 font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "var(--pixel-bg)", color: "var(--pixel-accent)", border: "2px solid var(--pixel-accent)" }}
                 >
                   <Trash2 size={12} /> Borrar equipo
                 </button>
                 <button
                   onClick={() => setDeleteTrainerId(ct.id)}
                   title="Elimina este entrenador por completo (libera un hueco)"
-                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-semibold"
-                  style={{ background: "#e3350d14", color: "#ff8a8a", border: "1px solid #e3350d55" }}
+                  className="font-pixel-body flex items-center gap-1 text-xs px-3 py-1.5 font-semibold"
+                  style={{ background: "var(--pixel-bg)", color: "var(--pixel-accent)", border: "2px solid var(--pixel-accent)" }}
                 >
                   <X size={12} /> Eliminar entrenador
                 </button>
               </div>
               {ct.team.length === 0 ? (
-                <div className="rounded-lg p-3 text-xs text-[#ff8a8a] flex-1" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
+                <div className="font-pixel-body p-3 text-xs flex-1" style={{ background: "#00000033", color: "var(--pixel-accent)", border: "2px solid var(--pixel-accent)" }}>
                   Sin equipo asignado. Configúralo para poder jugar con {ct.name}.
                 </div>
               ) : (
                 <div className="flex flex-wrap gap-2 justify-center flex-1">
                   {ct.team.map(({ slug, shiny }, i) => {
                     const p = sprites[slug];
-                    const sprite = shiny ? (p?.shinySprite || p?.sprite) : p?.sprite;
+                    const sprite = shiny ? (p?.pixelShinySprite || p?.pixelSprite) : p?.pixelSprite;
                     return (
-                      <div key={`${slug}-${i}`} className="relative w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: "#0e1018", border: shiny ? "1px solid #f2b70588" : "1px solid #22263a" }} title={displayName(slug) + (shiny ? " (shiny)" : "")}>
-                        {sprite ? <img src={sprite} alt={p.name} className="w-10 h-10 object-contain" /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
-                        {shiny && <Star size={10} fill="#f2b705" color="#f2b705" className="absolute top-0.5 right-0.5" />}
+                      <div key={`${slug}-${i}`} className="relative w-12 h-12 flex items-center justify-center" style={{ background: "var(--pixel-bg)", border: `2px solid ${shiny ? "var(--pixel-gold)" : "#22263a"}` }} title={displayName(slug) + (shiny ? " (shiny)" : "")}>
+                        {sprite ? <img src={sprite} alt={p.name} className="pixel-render" style={{ width: 32, height: 32 }} /> : <Loader2 className="animate-spin" size={14} color="#4c5066" />}
+                        {shiny && <Star size={10} fill="#ffcc33" color="#ffcc33" className="absolute top-0.5 right-0.5" />}
                       </div>
                     );
                   })}
                 </div>
               )}
             </div>
-          </CardFrame>
+          </PixelFrame>
         ))}
 
         {customTrainers.length < CUSTOM_TRAINERS_MAX ? (
@@ -11854,25 +11884,25 @@ function GachaRevealOverlay({ phase, rarity }) {
 // resultado nuevo — como `result` pasa por `null` al cerrar el anterior
 // (ver GatchaTab), cada tirada es un montaje limpio y las animaciones CSS
 // (aplicadas sin condición de "ya reproducida") vuelven a arrancar solas.
-// Fase 2 del rediseño "carta coleccionable" (ver CardFrame.jsx): un
-// resultado NUEVO (no repetido) se presenta dentro del marco de carta de su
-// rareza real (+ shiny si aplica) — sustituye al recuadro genérico de
-// antes. Un REPETIDO se deja explícitamente FUERA del marco de carta, con
-// el mismo recuadro sobrio de siempre: un repetido ya es un evento
-// "menor" en sí mismo (se resuelve con un reembolso de monedas en vez de
-// una entrada nueva en la colección), así que no tiene sentido darle el
-// mismo tratamiento vistoso reservado para una captura de verdad — de
-// paso, evita reforzar visualmente el resultado menos deseado de una
-// tirada con el marco más elaborado del sistema. Documentado aquí a
-// propósito, ver el pedido de la Fase 2.
+// Fase 6 del rediseño (ver PixelFrame.jsx): sustituye por completo al marco
+// "carta coleccionable" TCG de la Fase 2 en este mismo sitio — un resultado
+// NUEVO (no repetido) se presenta dentro del PixelFrame de su rareza real
+// (+ shiny si aplica). Un REPETIDO se deja explícitamente FUERA del marco,
+// con el mismo recuadro sobrio de siempre (mismo criterio ya establecido en
+// la Fase 2: un repetido es un evento "menor" que se resuelve con un
+// reembolso, no merece el tratamiento más vistoso del sistema).
 //
-// El marco de carta se añade COMO CAPA ENVOLVENTE del `sprite`/animaciones
-// ya existentes (destello de rareza, partículas shiny, aparición con
-// fundido+escala) — ninguna de esas animaciones se toca, solo se anidan
-// dentro de `CardFrame` en vez de dentro de un div con borde manual.
+// Partículas shiny PIXELADAS: el sistema TCG usaba el emoji "✨" (un
+// destello difuso, con su propio antialiasing/gradiente interno que no
+// pega con el resto del pixel art). Se sustituye por un cuadrado sólido de
+// 6x6 sin ningún redondeo ni desenfoque — un "bloque" cayendo en vez de un
+// brillo — reutilizando exactamente las mismas animaciones ya existentes
+// (`gacha-particle` sigue animando posición/opacidad igual que antes, solo
+// cambia QUÉ se anima, no CÓMO).
 function GachaResultModal({ result, onClose }) {
   if (!result) return null;
   const meta = RARITY_META[result.rarity];
+  const pixelMeta = PIXEL_RARITY_META[result.rarity] || PIXEL_RARITY_META.common;
   const revealMeta = GACHA_REVEAL_META[result.rarity] || GACHA_REVEAL_META.common;
   const isNewShiny = !result.repeat && result.shiny;
   const isShinyRepeat = result.repeat && result.shiny;
@@ -11881,10 +11911,10 @@ function GachaResultModal({ result, onClose }) {
   const body = (
     <div
       className="relative p-6 text-center overflow-hidden"
-      style={{ background: celebrate ? "linear-gradient(160deg,#3a3312,#12141d)" : "linear-gradient(160deg,#1b1e2b,#12141d)" }}
+      style={{ background: celebrate ? "#3a2f0f" : "var(--pixel-panel)" }}
     >
       {result.emptyRarities.length > 0 && (
-        <div className="mb-3 text-[11px] text-[#f2b705] bg-[#f2b70518] border border-[#f2b70544] rounded-lg p-2">
+        <div className="font-pixel-body mb-3 text-[11px] p-2" style={{ color: "var(--pixel-gold)", background: "#00000033", border: "2px solid var(--pixel-gold)" }}>
           {result.emptyRarities.map((r) => RARITY_META[r].label).join(", ")}: sin Pokémon disponibles en este gacha, se ha vuelto a sortear.
         </div>
       )}
@@ -11909,49 +11939,57 @@ function GachaResultModal({ result, onClose }) {
             <span
               key={i}
               className="gacha-particle"
-              style={{ left: p.left, fontSize: p.size, animationDelay: `${p.delay}ms`, animationDuration: `${p.duration}ms` }}
-            >
-              ✨
-            </span>
+              style={{
+                left: p.left,
+                width: p.size * 0.6,
+                height: p.size * 0.6,
+                background: "var(--pixel-gold)",
+                display: "block",
+                animationDelay: `${p.delay}ms`,
+                animationDuration: `${p.duration}ms`,
+              }}
+            />
           ))}
           <img
             src={result.sprite}
             alt={result.name}
-            className="relative w-28 h-28 object-contain gacha-sprite-reveal"
+            className="pixel-render relative gacha-sprite-reveal"
             style={{
+              width: 96,
+              height: 96,
               animationDuration: `${revealMeta.revealDurationMs}ms`,
-              filter: celebrate ? "drop-shadow(0 0 10px #f2b705aa)" : undefined,
+              filter: celebrate ? "drop-shadow(3px 3px 0 #00000066)" : undefined,
             }}
           />
         </div>
       )}
 
       {isNewShiny ? (
-        <h3 className="font-card-name text-xl mb-1" style={{ color: "#f2b705" }}>¡✨ Has conseguido un {result.name} SHINY! ✨</h3>
+        <h3 className="font-pixel-body text-xl mb-1" style={{ color: "var(--pixel-gold)" }}>¡✨ Has conseguido un {result.name} SHINY! ✨</h3>
       ) : isShinyRepeat ? (
-        <h3 className="font-display text-xl mb-1" style={{ color: "#f2b705" }}>✨ ¡Repetido SHINY de {result.name}!</h3>
+        <h3 className="font-pixel-body text-xl mb-1" style={{ color: "var(--pixel-gold)" }}>✨ ¡Repetido SHINY de {result.name}!</h3>
       ) : result.repeat ? (
-        <h3 className="font-display text-xl text-white mb-1">Ya tenías a {result.name}</h3>
+        <h3 className="font-pixel-body text-xl mb-1" style={{ color: "var(--pixel-text)" }}>Ya tenías a {result.name}</h3>
       ) : (
-        <h3 className="font-card-name text-xl text-white mb-1">¡Has conseguido a {result.name}!</h3>
+        <h3 className="font-pixel-body text-xl mb-1" style={{ color: "var(--pixel-text)" }}>¡Has conseguido a {result.name}!</h3>
       )}
 
       <div className="flex justify-center mb-3">
-        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide" style={{ background: meta.color + "26", color: meta.color, border: `1px solid ${meta.color}66` }}>
+        <span className="font-pixel-body px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide" style={{ background: "#00000033", color: pixelMeta.color, border: `2px solid ${pixelMeta.color}` }}>
           {meta.label}
         </span>
       </div>
 
       {isShinyRepeat ? (
-        <p className="text-sm leading-relaxed" style={{ color: "#f2b705" }}>
+        <p className="font-pixel-body text-sm leading-relaxed" style={{ color: "var(--pixel-gold)" }}>
           Recibes <span className="font-bold">{result.refund}</span> monedas (x4 por ser repetido shiny).
         </p>
       ) : result.repeat ? (
-        <p className="text-sm text-[#9aa0b4] leading-relaxed">
-          Como repetido, se te reembolsan <span className="text-[#f2b705] font-bold">{result.refund}</span> monedas de torneo.
+        <p className="font-pixel-body text-sm leading-relaxed" style={{ color: "var(--pixel-text)" }}>
+          Como repetido, se te reembolsan <span className="font-bold" style={{ color: "var(--pixel-gold)" }}>{result.refund}</span> monedas de torneo.
         </p>
       ) : (
-        <p className="text-sm text-[#9aa0b4] leading-relaxed">Se ha añadido a tu colección en la tab Pokémon, con 4 movimientos aprendibles.</p>
+        <p className="font-pixel-body text-sm leading-relaxed" style={{ color: "var(--pixel-text)" }}>Se ha añadido a tu colección en la tab Pokémon, con 4 movimientos aprendibles.</p>
       )}
     </div>
   );
@@ -11959,25 +11997,24 @@ function GachaResultModal({ result, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
       <div className="relative max-w-sm w-[90%]" onClick={(e) => e.stopPropagation()}>
-        {/* Botón de cierre FUERA del marco de carta a propósito: la gema de
-            rareza de CardFrame ocupa esa misma esquina superior derecha
-            (ver CardFrame.jsx) — se saca un poco fuera del borde de la
-            carta en vez de solaparse con ella. */}
+        {/* Botón de cierre FUERA del marco a propósito: la gema de rareza de
+            PixelFrame ocupa esa misma esquina superior derecha — se saca un
+            poco fuera del borde de la carta en vez de solaparse con ella. */}
         <button
           onClick={onClose}
-          className="absolute -top-3 -right-3 z-30 w-7 h-7 rounded-full flex items-center justify-center text-[#7c8199] hover:text-white"
-          style={{ background: "#14161f", border: "1px solid #2c2f42" }}
+          className="absolute -top-3 -right-3 z-30 w-7 h-7 flex items-center justify-center"
+          style={{ background: "var(--pixel-panel)", border: "2px solid var(--pixel-text)", color: "var(--pixel-text)" }}
         >
           <X size={16} />
         </button>
         {result.repeat ? (
-          <div className="rounded-2xl overflow-hidden" style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #2c2f42" }}>
+          <div className="overflow-hidden" style={{ background: "var(--pixel-panel)", border: "3px solid var(--pixel-text)" }}>
             {body}
           </div>
         ) : (
-          <CardFrame rarity={result.rarity} shiny={!!result.shiny} className="block">
+          <PixelFrame rarity={result.rarity} shiny={!!result.shiny} className="block">
             {body}
-          </CardFrame>
+          </PixelFrame>
         )}
       </div>
     </div>
@@ -12089,7 +12126,11 @@ function GatchaTab({ api, coins, setCoins, collection, setCollection, onGachaPul
       const shiny = Math.random() < SHINY_CHANCE;
       const alreadyOwned = collection.some((c) => c.slug === chosen.slug && c.shiny === shiny);
       const [pokeData] = await Promise.all([api.getPokemon(chosen.slug), runRevealSequence(rarity)]);
-      const sprite = shiny ? (pokeData.shinySprite || pokeData.sprite) : pokeData.sprite;
+      // Fase 6 del rediseño: sprite PIXEL (pixelSprite/pixelShinySprite,
+      // ver getPokemon) en vez del official-artwork de alta resolución
+      // usado hasta la Fase 2 — GachaResultModal ya aplica `.pixel-render`
+      // a este campo.
+      const sprite = shiny ? (pokeData.pixelShinySprite || pokeData.pixelSprite) : pokeData.pixelSprite;
 
       if (alreadyOwned) {
         const baseRefund = refundTable[rarity];
@@ -12377,24 +12418,32 @@ function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
   );
 }
 
-// Formato "carta coleccionable" (Fase 2 del rediseño — ver CardFrame.jsx):
-// sprite grande arriba, nombre en la tipografía de carta (Cinzel,
-// `.font-card-name`), badges de tipo, línea divisoria, y los movimientos
-// asignados en el bloque inferior. Puramente de presentación: el
-// comportamiento (filtros en PokemonTab, apertura de MoveEditModal al
-// pulsar "Editar movimientos") es exactamente el mismo de antes, solo
-// cambia cómo se ve.
+// Formato "pixel art retro" (Fase 6 del rediseño — ver PixelFrame.jsx):
+// sustituye por completo al formato "carta coleccionable" TCG de la Fase 2
+// (CardFrame) en este mismo sitio. Mismo layout general (sprite arriba,
+// nombre, badges de tipo, línea divisoria, movimientos abajo) pero con la
+// paleta/tipografía/sprite del sistema pixel: `pixelSprite`/
+// `pixelShinySprite` en vez de `sprite`/`shinySprite` (official-artwork),
+// `.font-pixel-body` (Pixelify Sans) en vez de `.font-card-name` (Cinzel;
+// se descarta Press Start 2P aquí por ser demasiado ancha/densa para
+// nombres largos como "Rhydon" o "Sceptile" dentro del espacio estrecho de
+// una tarjeta de cuadrícula — se reserva para títulos cortos de sección),
+// sin `border-radius` en ningún elemento, y sin la prop `animated` de
+// CardFrame (el borde por pasos de Legendario de PixelFrame es una
+// animación de `border-color` discreta, mucho más barata que el
+// `background-position` deslizante del holográfico TCG — no hace falta
+// ningún interruptor de rendimiento para la cuadrícula). Puramente de
+// presentación: el comportamiento (filtros en PokemonTab, apertura de
+// MoveEditModal al pulsar "Editar movimientos") es exactamente el mismo de
+// antes.
 //
-// `animated={false}` en CardFrame: con una colección grande y varias
-// entradas Legendario a la vez, animar el gradiente holográfico de todas
-// simultáneamente en una cuadrícula con scroll es el único coste de
-// repintado real de este componente (ver el comentario de `animated` en
-// CardFrame.jsx) — aquí se opta por la variante estática en vez de, por
-// ejemplo, un IntersectionObserver para animar solo lo visible: es más
-// simple, con el mismo resultado práctico (la cuadrícula tiene su propio
-// scroll interno con max-h-[70vh], así que de todas formas rara vez se ven
-// más de 6-9 tarjetas a la vez), y dejar la versión animada reservada para
-// cuando en el futuro haya una vista de detalle de una carta concreta.
+// Cursor `▶` de la Fase 5: NO se usa aquí a propósito (documentado en el
+// pedido como opcional) — esta cuadrícula es de exploración libre, sin un
+// concepto de "elemento actualmente seleccionado" (no es una lista de
+// radio-selección ni tiene navegación por teclado propia), así que forzar
+// un cursor de "seleccionado" sería artificial. Sí se usa en el selector
+// de entrenador de Torneo/Torre Batalla, donde SÍ existe un entrenador
+// elegido de verdad (ver más abajo).
 function PokemonCard({ entry, api, onUpdateMoves }) {
   const [poke, setPoke] = useState(null);
   const [showEditMoves, setShowEditMoves] = useState(false);
@@ -12409,30 +12458,30 @@ function PokemonCard({ entry, api, onUpdateMoves }) {
   }, [api, entry.slug]);
 
   const rarityInfo = GACHA_POOL.find((g) => g.slug === entry.slug);
-  const sprite = entry.shiny ? (poke?.shinySprite || poke?.sprite) : poke?.sprite;
+  const sprite = entry.shiny ? (poke?.pixelShinySprite || poke?.pixelSprite) : poke?.pixelSprite;
 
   return (
-    <CardFrame rarity={rarityInfo?.rarity || "common"} shiny={!!entry.shiny} animated={false} className="h-full block">
+    <PixelFrame rarity={rarityInfo?.rarity || "common"} shiny={!!entry.shiny} className="h-full block">
       <div className="p-3 flex flex-col h-full">
-        <div className="rounded-lg mb-2 flex items-center justify-center" style={{ background: "#0e1018", minHeight: 96 }}>
-          {sprite ? <img src={sprite} alt={poke?.name} className="w-20 h-20 object-contain" /> : <Loader2 className="animate-spin my-8" size={18} color="#4c5066" />}
+        <div className="flex items-center justify-center mb-2" style={{ background: "var(--pixel-bg)", border: "2px solid #00000055", minHeight: 96 }}>
+          {sprite ? <img src={sprite} alt={poke?.name} className="pixel-render" style={{ width: 64, height: 64 }} /> : <Loader2 className="animate-spin my-8" size={18} color="#4c5066" />}
         </div>
-        <div className="font-card-name text-white text-sm text-center leading-tight truncate mb-1.5">{poke?.name || displayName(entry.slug)}</div>
+        <div className="font-pixel-body text-sm text-center leading-tight truncate mb-1.5" style={{ color: "var(--pixel-text)" }}>{poke?.name || displayName(entry.slug)}</div>
         <div className="flex gap-1 justify-center flex-wrap mb-2">
           {(poke?.types || rarityInfo?.types || []).map((t) => <TypeBadge key={t} type={t} />)}
         </div>
-        <div className="h-px w-full mb-2" style={{ background: "#262a3a" }} />
+        <div className="h-[2px] w-full mb-2" style={{ background: "#00000055" }} />
         <div className="flex flex-wrap gap-1 justify-center mb-3 flex-1">
           {entry.moves.map((m) => (
-            <span key={m} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "#1c1f2c", color: "#9aa0b4", border: "1px solid #262a3a" }}>
+            <span key={m} className="font-pixel-body text-[9px] px-1.5 py-0.5" style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "1px solid #00000055" }}>
               {displayMoveName(m)}
             </span>
           ))}
         </div>
         <button
           onClick={() => setShowEditMoves(true)}
-          className="text-[11px] px-2.5 py-1 rounded-full font-semibold self-center"
-          style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+          className="font-pixel-body text-[11px] px-2.5 py-1 font-semibold self-center"
+          style={{ background: "var(--pixel-bg)", color: "var(--pixel-gold)", border: "2px solid var(--pixel-gold)" }}
         >
           Editar movimientos
         </button>
@@ -12445,7 +12494,7 @@ function PokemonCard({ entry, api, onUpdateMoves }) {
         onConfirm={(moves) => { onUpdateMoves(entry, moves); setShowEditMoves(false); }}
         onClose={() => setShowEditMoves(false)}
       />
-    </CardFrame>
+    </PixelFrame>
   );
 }
 
