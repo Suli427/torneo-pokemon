@@ -5966,7 +5966,7 @@ function BattleFieldIndicators({ weather, trainerA, trainerB }) {
       style={{ background: color + "22", border: `1px solid ${color}66`, color }}
     >
       <span>{icon}</span>
-      <span>{label} · {turnsLeft} {turnsLeft === 1 ? "turno" : "turnos"}</span>
+      <span>{label} · <span className="pixel-digits">{turnsLeft}</span> {turnsLeft === 1 ? "turno" : "turnos"}</span>
     </span>
   );
 
@@ -7796,7 +7796,7 @@ function RoundTransitionScreen({ round, total, phase }) {
     <div className="flex flex-col items-center justify-center py-24">
       <div className={phase === "out" ? "battle-vs-fadeout" : "battle-vs-pop"}>
         <div className="font-display text-4xl text-white text-center">
-          Ronda {round} de {total}
+          Ronda <span className="pixel-digits-lg">{round}</span> de <span className="pixel-digits-lg">{total}</span>
         </div>
       </div>
     </div>
@@ -8784,7 +8784,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
       {!roundTransition && phase === "ready" && interactiveMatch && (
         <div className="space-y-4">
           <h2 className="font-display text-2xl text-white flex items-center gap-2">
-            <Swords size={22} color="#e3350d" /> Tu combate — Ronda {round + 1}
+            <Swords size={22} color="#e3350d" /> Tu combate — Ronda <span className="pixel-digits">{round + 1}</span>
           </h2>
           <InteractiveBattle
             api={api}
@@ -8802,7 +8802,9 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
           <div className="flex items-center justify-between flex-wrap gap-3">
             <h2 className="font-display text-2xl text-white flex items-center gap-2">
               {phase === "finished" ? <Trophy size={22} color="#f2b705" /> : <Swords size={22} color="#e3350d" />}
-              {phase === "finished" ? "Torneo finalizado" : `Ronda ${round} de ${TOURNAMENT_ROUNDS}`}
+              {phase === "finished" ? "Torneo finalizado" : (
+                <>Ronda <span className="pixel-digits-lg">{round}</span> de <span className="pixel-digits-lg">{TOURNAMENT_ROUNDS}</span></>
+              )}
             </h2>
             {phase === "ready" && (
               <button
@@ -8881,7 +8883,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
           <div className="space-y-4">
             {[...history].reverse().map((h) => (
               <div key={h.round}>
-                <h4 className="text-xs uppercase tracking-wide text-[#8a8fa3] font-semibold mb-2">Ronda {h.round}</h4>
+                <h4 className="text-xs uppercase tracking-wide text-[#8a8fa3] font-semibold mb-2">Ronda <span className="pixel-digits">{h.round}</span></h4>
                 <div className="grid sm:grid-cols-2 gap-3">
                   {h.results.map((r, i) => {
                     const won = r.winnerId === r.a.id;
@@ -9387,7 +9389,7 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
 
   const draftStatusBar = (
     <div className="flex flex-wrap items-center gap-3 text-xs text-[#9aa0b4] rounded-lg p-2.5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
-      <span className="flex items-center gap-1"><Swords size={13} color="#4a90d9" /> Ronda {currentRound}</span>
+      <span className="flex items-center gap-1"><Swords size={13} color="#4a90d9" /> Ronda <span className="pixel-digits">{currentRound}</span></span>
       <span className="flex items-center gap-1"><Trophy size={13} color="#f2b705" /> {roundsWon} rondas ganadas</span>
       <span className="flex items-center gap-1"><Coins size={13} color="#f2b705" /> {coinsAccumulated} monedas acumuladas</span>
       {opponentMeta && <span className="ml-auto">Contra: <span className="text-white font-semibold">{opponentMeta.name}</span></span>}
@@ -9517,7 +9519,7 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
             className="px-6 py-2.5 rounded-xl font-display text-white"
             style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
           >
-            Continuar (Ronda {currentRound + 1}) <ChevronRight size={16} className="inline" />
+            Continuar (Ronda <span className="pixel-digits">{currentRound + 1}</span>) <ChevronRight size={16} className="inline" />
           </button>
           <button
             onClick={() => finishDraft(draftTeam)}
@@ -10254,7 +10256,7 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
           style={{ background: "var(--pixel-panel)", border: "2px solid var(--pixel-gold)" }}
         >
           <Sparkles size={16} color="var(--pixel-gold)" className="shrink-0" />
-          <span className="font-pixel-title text-[10px] flex-1 min-w-0" style={{ color: "var(--pixel-text)" }}>Modificadores activos ({grouped.length})</span>
+          <span className="font-pixel-title text-[10px] flex-1 min-w-0" style={{ color: "var(--pixel-text)" }}>Modificadores activos (<span className="pixel-digits">{grouped.length}</span>)</span>
           <ChevronDown size={14} color="#8a93b0" className={open ? "rotate-180" : ""} style={{ transition: "transform 0.15s" }} />
         </button>
         {open && (
@@ -10286,7 +10288,7 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
             style={{ background: "var(--pixel-panel)", borderTop: "3px solid var(--pixel-gold)", borderLeft: "3px solid var(--pixel-gold)", borderRight: "3px solid var(--pixel-gold)" }}
           >
             <div className="flex items-center justify-between mb-3">
-              <div className="font-pixel-title text-[10px]" style={{ color: "var(--pixel-text)" }}>Modificadores activos ({grouped.length})</div>
+              <div className="font-pixel-title text-[10px]" style={{ color: "var(--pixel-text)" }}>Modificadores activos (<span className="pixel-digits">{grouped.length}</span>)</div>
               <button onClick={() => setMobileOpen(false)} style={{ color: "#8a93b0" }}><X size={18} /></button>
             </div>
             <div className="space-y-2">
@@ -10807,7 +10809,7 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
   const boostTier = battleTowerStatBoostTier(currentRound);
   const towerStatusBar = (
     <div className="flex flex-wrap items-center gap-3 text-xs text-[#9aa0b4] rounded-lg p-2.5" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
-      <span className="flex items-center gap-1"><Swords size={13} color="#2ec4b6" /> Ronda {currentRound}</span>
+      <span className="flex items-center gap-1"><Swords size={13} color="#2ec4b6" /> Ronda <span className="pixel-digits">{currentRound}</span></span>
       <span className="flex items-center gap-1"><Trophy size={13} color="#f2b705" /> {roundsWon} superadas</span>
       <span className="flex items-center gap-1">Dificultad: <span className="text-white font-semibold">{DIFFICULTY_META[battleTowerCpuDifficulty(currentRound)]?.label}</span></span>
       <span className="flex items-center gap-1">Rivales: <span className="text-white font-semibold">{battleTowerRivalRarityLabel(currentRound)}</span></span>
@@ -10864,7 +10866,7 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
       <div className="space-y-4">
         {towerStatusBar}
         <div className="rounded-xl p-4" style={{ background: "#5fae5f14", border: "1px solid #5fae5f55" }}>
-          <div className="text-white font-semibold text-sm mb-1">¡Ronda {currentRound} superada!</div>
+          <div className="text-white font-semibold text-sm mb-1">¡Ronda <span className="pixel-digits">{currentRound}</span> superada!</div>
           <div className="text-[11px] text-[#8a8fa3]">
             {willHeal
               ? `Tu equipo se curará por completo (PS y estados) antes de la ronda ${nextRound}, el siguiente bloque de dificultad.`
@@ -10920,7 +10922,7 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
             className="px-6 py-2.5 rounded-xl font-display text-white"
             style={{ background: "linear-gradient(135deg,#2ec4b6,#1a8f84)" }}
           >
-            Continuar (Ronda {nextRound}) <ChevronRight size={16} className="inline" />
+            Continuar (Ronda <span className="pixel-digits">{nextRound}</span>) <ChevronRight size={16} className="inline" />
           </button>
           <button
             onClick={() => finishTower(roundsWon)}
