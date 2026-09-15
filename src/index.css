@@ -406,22 +406,21 @@ button:disabled {
   font-family: 'Pixelify Sans', 'Press Start 2P', monospace;
 }
 
-/* Legibilidad de números en contadores con tipografía pixel (Pixelify Sans
-   vía .font-display, o Press Start 2P vía .font-pixel-title): en ambas
-   fuentes el "5" se confunde visualmente con el "8" a los tamaños usados en
-   contadores como "Ronda X de Y" o "turnos restantes", por lo apretado de
-   sus curvas — comprobado en vivo con "Ronda 0 de 5" leyéndose como "Ronda 0
-   de 8". Se aplica SOLO a los dígitos de estos contadores (nunca al resto
-   del texto pixel, y sin abandonar el estilo pixel art): más letter-spacing
-   siempre, y en los dos títulos principales de "Ronda X de Y" (que tienen
-   margen de sobra en el layout) también un aumento de tamaño, ya que a mayor
-   tamaño la forma del 5 y el 8 se distingue mejor en una fuente bitmap. */
+/* CORRECCIÓN DEFINITIVA (sustituye al intento anterior de solo aumentar
+   tamaño/espaciado, que no bastaba): el glifo "5" de Press Start 2P está
+   dibujado de forma que se confunde con el "8" a cualquier tamaño — es un
+   problema del propio diseño de la fuente, no de tamaño ni de espaciado.
+   Regla del proyecto en adelante: NINGÚN dígito se muestra nunca con Press
+   Start 2P. `.pixel-digits` fuerza Pixelify Sans (con `!important`, para
+   ganar siempre aunque el elemento esté anidado dentro de un contenedor con
+   `.font-pixel-title`) en cualquier número dentro de un contador con
+   tipografía pixel — "Ronda X de Y", turnos restantes de clima/campo,
+   "Modificadores activos (N)", etc. Se mantiene algo de letter-spacing como
+   ayuda adicional, pero la garantía real es el cambio de fuente, no el
+   espaciado. */
 .pixel-digits {
-  letter-spacing: 0.1em;
-}
-.pixel-digits-lg {
-  letter-spacing: 0.1em;
-  font-size: 1.15em;
+  font-family: 'Pixelify Sans', monospace !important;
+  letter-spacing: 0.05em;
 }
 
 /* Sprites de baja resolución (ver pixelSprite/pixelShinySprite en

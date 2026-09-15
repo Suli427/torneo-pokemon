@@ -7796,7 +7796,7 @@ function RoundTransitionScreen({ round, total, phase }) {
     <div className="flex flex-col items-center justify-center py-24">
       <div className={phase === "out" ? "battle-vs-fadeout" : "battle-vs-pop"}>
         <div className="font-display text-4xl text-white text-center">
-          Ronda <span className="pixel-digits-lg">{round}</span> de <span className="pixel-digits-lg">{total}</span>
+          Ronda <span className="pixel-digits">{round}</span> de <span className="pixel-digits">{total}</span>
         </div>
       </div>
     </div>
@@ -8803,7 +8803,7 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
             <h2 className="font-display text-2xl text-white flex items-center gap-2">
               {phase === "finished" ? <Trophy size={22} color="#f2b705" /> : <Swords size={22} color="#e3350d" />}
               {phase === "finished" ? "Torneo finalizado" : (
-                <>Ronda <span className="pixel-digits-lg">{round}</span> de <span className="pixel-digits-lg">{TOURNAMENT_ROUNDS}</span></>
+                <>Ronda <span className="pixel-digits">{round}</span> de <span className="pixel-digits">{TOURNAMENT_ROUNDS}</span></>
               )}
             </h2>
             {phase === "ready" && (
