@@ -1,12 +1,13 @@
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Inter:wght@400;500;600;700&family=Cinzel:wght@600;700&display=swap');
-/* Fase 5 del rediseño: fuentes del nuevo sistema "pixel art retro" (ver
-   PixelFrame.jsx y PixelFrameDemo.jsx). Se cargan aparte, sin tocar el
-   import de arriba (Rajdhani/Inter/Cinzel siguen siendo las fuentes reales
-   de toda la app hasta que las Fases 6-7 las sustituyan pantalla a
-   pantalla) — "Press Start 2P" para títulos cortos (muy densa, pensada
-   para poco texto) y "Pixelify Sans" para el resto (números, descripciones,
-   nombres dentro de una futura "carta" pixel), más legible en bloques
-   largos que Press Start 2P mientras mantiene el aire pixel. */
+/* Fase 7 del rediseño (última fase): Rajdhani y Cinzel quedan RETIRADAS por
+   completo — eran las fuentes del "chrome" general y del sistema de carta
+   TCG (Fases 1-4), ya sustituidas del todo por Press Start 2P/Pixelify
+   Sans. Se confirmó con una búsqueda exhaustiva en todo `src/` que ningún
+   sitio de la app sigue usando `.font-display`→Rajdhani con esa fuente
+   (la clase se redefine más abajo para apuntar a Pixelify Sans en vez de
+   borrarla, ver el comentario allí) ni `.font-card-name`→Cinzel (esa clase
+   sí se elimina por completo, junto con CardFrame.jsx). Inter tampoco hace
+   falta ya: era la fuente de cuerpo general antes de este rediseño y
+   App.jsx pasa a Pixelify Sans para todo el texto de la app. */
 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Pixelify+Sans:wght@400;500;600;700&display=swap');
 
 @tailwind base;
@@ -16,56 +17,70 @@
 html, body, #root {
   height: 100%;
   margin: 0;
-  background: #0c0e15;
+  background: #0f1729;
 }
 
-/* Fase 4 del rediseño "carta coleccionable": textura de fondo GLOBAL en
-   `body`, no en cada tab por separado. Ninguna tab pone su propio
-   `background` opaco encima (el `<main>` de App.jsx no tiene fondo propio),
-   así que esta única regla llega automáticamente a Torneo/Logros/Casino/
-   Torre Batalla/Draft/Personajes/Pokémon/Gatcha/Diario sin tocar el código
-   de cada una — evita rehacer el fondo pantalla por pantalla y, de paso,
-   garantiza que ninguna quede "descolgada" del resto. Dos resplandores
-   radiales muy tenues (esquina superior izquierda en un rojo apagado,
-   inferior derecha en un dorado apagado — los dos acentos de color ya
-   establecidos en el resto del rediseño) más un patrón diagonal casi
-   imperceptible a modo de textura de "tapete de cartas", todo con opacidad
-   deliberadamente baja para no interferir con la legibilidad del contenido
-   real por encima.*/
+/* Fase 7 del rediseño (última fase): textura de fondo GLOBAL en `body`
+   recolorada a la paleta pixel art (antes era el resplandor rojo/dorado
+   difuso del sistema TCG de la Fase 4) — sigue siendo una única regla que
+   llega automáticamente a TODAS las tabs sin tocar el código de cada una
+   (el `<main>` de App.jsx no pone ningún fondo propio encima). En vez de
+   resplandores radiales suaves (demasiado "difusos" para encajar con el
+   pedido de esta fase: bordes/sombras siempre duros, nunca blur), ahora es
+   un patrón de rejilla de scanlines — líneas horizontales y verticales
+   finísimas, opacidad casi nula — que recuerda a la pantalla de una
+   consola retro en vez de un degradado de carta. */
 body {
-  background-color: #0c0e15;
+  background-color: #0f1729;
   background-image:
-    radial-gradient(ellipse 900px 600px at 8% -5%, #e3350d14 0%, transparent 60%),
-    radial-gradient(ellipse 900px 700px at 95% 105%, #f2b70512 0%, transparent 60%),
-    repeating-linear-gradient(135deg, #ffffff05 0px, #ffffff05 1px, transparent 1px, transparent 28px);
+    repeating-linear-gradient(0deg, #ffffff08 0px, #ffffff08 1px, transparent 1px, transparent 4px),
+    repeating-linear-gradient(90deg, #ffffff05 0px, #ffffff05 1px, transparent 1px, transparent 4px);
   background-attachment: fixed;
 }
 
-/* Pulido general de botones (Fase 4): un único punto de enganche para TODA
-   la app en vez de repetir la misma transición/estado de pulsado en cada
-   botón — sutil relieve al pulsar (escala) y una transición suave para
-   cualquier cambio de color/sombra que ya traiga cada botón por su cuenta.
-   No toca ningún color: cada botón sigue con su propia paleta semántica ya
-   establecida (rojo = acción principal, dorado = premium/pago, rojo tenue =
-   destructivo...), esto solo añade la MISMA sensación táctil a todos. */
+/* Nada de border-radius en ningún elemento del nuevo sistema pixel art (ver
+   el pedido, repetido en las Fases 5-7): en vez de perseguir cada
+   `rounded-*` de Tailwind uno a uno por todo el archivo (cientos de
+   apariciones), una única regla global con `!important` los anula a
+   todos de golpe — incluidos los círculos de avatar (`rounded-full` en
+   TrainerAvatar/PlayerAvatar), que de paso quedan cuadrados como los
+   iconos de entrenador/Pokémon de un menú GBA real, coherente con el
+   estilo en vez de un efecto secundario indeseado. */
+* {
+  border-radius: 0 !important;
+}
+
+/* Pulido general de botones (Fase 4, ajustado en la Fase 7 al estilo
+   retro): en vez de un `scale(0.97)` al pulsar (una reducción suave, más
+   propia del sistema TCG), el botón se desplaza 2px en diagonal — el
+   mismo truco visual de "botón que se hunde" de un menú de consola física,
+   sin animación de tipo continuo (`steps(1)` en vez de `ease`, para que el
+   desplazamiento sea un salto seco, no un deslizamiento). No toca ningún
+   color: cada botón sigue con su propia paleta semántica ya establecida
+   (rojo = acción principal, dorado = premium/pago, rojo tenue =
+   destructivo...), esto solo cambia la sensación táctil al pulsar. */
 button {
-  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+  transition: transform 80ms steps(1), filter 80ms steps(1), opacity 80ms steps(1);
 }
 button:not(:disabled):active {
-  transform: scale(0.97);
+  transform: translate(2px, 2px);
 }
 button:disabled {
   cursor: not-allowed;
 }
 
-/* Scrollbar a juego con la paleta oscura/dorada del resto del rediseño, en
-   vez del scrollbar por defecto del sistema — se nota sobre todo en los
-   paneles con `overflow-y-auto` ya existentes (cuadrícula de colección,
-   listas de movimientos, clasificación, desplegables...). Firefox vía
+/* Scrollbar a juego con la paleta pixel art (recolorado en la Fase 7: antes
+   usaba los grises del "chrome" general pre-rediseño), en vez del
+   scrollbar por defecto del sistema — se nota sobre todo en los paneles
+   con `overflow-y-auto` ya existentes (cuadrícula de colección, listas de
+   movimientos, clasificación, desplegables...). Firefox vía
    `scrollbar-color` (con fallback silencioso donde no se soporte);
-   WebKit/Blink vía pseudo-elementos. */
+   WebKit/Blink vía pseudo-elementos. Sin `border-radius` en el "thumb"
+   (antes era una píldora redondeada): la regla global de arriba ya lo
+   fuerza a 0, pero se deja también aquí en vez de a 999px para que el
+   valor real de la propiedad no confunda a quien lea este archivo. */
 * {
-  scrollbar-color: #3a3f57 #14161f;
+  scrollbar-color: var(--pixel-panel) var(--pixel-bg);
   scrollbar-width: thin;
 }
 ::-webkit-scrollbar {
@@ -73,34 +88,32 @@ button:disabled {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: #14161f;
+  background: var(--pixel-bg);
 }
 ::-webkit-scrollbar-thumb {
-  background: #3a3f57;
-  border-radius: 999px;
-  border: 2px solid #14161f;
+  background: var(--pixel-panel);
+  border-radius: 0;
+  border: 2px solid var(--pixel-bg);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4c5066;
+  background: #3a4a70;
 }
 
+/* Fase 7 del rediseño (última fase): `.font-display` (antes Rajdhani, la
+   fuente del "chrome" general pre-rediseño) se REDEFINE a Pixelify Sans en
+   vez de eliminarse — esta clase se usa en ~70 sitios de App.jsx para
+   títulos de sección de TODAS las tabs (Torneo, Logros, Casino, Torre
+   Batalla, Draft, modales...), así que cambiar qué fuente hay detrás de
+   ella retipografía la app entera de golpe sin tener que tocar cada uno de
+   esos ~70 sitios uno a uno. `.font-card-name` (Cinzel, sistema TCG) se
+   ELIMINA por completo en esta fase junto con CardFrame.jsx: se confirmó
+   con una búsqueda exhaustiva que sus últimos 4 usos reales (NovedadesModal,
+   AboutCreatorModal, y el desplegable de modificadores de la Torre Batalla,
+   ver App.jsx) ya pasan a `.font-pixel-title`/`.font-pixel-body` en esta
+   misma fase. */
 .font-display {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Pixelify Sans', monospace;
   letter-spacing: 0.01em;
-}
-
-/* Fase 1 del rediseño "carta coleccionable" (ver src/components/CardFrame.jsx
-   y CardFrameDemo.jsx). Cinzel en vez de Marcellus: se probaron ambas para
-   el nombre dentro de la carta — Marcellus es más ligera/clásica pero se
-   confunde demasiado con el propio "chrome" general de la app (parecida en
-   peso visual a Inter); Cinzel tiene el trazo grabado/mayúsculas romanas
-   propio de títulos de carta de coleccionables (estilo Magic/Pokémon TCG
-   real) que separa claramente el nombre del resto de la interfaz. Rajdhani
-   sigue siendo la fuente del "chrome" general (botones, cabeceras) sin
-   ningún cambio: esta clase es SOLO para el nombre dentro de una carta. */
-.font-card-name {
-  font-family: 'Cinzel', serif;
-  letter-spacing: 0.03em;
 }
 
 /* Animaciones de la revelación del gacha (ver GACHA_REVEAL_META,
@@ -340,50 +353,16 @@ button:disabled {
   animation: battle-sprite-faint 600ms ease-in forwards;
 }
 
-/* Fase 1 del rediseño "carta coleccionable" (ver CardFrame.jsx): efecto
-   holográfico de la rareza Legendario y destello pulsante del flag Shiny.
-   Gradiente arcoíris DELIBERADAMENTE suave (tonos pastel, no colores
-   estridentes saturados) que se desplaza despacio en bucle vía
-   background-position — misma técnica que el resto de animaciones de la
-   app (keyframes + clase, nunca JS para el bucle en sí). */
-@keyframes card-holo-shift {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
-.card-holo-overlay {
-  background: linear-gradient(115deg, #ff9a9e, #fad0c4, #fbc2eb, #a6c1ee, #c2e9fb, #d4fc79, #ff9a9e);
-  background-size: 300% 300%;
-  animation: card-holo-shift 6s ease-in-out infinite;
-}
-/* Variante sin animación (ver `animated` en CardFrame.jsx): misma paleta y
-   tamaño de fondo, congelada en un único frame — usada en la cuadrícula de
-   la colección de Pokémon para que muchas cartas Legendario a la vez no
-   disparen repintados continuos por `background-position`. */
-.card-holo-overlay.card-holo-static {
-  animation: none;
-  background-position: 35% 50%;
-}
-
-@keyframes card-shiny-pulse {
-  0%, 100% { opacity: 0.6; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.15); }
-}
-.card-shiny-sparkle {
-  animation: card-shiny-pulse 1.6s ease-in-out infinite;
-}
-
 /* =================================================================
-   FASE 5 DEL REDISEÑO — SISTEMA BASE "PIXEL ART RETRO"
+   SISTEMA "PIXEL ART RETRO" (Fases 5-7 del rediseño)
    (ver src/components/PixelFrame.jsx y PixelFrameDemo.jsx)
 
-   Construye el sistema en paralelo al de "carta coleccionable" (TCG) de
-   las Fases 1-4 de arriba, SIN tocar ni borrar nada de ese sistema
-   todavía: el viejo (CardFrame, .font-card-name, card-holo-*,
-   card-shiny-*) sigue siendo el que está realmente aplicado en toda la
-   app hasta que las Fases 6-7 lo sustituyan pantalla a pantalla. Todo lo
-   de aquí abajo vive aparte y no se usa en ningún sitio real todavía
-   (solo en PixelFrameDemo.jsx).
+   Fase 7 (última fase): esto es ya el ÚNICO sistema de estilo de toda la
+   app. El sistema anterior de "carta coleccionable" (TCG, Fases 1-4:
+   CardFrame.jsx, `.font-card-name`/Cinzel, `card-holo-*`, `card-shiny-*`)
+   se ha retirado por completo — confirmado con una búsqueda exhaustiva en
+   todo `src/` de que ninguno de esos nombres sigue en uso antes de
+   borrarlos de aquí y del proyecto.
 ================================================================== */
 
 :root {

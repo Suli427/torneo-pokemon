@@ -5677,26 +5677,26 @@ function NovedadesModal({ open, onClose, readIds, onMarkRead, onMarkAllRead }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
       <div
-        className="relative max-w-4xl w-full max-h-[85vh] rounded-2xl p-6 overflow-y-auto"
-        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #f2b70544", boxShadow: "0 0 24px #00000066" }}
+        className="relative max-w-4xl w-full max-h-[85vh] p-6 overflow-y-auto"
+        style={{ background: "var(--pixel-panel)", border: "3px solid var(--pixel-gold)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <button onClick={onClose} className="absolute top-4 right-4 text-[#7c8199] hover:text-white">
+        <button onClick={onClose} className="absolute top-4 right-4" style={{ color: "var(--pixel-text)" }}>
           <X size={20} />
         </button>
         <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
-          <h2 className="font-card-name text-2xl text-white flex items-center gap-2"><ScrollText size={22} color="#e3350d" /> Novedades</h2>
+          <h2 className="font-pixel-title text-sm flex items-center gap-2" style={{ color: "var(--pixel-text)" }}><ScrollText size={22} color="var(--pixel-accent)" /> Novedades</h2>
           {anyUnread && (
             <button
               onClick={onMarkAllRead}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0"
-              style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold shrink-0"
+              style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a4a70" }}
             >
-              <Check size={13} color="#5fae5f" /> Marcar todo como leído
+              <Check size={13} color="var(--pixel-success)" /> Marcar todo como leído
             </button>
           )}
         </div>
-        <p className="text-sm text-[#9aa0b4] mb-5">Historial de actualizaciones de PokéArena, con la fecha real de cada una.</p>
+        <p className="text-sm mt-2 mb-5" style={{ color: "#8a93b0" }}>Historial de actualizaciones de PokéArena, con la fecha real de cada una.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {sorted.map((entry) => (
             <ChangelogCard
@@ -5725,22 +5725,22 @@ function AboutCreatorModal({ open, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
       <div
-        className="relative max-w-lg w-full max-h-[85vh] overflow-y-auto rounded-2xl p-6"
-        style={{ background: "linear-gradient(160deg,#1b1e2b,#12141d)", border: "1px solid #f2b70544", boxShadow: "0 0 24px #00000066" }}
+        className="relative max-w-lg w-full max-h-[85vh] overflow-y-auto p-6"
+        style={{ background: "var(--pixel-panel)", border: "3px solid var(--pixel-gold)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <button onClick={onClose} className="absolute top-4 right-4 text-[#7c8199] hover:text-white">
+        <button onClick={onClose} className="absolute top-4 right-4" style={{ color: "var(--pixel-text)" }}>
           <X size={20} />
         </button>
-        <h2 className="font-card-name text-2xl text-white flex items-center gap-2 mb-4">
-          <Heart size={22} color="#e3350d" /> Acerca del creador
+        <h2 className="font-pixel-title text-sm flex items-center gap-2 mb-4" style={{ color: "var(--pixel-text)" }}>
+          <Heart size={22} color="var(--pixel-accent)" /> Acerca del creador
         </h2>
-        <div className="text-sm text-[#c7cbdb] space-y-3 leading-relaxed">
+        <div className="text-sm space-y-3 leading-relaxed" style={{ color: "var(--pixel-text)" }}>
           <p>Me llamo Marc y soy el creador de PokéArena. Este proyecto lleva rondándome la cabeza mucho tiempo: siempre quise crear un juego de combates Pokémon con mis propias reglas, y esto es el resultado de ir dándole forma poco a poco.</p>
           <p>Todavía está en fase beta — soy consciente de que hay mecánicas que seguir puliendo y contenido que seguir añadiendo, así que la app seguirá cambiando y mejorando con el tiempo.</p>
           <p>
             Si has llegado hasta aquí es porque el juego te ha gustado o al menos te ha picado la curiosidad, así que gracias de verdad por probarlo. Si encuentras algún error, tienes alguna idea, o simplemente quieres comentarme algo, puedes escribirme a{" "}
-            <a href="mailto:solerfabrega03@gmail.com" className="inline-flex items-center gap-1 underline" style={{ color: "#4a90d9" }}>
+            <a href="mailto:solerfabrega03@gmail.com" className="inline-flex items-center gap-1 underline" style={{ color: "#4a90e2" }}>
               <Mail size={13} /> solerfabrega03@gmail.com
             </a>{" "}
             — leo todos los mensajes.
@@ -8616,34 +8616,38 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
           {mode !== "weekly" && (
             <div>
               <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
-                <Swords size={18} color="#f2b705" /> Dificultad de la CPU
+                <Swords size={18} color="var(--pixel-gold)" /> Dificultad de la CPU
               </h3>
               <div className="flex flex-wrap gap-3">
-                {Object.entries(DIFFICULTY_META).map(([key, meta]) => (
-                  <button
-                    key={key}
-                    onClick={() => setDifficulty(key)}
-                    className="text-left px-4 py-2.5 rounded-lg text-sm font-medium max-w-[15rem]"
-                    style={{
-                      background: difficulty === key ? "#e3350d22" : "#14161f",
-                      border: difficulty === key ? "1px solid #e3350d" : "1px solid #262a3a",
-                      color: difficulty === key ? "#ff6b4a" : "#c7cbdb",
-                    }}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-semibold">{meta.label}</span>
-                      {meta.rewardMultiplier > 1 && (
-                        <span
-                          className="text-[10px] font-display px-1.5 py-0.5 rounded-full"
-                          style={{ background: "#f2b70522", border: "1px solid #f2b70555", color: "#f2b705" }}
-                        >
-                          Recompensas ×{meta.rewardMultiplier}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-[#8a8fa3] font-normal leading-snug mt-0.5">{meta.desc}</div>
-                  </button>
-                ))}
+                {Object.entries(DIFFICULTY_META).map(([key, meta]) => {
+                  const selected = difficulty === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setDifficulty(key)}
+                      className="text-left px-4 py-2.5 text-sm font-medium max-w-[15rem]"
+                      style={{
+                        background: selected ? "#e3350d22" : "var(--pixel-panel)",
+                        border: `2px solid ${selected ? "var(--pixel-accent)" : "#3a4a70"}`,
+                        color: selected ? "#ff8a7a" : "var(--pixel-text)",
+                      }}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        {selected && <PixelCursor size={10} color="var(--pixel-accent)" />}
+                        <span className="font-semibold">{meta.label}</span>
+                        {meta.rewardMultiplier > 1 && (
+                          <span
+                            className="text-[10px] px-1.5 py-0.5"
+                            style={{ background: "var(--pixel-bg)", border: "1px solid var(--pixel-gold)", color: "var(--pixel-gold)" }}
+                          >
+                            Recompensas ×{meta.rewardMultiplier}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] font-normal leading-snug mt-0.5" style={{ color: "#8a93b0" }}>{meta.desc}</div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -8651,34 +8655,36 @@ function TorneoTab({ api, coins, setCoins, purchasedTrainerIds, customTrainers, 
           {mode !== "weekly" && (
             <div>
               <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
-                <ListOrdered size={18} color="#f2b705" /> Modo de enfrentamientos
+                <ListOrdered size={18} color="var(--pixel-gold)" /> Modo de enfrentamientos
               </h3>
               <div className="flex flex-wrap gap-3">
                 <button
                   onClick={() => setPairMode("position")}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium"
-                  style={{ background: pairMode === "position" ? "#e3350d22" : "#14161f", border: pairMode === "position" ? "1px solid #e3350d" : "1px solid #262a3a", color: pairMode === "position" ? "#ff6b4a" : "#c7cbdb" }}
+                  className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium"
+                  style={{ background: pairMode === "position" ? "#e3350d22" : "var(--pixel-panel)", border: `2px solid ${pairMode === "position" ? "var(--pixel-accent)" : "#3a4a70"}`, color: pairMode === "position" ? "#ff8a7a" : "var(--pixel-text)" }}
                 >
+                  {pairMode === "position" && <PixelCursor size={10} color="var(--pixel-accent)" />}
                   <ListOrdered size={15} /> Por posición (1º vs 2º, 3º vs 4º...)
                 </button>
                 <button
                   onClick={() => setPairMode("random")}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium"
-                  style={{ background: pairMode === "random" ? "#e3350d22" : "#14161f", border: pairMode === "random" ? "1px solid #e3350d" : "1px solid #262a3a", color: pairMode === "random" ? "#ff6b4a" : "#c7cbdb" }}
+                  className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium"
+                  style={{ background: pairMode === "random" ? "#e3350d22" : "var(--pixel-panel)", border: `2px solid ${pairMode === "random" ? "var(--pixel-accent)" : "#3a4a70"}`, color: pairMode === "random" ? "#ff8a7a" : "var(--pixel-text)" }}
                 >
+                  {pairMode === "random" && <PixelCursor size={10} color="var(--pixel-accent)" />}
                   <Shuffle size={15} /> Aleatorio
                 </button>
               </div>
             </div>
           )}
 
-          {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
+          {error && <div className="text-sm p-3" style={{ color: "#ff8a8a", background: "#e3350d1a", border: "2px solid #e3350d44" }}>{error}</div>}
 
           <button
             onClick={startTournament}
             disabled={(mode === "A" && !selectedCustomTrainer) || (mode === "weekly" && (weeklyCompleted || !weeklyTeamValid))}
-            className="flex items-center gap-2 px-6 py-3 rounded-xl font-display text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: "linear-gradient(135deg,#e3350d,#b8250a)" }}
+            className="flex items-center gap-2 px-6 py-3 font-display text-lg text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: "var(--pixel-accent)", border: "3px solid var(--pixel-text)" }}
           >
             Iniciar torneo <ChevronRight size={18} />
           </button>
@@ -9251,41 +9257,47 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
         </div>
         <div>
           <h3 className="font-display text-lg text-white mb-2 flex items-center gap-2">
-            <Swords size={18} color="#f2b705" /> Dificultad de la CPU
+            <Swords size={18} color="var(--pixel-gold)" /> Dificultad de la CPU
           </h3>
-          <p className="text-[11px] text-[#8a8fa3] mb-2">Se aplica a todos los rivales de esta partida (con nombre prestado o "Desafiante N"). No afecta a las 100 monedas por ronda ganada.</p>
+          <p className="text-[11px] mb-2" style={{ color: "#8a93b0" }}>Se aplica a todos los rivales de esta partida (con nombre prestado o "Desafiante N"). No afecta a las 100 monedas por ronda ganada.</p>
           <div className="flex flex-wrap gap-3">
-            {Object.entries(DIFFICULTY_META).map(([key, meta]) => (
-              <button
-                key={key}
-                onClick={() => setDifficulty(key)}
-                className="text-left px-4 py-2.5 rounded-lg text-sm font-medium max-w-[15rem]"
-                style={{
-                  background: difficulty === key ? "#e3350d22" : "#14161f",
-                  border: difficulty === key ? "1px solid #e3350d" : "1px solid #262a3a",
-                  color: difficulty === key ? "#ff6b4a" : "#c7cbdb",
-                }}
-              >
-                <span className="font-semibold">{meta.label}</span>
-                <div className="text-[10px] text-[#8a8fa3] font-normal leading-snug mt-0.5">{meta.desc}</div>
-              </button>
-            ))}
+            {Object.entries(DIFFICULTY_META).map(([key, meta]) => {
+              const selected = difficulty === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setDifficulty(key)}
+                  className="flex items-center gap-1.5 text-left px-4 py-2.5 text-sm font-medium max-w-[15rem]"
+                  style={{
+                    background: selected ? "#e3350d22" : "var(--pixel-panel)",
+                    border: `2px solid ${selected ? "var(--pixel-accent)" : "#3a4a70"}`,
+                    color: selected ? "#ff8a7a" : "var(--pixel-text)",
+                  }}
+                >
+                  {selected && <PixelCursor size={10} color="var(--pixel-accent)" />}
+                  <span>
+                    <span className="font-semibold block">{meta.label}</span>
+                    <span className="text-[10px] font-normal leading-snug block mt-0.5" style={{ color: "#8a93b0" }}>{meta.desc}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
-        <div className="rounded-xl p-4" style={{ background: "#e3350d14", border: "1px solid #e3350d55" }}>
-          <div className="text-white font-display text-lg mb-2 flex items-center gap-2">⚠️ Los cambios del Draft son PERMANENTES</div>
-          <ul className="text-sm text-[#c7cbdb] space-y-1.5 list-disc pl-5">
-            <li>El Draft se juega con el equipo actual de <span className="text-white font-semibold">{selectedTrainer.name}</span>. Al terminar, ese equipo se <span className="text-[#ff8a8a] font-semibold">sustituirá directamente</span> por el equipo final del Draft.</li>
-            <li>Los Pokémon de tu equipo que acaben <span className="text-[#ff8a8a] font-semibold">fuera</span> de tu equipo al terminar el Draft se <span className="text-[#ff8a8a] font-semibold">perderán de tu colección para siempre</span> y dejarán de estar en el equipo de tu entrenador.</li>
-            <li>Los Pokémon que ganes de tus rivales y conserves al terminar se <span className="text-[#5fae5f] font-semibold">añadirán a tu colección para siempre</span> y pasarán a formar parte del equipo de tu entrenador.</li>
+        <div className="p-4" style={{ background: "#e3350d14", border: "2px solid var(--pixel-accent)" }}>
+          <div className="font-display text-lg mb-2 flex items-center gap-2" style={{ color: "var(--pixel-text)" }}>⚠️ Los cambios del Draft son PERMANENTES</div>
+          <ul className="text-sm space-y-1.5 list-disc pl-5" style={{ color: "var(--pixel-text)" }}>
+            <li>El Draft se juega con el equipo actual de <span className="font-semibold" style={{ color: "var(--pixel-text)" }}>{selectedTrainer.name}</span>. Al terminar, ese equipo se <span className="font-semibold" style={{ color: "#ff8a8a" }}>sustituirá directamente</span> por el equipo final del Draft.</li>
+            <li>Los Pokémon de tu equipo que acaben <span className="font-semibold" style={{ color: "#ff8a8a" }}>fuera</span> de tu equipo al terminar el Draft se <span className="font-semibold" style={{ color: "#ff8a8a" }}>perderán de tu colección para siempre</span> y dejarán de estar en el equipo de tu entrenador.</li>
+            <li>Los Pokémon que ganes de tus rivales y conserves al terminar se <span className="font-semibold" style={{ color: "var(--pixel-success)" }}>añadirán a tu colección para siempre</span> y pasarán a formar parte del equipo de tu entrenador.</li>
             <li>Puedes retirarte después de cualquier ronda ganada para aplicar el resultado cuando quieras, o seguir hasta que pierdas.</li>
           </ul>
-          <label className="flex items-center gap-2 mt-4 text-sm text-white cursor-pointer">
+          <label className="flex items-center gap-2 mt-4 text-sm cursor-pointer" style={{ color: "var(--pixel-text)" }}>
             <input type="checkbox" checked={confirmChecked} onChange={(e) => setConfirmChecked(e.target.checked)} />
             He entendido que los cambios de este Draft son permanentes.
           </label>
         </div>
-        {error && <div className="text-sm text-[#ff8a8a] bg-[#e3350d1a] border border-[#e3350d44] rounded-lg p-3">{error}</div>}
+        {error && <div className="text-sm p-3" style={{ color: "#ff8a8a", background: "#e3350d1a", border: "2px solid #e3350d44" }}>{error}</div>}
         <div className="flex gap-2">
           <button
             onClick={startDraft}
@@ -10174,17 +10186,17 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
       <div className="hidden sm:block w-64 shrink-0 sticky top-2 self-start" style={{ maxHeight: "calc(100vh - 16px)" }}>
         <button
           onClick={() => setOpen((o) => !o)}
-          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-left"
-          style={{ background: "#14161f", border: "1px solid #f2b70555" }}
+          className="w-full flex items-center gap-2 px-3 py-2.5 text-left"
+          style={{ background: "var(--pixel-panel)", border: "2px solid var(--pixel-gold)" }}
         >
-          <Sparkles size={16} color="#f2b705" className="shrink-0" />
-          <span className="font-card-name text-xs text-white flex-1 min-w-0">Modificadores activos ({grouped.length})</span>
-          <ChevronDown size={14} color="#8a8fa3" className={open ? "rotate-180" : ""} style={{ transition: "transform 0.15s" }} />
+          <Sparkles size={16} color="var(--pixel-gold)" className="shrink-0" />
+          <span className="font-pixel-title text-[10px] flex-1 min-w-0" style={{ color: "var(--pixel-text)" }}>Modificadores activos ({grouped.length})</span>
+          <ChevronDown size={14} color="#8a93b0" className={open ? "rotate-180" : ""} style={{ transition: "transform 0.15s" }} />
         </button>
         {open && (
           <div
-            className="mt-2 rounded-xl p-2 space-y-1.5 overflow-y-auto"
-            style={{ background: "#0e1018", border: "1px solid #262a3a", maxHeight: "calc(100vh - 70px)" }}
+            className="mt-2 p-2 space-y-1.5 overflow-y-auto"
+            style={{ background: "var(--pixel-bg)", border: "2px solid #3a4a70", maxHeight: "calc(100vh - 70px)" }}
           >
             {listRows}
           </div>
@@ -10193,8 +10205,8 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
 
       <button
         onClick={() => setMobileOpen(true)}
-        className="sm:hidden fixed left-3 bottom-4 z-40 flex items-center gap-1.5 px-3 py-2 rounded-full shadow-lg"
-        style={{ background: "#14161f", border: "1px solid #f2b70555", color: "#f2b705" }}
+        className="sm:hidden fixed left-3 bottom-4 z-40 flex items-center gap-1.5 px-3 py-2"
+        style={{ background: "var(--pixel-panel)", border: "2px solid var(--pixel-gold)", color: "var(--pixel-gold)" }}
       >
         <Sparkles size={14} />
         <span className="text-xs font-bold">{totalCount}</span>
@@ -10206,12 +10218,12 @@ function TowerActiveEffectsPanel({ runModifiers, inventory }) {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-h-[70vh] overflow-y-auto rounded-t-2xl p-4"
-            style={{ background: "#14161f", border: "1px solid #262a3a", borderBottom: "none" }}
+            className="w-full max-h-[70vh] overflow-y-auto p-4"
+            style={{ background: "var(--pixel-panel)", borderTop: "3px solid var(--pixel-gold)", borderLeft: "3px solid var(--pixel-gold)", borderRight: "3px solid var(--pixel-gold)" }}
           >
             <div className="flex items-center justify-between mb-3">
-              <div className="font-card-name text-sm text-white">Modificadores activos ({grouped.length})</div>
-              <button onClick={() => setMobileOpen(false)} className="text-[#8a8fa3]"><X size={18} /></button>
+              <div className="font-pixel-title text-[10px]" style={{ color: "var(--pixel-text)" }}>Modificadores activos ({grouped.length})</div>
+              <button onClick={() => setMobileOpen(false)} style={{ color: "#8a93b0" }}><X size={18} /></button>
             </div>
             <div className="space-y-2">
               {listRows}
@@ -14389,38 +14401,38 @@ export default function App() {
   ];
 
   return (
-    <div className="w-full min-h-screen" style={{ background: "#0c0e15", fontFamily: "Inter, sans-serif" }}>
-      {/* Fase 4 del rediseño "carta coleccionable": la cabecera entera NO se
-          convierte en una carta (a propósito, ver el pedido), solo se le da
-          un detalle metálico/dorado sutil coherente con el resto del
-          sistema — un borde inferior con un ligero tinte dorado en vez del
-          gris plano de antes, y el logo dentro de un pequeño círculo con
-          borde dorado, mismo lenguaje visual que la "gema" de rareza de
-          CardFrame (círculo oscuro + borde de color fino). */}
+    <div className="w-full min-h-screen" style={{ background: "var(--pixel-bg)", fontFamily: "'Pixelify Sans', monospace" }}>
+      {/* Fase 7 del rediseño (última fase): cabecera reconvertida a la
+          paleta/tipografía pixel art. El Pokéball SVG (`PokeballIcon`) no
+          necesita ningún ajuste — es un dibujo vectorial de bloques de
+          color planos sin ningún gradiente/sombreado 3D, así que ya encaja
+          con el estilo pixel tal cual, sin tocarlo. Se mantiene el círculo
+          de acento alrededor (antes dorado difuso del sistema TCG, ahora
+          borde recto de `--pixel-gold`, ya cuadrado por la regla global
+          `border-radius: 0`) y el borde inferior de la cabecera entera. */}
       <header
         className="px-5 py-4 flex items-center justify-between sticky top-0 z-40"
         style={{
-          borderBottom: "1px solid #f2b70533",
-          background: "linear-gradient(180deg,#12141d,#0c0e15)",
-          boxShadow: "0 1px 12px #00000066",
+          borderBottom: "3px solid var(--pixel-gold)",
+          background: "var(--pixel-panel)",
         }}
       >
         <div className="flex items-center gap-2.5">
-          <div className="rounded-full flex items-center justify-center shrink-0" style={{ width: 34, height: 34, background: "#0e1018", border: "1.5px solid #f2b70566" }}>
+          <div className="flex items-center justify-center shrink-0" style={{ width: 34, height: 34, background: "var(--pixel-bg)", border: "2px solid var(--pixel-gold)" }}>
             <PokeballIcon size={20} />
           </div>
           <div>
-            <div className="font-display text-xl text-white leading-none flex items-center gap-2">
+            <div className="font-pixel-title text-xs text-white leading-none flex items-center gap-2" style={{ color: "var(--pixel-text)" }}>
               PokéArena
               {/* Indicador visual permanente de que el proyecto sigue en
                   fase beta (ver también AboutCreatorModal) — no
                   interactivo a propósito, mismo patrón de badge ya usado
                   en otras partes de la app (rareza, "TU ENTRENADOR"...). */}
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide align-middle" style={{ background: "#f2b70533", color: "#f2b705", border: "1px solid #f2b70566" }}>
+              <span className="font-pixel-body text-[10px] px-1.5 py-0.5 font-bold uppercase tracking-wide align-middle" style={{ background: "var(--pixel-bg)", color: "var(--pixel-gold)", border: "2px solid var(--pixel-gold)" }}>
                 Beta
               </span>
             </div>
-            <div className="text-[11px] text-[#6b7086]">Reúne tu equipo, compite en la liga y hazte una leyenda</div>
+            <div className="font-pixel-body text-[11px] mt-1" style={{ color: "#8a93b0" }}>Reúne tu equipo, compite en la liga y hazte una leyenda</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -14429,8 +14441,8 @@ export default function App() {
               izquierda de "Novedades". Pulsarla abre PlayerProfileModal. */}
           <button
             onClick={() => setShowPlayerProfile(true)}
-            className="flex items-center gap-1.5 pl-1.5 pr-3 py-1 rounded-full text-xs font-semibold"
-            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+            className="font-pixel-body flex items-center gap-1.5 pl-1.5 pr-3 py-1 text-xs font-semibold"
+            style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a4a70" }}
           >
             <PlayerAvatar avatar={playerProfile.avatar} size={22} />
             {playerProfile.nickname}
@@ -14442,8 +14454,8 @@ export default function App() {
           <button
             onClick={() => setShowAboutCreator(true)}
             title="Acerca del creador"
-            className="flex items-center justify-center w-8 h-8 rounded-full shrink-0"
-            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+            className="flex items-center justify-center w-8 h-8 shrink-0"
+            style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a4a70" }}
           >
             <Heart size={14} />
           </button>
@@ -14453,15 +14465,15 @@ export default function App() {
           <button
             onClick={() => setShowBackup(true)}
             title="Exportar/importar partida"
-            className="flex items-center justify-center w-8 h-8 rounded-full shrink-0"
-            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+            className="flex items-center justify-center w-8 h-8 shrink-0"
+            style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a4a70" }}
           >
             <Download size={14} />
           </button>
           <button
             onClick={() => setShowNovedades(true)}
-            className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
-            style={{ background: "#1c1f2c", color: "#c7cbdb", border: "1px solid #2c2f42" }}
+            className="font-pixel-body relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold"
+            style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a4a70" }}
           >
             <ScrollText size={14} /> Novedades
             {/* Badge de notificaciones sin leer: solo se muestra si hay al
@@ -14469,16 +14481,16 @@ export default function App() {
                 del botón. */}
             {unreadChangelogCount > 0 && (
               <span
-                className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[10px] font-display text-white"
-                style={{ background: "#e3350d", border: "1px solid #0c0e15" }}
+                className="font-pixel-body absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] text-white"
+                style={{ background: "var(--pixel-accent)", border: "2px solid var(--pixel-bg)" }}
               >
                 {unreadChangelogCount}
               </span>
             )}
           </button>
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: "#f2b70518", border: "1px solid #f2b70544" }}>
-            <Coins size={15} color="#f2b705" />
-            <span className="text-sm font-display text-[#f2b705]">{coins}</span>
+          <div className="flex items-center gap-1.5 px-3 py-1.5" style={{ background: "var(--pixel-bg)", border: "2px solid var(--pixel-gold)" }}>
+            <Coins size={15} color="var(--pixel-gold)" />
+            <span className="font-pixel-body text-sm font-bold" style={{ color: "var(--pixel-gold)" }}>{coins}</span>
           </div>
         </div>
       </header>
