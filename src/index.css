@@ -1,4 +1,13 @@
 @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Inter:wght@400;500;600;700&family=Cinzel:wght@600;700&display=swap');
+/* Fase 5 del rediseño: fuentes del nuevo sistema "pixel art retro" (ver
+   PixelFrame.jsx y PixelFrameDemo.jsx). Se cargan aparte, sin tocar el
+   import de arriba (Rajdhani/Inter/Cinzel siguen siendo las fuentes reales
+   de toda la app hasta que las Fases 6-7 las sustituyan pantalla a
+   pantalla) — "Press Start 2P" para títulos cortos (muy densa, pensada
+   para poco texto) y "Pixelify Sans" para el resto (números, descripciones,
+   nombres dentro de una futura "carta" pixel), más legible en bloques
+   largos que Press Start 2P mientras mantiene el aire pixel. */
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Pixelify+Sans:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -362,4 +371,88 @@ button:disabled {
 }
 .card-shiny-sparkle {
   animation: card-shiny-pulse 1.6s ease-in-out infinite;
+}
+
+/* =================================================================
+   FASE 5 DEL REDISEÑO — SISTEMA BASE "PIXEL ART RETRO"
+   (ver src/components/PixelFrame.jsx y PixelFrameDemo.jsx)
+
+   Construye el sistema en paralelo al de "carta coleccionable" (TCG) de
+   las Fases 1-4 de arriba, SIN tocar ni borrar nada de ese sistema
+   todavía: el viejo (CardFrame, .font-card-name, card-holo-*,
+   card-shiny-*) sigue siendo el que está realmente aplicado en toda la
+   app hasta que las Fases 6-7 lo sustituyan pantalla a pantalla. Todo lo
+   de aquí abajo vive aparte y no se usa en ningún sitio real todavía
+   (solo en PixelFrameDemo.jsx).
+================================================================== */
+
+:root {
+  --pixel-bg: #0f1729;
+  --pixel-panel: #2a3550;
+  --pixel-accent: #e8382c;
+  --pixel-gold: #ffcc33;
+  --pixel-text: #f0ead6;
+  --pixel-success: #4ade4a;
+  --pixel-rarity-common: #a8a8a8;
+  --pixel-rarity-uncommon: #5cc95c;
+  --pixel-rarity-rare: #4a90e2;
+  --pixel-rarity-epic: #a855e2;
+  --pixel-rarity-pseudo-legendary: #ff9933;
+  --pixel-rarity-legendary: #ffd700;
+}
+
+.font-pixel-title {
+  font-family: 'Press Start 2P', 'Pixelify Sans', monospace;
+  line-height: 1.6; /* Press Start 2P es muy alta/densa; sin esto el texto
+                        se pisa entre líneas incluso a tamaños pequeños. */
+}
+.font-pixel-body {
+  font-family: 'Pixelify Sans', 'Press Start 2P', monospace;
+}
+
+/* Sprites de baja resolución (ver pixelSprite/pixelShinySprite en
+   getPokemon, App.jsx) escalados SIN suavizado, para que se vean como
+   sprites reales de la época GBA en vez de borrosos. `crisp-edges` va
+   primero como fallback silencioso para navegadores sin soporte de
+   `pixelated`; si lo soportan (la inmensa mayoría hoy), la segunda regla
+   gana por venir después. */
+.pixel-render {
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+/* Borde animado POR PASOS de la rareza Legendario (ver el pedido: nada de
+   degradado deslizante como el holográfico del sistema TCG viejo — esto
+   debe sentirse como un sprite de 2-3 frames, no como un líquido). 3
+   tonos de dorado/amarillo con `steps(3)` como timing function: con 4
+   paradas de keyframe repartidas en tercios exactos (0/33.333/66.666/100,
+   la última igual a la primera para que el bucle no dé un salto visible),
+   `steps(3)` salta de golpe a cada parada sin interpolar el color entre
+   medias. */
+@keyframes pixel-legendary-cycle {
+  0% { border-color: #ffd700; }
+  33.333% { border-color: #fff275; }
+  66.666% { border-color: #cc9900; }
+  100% { border-color: #ffd700; }
+}
+.pixel-border-legendary {
+  animation: pixel-legendary-cycle 900ms steps(3) infinite;
+}
+
+/* Cursor de menú retro (ver PixelCursor en PixelFrame.jsx): oscilación
+   sutil de posición + opacidad. Cada tramo mantiene el MISMO valor en su
+   inicio y final (0%→49% igual, 50%→79% igual, 80%→100% igual) para que
+   el único cambio real de valor ocurra en una ventana de tiempo casi nula
+   (49%→50% y 79%→80%, ~9ms de un ciclo de 900ms) — el mismo efecto
+   visual de un salto discreto que `steps()`, sin depender de que la
+   duración de cada tramo sea uniforme (aquí no lo es a propósito: mantiene
+   la posición desplazada más tiempo que la transición en sí, para que se
+   note el "clic" del cursor en vez de una vibración pareja). */
+@keyframes pixel-cursor-blink {
+  0%, 49% { opacity: 1; transform: translateX(0); }
+  50%, 79% { opacity: 1; transform: translateX(3px); }
+  80%, 100% { opacity: 0.3; transform: translateX(0); }
+}
+.pixel-cursor {
+  animation: pixel-cursor-blink 900ms infinite;
 }

@@ -2688,6 +2688,17 @@ function useApiCache() {
         heightM: typeof data.height === "number" ? data.height / 10 : null,
         sprite: data.sprites?.other?.["official-artwork"]?.front_default || data.sprites?.front_default || null,
         shinySprite: data.sprites?.other?.["official-artwork"]?.front_shiny || data.sprites?.front_shiny || null,
+        // Fase 5 del rediseño (sistema "pixel art retro", ver
+        // src/components/PixelFrame.jsx): sprites de baja resolución
+        // (`sprites.front_default`/`front_shiny`, SIN el sub-objeto
+        // "other" — esos son el official-artwork de alta resolución ya
+        // usado arriba) para el nuevo estilo visual. No sustituyen a
+        // `sprite`/`shinySprite` todavía: las Fases 6-7 decidirán dónde se
+        // usa cada uno. Cualquier `<img>` que pinte estos dos campos debe
+        // llevar `image-rendering: pixelated` (ver PixelFrame.jsx) para no
+        // verlos borrosos al escalarlos por encima de su tamaño nativo.
+        pixelSprite: data.sprites?.front_default || null,
+        pixelShinySprite: data.sprites?.front_shiny || null,
       };
       pokeCache.current[slug] = entry;
       return entry;
@@ -2696,7 +2707,7 @@ function useApiCache() {
         slug, name: displayName(slug), types: ["normal"],
         stats: { hp: 70, attack: 70, defense: 70, "special-attack": 70, "special-defense": 70, speed: 70 },
         weightKg: null, heightM: null,
-        sprite: null, shinySprite: null,
+        sprite: null, shinySprite: null, pixelSprite: null, pixelShinySprite: null,
       };
       pokeCache.current[slug] = fallback;
       return fallback;
