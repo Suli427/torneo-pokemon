@@ -12945,7 +12945,7 @@ function RouletteWheel({ rotationDeg, spinning, justLanded, landedIndex }) {
         }}
       />
       <div
-        className="absolute inset-0 rounded-full overflow-hidden"
+        className="absolute inset-0 pixel-circle-exception overflow-hidden"
         style={{
           background: gradient,
           border: "4px solid #14161f",
@@ -12976,7 +12976,7 @@ function RouletteWheel({ rotationDeg, spinning, justLanded, landedIndex }) {
       </div>
       {/* Núcleo central decorativo, encima del disco pero sin girar con él. */}
       <div
-        className="absolute rounded-full flex items-center justify-center"
+        className="absolute pixel-circle-exception flex items-center justify-center"
         style={{
           width: 44, height: 44, left: "50%", top: "50%", transform: "translate(-50%,-50%)",
           background: "linear-gradient(160deg,#f2b705,#b8860b)", border: "3px solid #14161f",

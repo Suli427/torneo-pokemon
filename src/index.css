@@ -50,6 +50,23 @@ body {
   border-radius: 0 !important;
 }
 
+/* ÚNICA excepción a la regla de arriba: la Ruleta de la Fortuna del Casino
+   (ver RouletteWheel en App.jsx) necesita ser redonda de verdad para
+   funcionar visualmente como una ruleta — los sectores de premio están
+   dispuestos en círculo (gradiente cónico + rotación), así que una ruleta
+   cuadrada no tiene sentido ni de lejos como metáfora visual. Una clase
+   normal con `!important` gana sobre la regla universal de arriba porque,
+   entre dos declaraciones `!important`, desempata la especificidad — un
+   selector de clase (0,1,0) pesa más que el universal `*` (0,0,0) — así
+   que no hace falta tocar ni debilitar la regla general para el resto de
+   la app. Todo lo demás del tratamiento pixel art de la ruleta (paleta
+   plana, bordes sólidos gruesos, tipografía pixel en las casillas, sin
+   degradados/sombras difusas) sigue exactamente igual; esta clase SOLO
+   toca la forma exterior. */
+.pixel-circle-exception {
+  border-radius: 50% !important;
+}
+
 /* Pulido general de botones (Fase 4, ajustado en la Fase 7 al estilo
    retro): en vez de un `scale(0.97)` al pulsar (una reducción suave, más
    propia del sistema TCG), el botón se desplaza 2px en diagonal — el
