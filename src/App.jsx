@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck, Dice5, ArrowLeft, Droplet, Leaf, Zap, Circle, Crosshair, Wind, CloudRain, CloudSnow, CloudLightning, Sun, Shield, ShieldAlert, HeartPulse, Repeat, Layers, Gem, Skull, Rocket, RefreshCw, DoorOpen, Handshake, Dices, Target } from "lucide-react";
+import { Lock, Trophy, Sparkles, Coins, Swords, Users, Store, Award, Shuffle, ListOrdered, X, ChevronRight, Loader2, Boxes, Star, Check, Gift, Puzzle, Flame, CalendarDays, ScrollText, ChevronDown, Trash2, Heart, Mail, Download, Upload, Share2, Copy, ClipboardCheck, Dice5, ArrowLeft, Droplet, Leaf, Zap, Circle, Crosshair, Wind, CloudRain, CloudSnow, CloudLightning, Sun, Shield, ShieldAlert, HeartPulse, Repeat, Layers, Gem, Skull, Rocket, RefreshCw, DoorOpen, Handshake, Dices, Target, BarChart3 } from "lucide-react";
 import { TRAINER_MOVESETS, TRAINER_MOVESETS_ADVANCED, DEFAULT_MOVES_BY_TYPE } from "./trainerMovesets";
 import { GACHA_POOL } from "./gachaPool";
 import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES } from "./achievements";
@@ -6291,6 +6291,64 @@ function BattleVersusScreen({ phase, userTrainer, aiTrainer }) {
   );
 }
 
+// Panel colapsable con las 6 stats NUMÉRICAS (sin barras, para no saturar
+// la pantalla de combate — el modal con barras es cosa de PokemonStatsModal,
+// en la tab Pokémon) del Pokémon activo de cada lado, una junto a otra.
+// Mismo patrón de desplegable colapsado-por-defecto ya usado para el panel
+// de modificadores de la Torre Batalla (ver TowerActiveEffectsPanel), para
+// no ocupar espacio si el jugador no lo necesita en ese momento.
+//
+// Valores mostrados: EFECTIVOS en este instante del combate, no los base —
+// `getEffectiveStat` ya aplica el multiplicador de stat stage actual de
+// cada Pokémon (subidas/bajadas de Danza Espada, Rugido, etc.). La
+// Velocidad usa específicamente `getEffectiveSpeed` en vez de
+// `getEffectiveStat` porque esa es la que de verdad usa el motor para
+// decidir el orden de turno (ya sí incluye parálisis/Viento Afín, no solo
+// el stage) — mostrar cualquier otra cosa ahí sería menos útil para que el
+// jugador razone "¿voy más rápido que el rival ahora mismo?". El PS se
+// muestra como actual/máximo (ya visible en la barra de la BattlerCard de
+// arriba, pero repetido aquí como número exacto junto al resto de stats
+// para que las 6 estén juntas en un solo sitio).
+function BattleStatsPanel({ userPoke, aiPoke, userLabel, aiLabel, weather }) {
+  const [open, setOpen] = useState(false);
+  if (!userPoke || !aiPoke) return null;
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2 font-pixel-body text-xs font-semibold"
+        style={{ background: "var(--pixel-panel)", border: "2px solid #3a4a70", color: "var(--pixel-text)" }}
+      >
+        <BarChart3 size={14} color="var(--pixel-gold)" />
+        Stats del combate
+        <ChevronDown size={13} color="#8a93b0" className={open ? "rotate-180" : ""} style={{ marginLeft: "auto", transition: "transform 0.15s" }} />
+      </button>
+      {open && (
+        <div className="mt-1.5 p-2.5 grid grid-cols-[1fr_auto_1fr] gap-x-3 gap-y-1.5" style={{ background: "var(--pixel-bg)", border: "2px solid #3a4a70" }}>
+          <div className="font-pixel-body text-[10px] font-bold truncate" style={{ color: "var(--pixel-text)" }}>{userLabel}</div>
+          <div />
+          <div className="font-pixel-body text-[10px] font-bold text-right truncate" style={{ color: "var(--pixel-text)" }}>{aiLabel}</div>
+          {STAT_ORDER.map((key) => {
+            const userVal = key === "hp"
+              ? `${Math.max(0, userPoke.hp)}/${userPoke.maxHp}`
+              : Math.round(key === "speed" ? getEffectiveSpeed(userPoke, weather) : getEffectiveStat(userPoke, key));
+            const aiVal = key === "hp"
+              ? `${Math.max(0, aiPoke.hp)}/${aiPoke.maxHp}`
+              : Math.round(key === "speed" ? getEffectiveSpeed(aiPoke, weather) : getEffectiveStat(aiPoke, key));
+            return (
+              <React.Fragment key={key}>
+                <div className="font-pixel-body text-[11px] font-bold" style={{ color: STAT_COLORS[key] }}>{userVal}</div>
+                <div className="font-pixel-body text-[10px] text-center whitespace-nowrap" style={{ color: "#8a93b0" }}>{STAT_LABELS[key]}</div>
+                <div className="font-pixel-body text-[11px] font-bold text-right" style={{ color: STAT_COLORS[key] }}>{aiVal}</div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Pantalla de combate interactiva: el usuario elige el movimiento de su
 // Pokémon activo en cada turno; el rival lo controla la IA (chooseMove).
 function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFinish, rivalStatMultiplier = 1, initialUserTeam = null, towerModifiers = null, towerInventory = null }) {
@@ -6619,7 +6677,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
           <h2 className="font-display text-xl text-white mb-1 flex items-center gap-2"><Swords size={18} color="#e3350d" /> Elige tu Pokémon inicial</h2>
           <p className="text-sm text-[#9aa0b4]">¿Con cuál de tus Pokémon quieres empezar el combate contra {aiTrainer.name}?</p>
         </div>
-        <TeamPicker team={userTeam} onChoose={chooseStarter} showHp={false} disabled={false} />
+        <TeamPicker team={userTeam} onChoose={chooseStarter} showHp={true} disabled={false} />
       </div>
     );
   }
@@ -7025,6 +7083,12 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
         <div className="text-[10px] text-[#5c6178] font-display">VS</div>
         <BattlerCard poke={aiPoke} label={aiTrainer.name} side="right" activeIndex={aiIdx} hpOverride={revealDisplayHp?.ai} hitFx={revealHitFx.ai} />
       </div>
+
+      {/* Colocado justo debajo de las BattlerCard (sprites + barra de PS) y
+          antes del log: no compite por espacio con el selector de
+          movimientos (más abajo) ni tapa la barra de PS/el log, y queda
+          junto al resto de información visual del estado del combate. */}
+      <BattleStatsPanel userPoke={userPoke} aiPoke={aiPoke} userLabel={userTrainer.name} aiLabel={aiTrainer.name} weather={weatherRef.current} />
 
       <div className="rounded-lg p-3 bg-[#0e1018] border border-[#1e2130] text-[12px] text-[#9aa0b4] h-40 overflow-y-auto space-y-0.5">
         {log.length === 0 && <div className="text-[#5c6178]">Elige un movimiento para empezar el combate.</div>}
@@ -12456,9 +12520,78 @@ function MoveEditModal({ open, entry, api, onConfirm, onClose }) {
 // un cursor de "seleccionado" sería artificial. Sí se usa en el selector
 // de entrenador de Torneo/Torre Batalla, donde SÍ existe un entrenador
 // elegido de verdad (ver más abajo).
+// Orden/etiquetas/colores de las 6 estadísticas base, reutilizados tanto
+// por `PokemonStatsModal` (barras, este modal) como por
+// `BattleStatsPanel` (solo números, ver InteractiveBattle) para que ambos
+// paneles de stats de la app usen exactamente el mismo criterio. Un color
+// plano por stat (sin degradados, ver el estilo pixel art ya establecido),
+// eligiendo tonos ya presentes en la paleta (`--pixel-*`) para no
+// introducir ninguno nuevo.
+const STAT_ORDER = ["hp", "attack", "defense", "special-attack", "special-defense", "speed"];
+const STAT_LABELS = { hp: "PS", attack: "Ataque", defense: "Defensa", "special-attack": "At. Esp.", "special-defense": "Def. Esp.", speed: "Velocidad" };
+const STAT_COLORS = { hp: "#4ade4a", attack: "#e8382c", defense: "#ffcc33", "special-attack": "#a855e2", "special-defense": "#4a90e2", speed: "#ff9933" };
+// Máximo teórico de una stat base real en los juegos (p. ej. la Velocidad
+// de Blissey o el PS de Blissey rondan los 250-255): referencia FIJA para
+// que las barras sean comparables entre Pokémon distintos, no un máximo
+// relativo a las 6 stats de cada uno (eso escondería lo bajo/alto que es
+// una stat en términos absolutos).
+const STAT_MAX_REFERENCE = 255;
+
+// Modal de solo lectura con las 6 stats base de un Pokémon de la colección,
+// como barras horizontales (longitud proporcional a STAT_MAX_REFERENCE) +
+// su valor numérico exacto, más el total (BST). Distinto de
+// MoveEditModal: aquí no hay nada que editar ni confirmar, solo consultar.
+function PokemonStatsModal({ open, entry, poke, rarityInfo, onClose }) {
+  if (!open || !entry) return null;
+  const stats = poke?.stats || {};
+  const bst = STAT_ORDER.reduce((sum, k) => sum + (stats[k] || 0), 0);
+  const sprite = entry.shiny ? (poke?.pixelShinySprite || poke?.pixelSprite) : poke?.pixelSprite;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="relative max-w-sm w-full p-6" style={{ background: "var(--pixel-panel)", border: "3px solid var(--pixel-gold)" }} onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-3 right-3" style={{ color: "var(--pixel-text)" }}>
+          <X size={18} />
+        </button>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex items-center justify-center shrink-0" style={{ width: 64, height: 64, background: "var(--pixel-bg)", border: "2px solid #00000055" }}>
+            {sprite ? <img src={sprite} alt={poke?.name} className="pixel-render" style={{ width: 56, height: 56 }} /> : <Loader2 className="animate-spin" size={18} color="#4c5066" />}
+          </div>
+          <div className="min-w-0">
+            <div className="font-pixel-title text-xs mb-1.5 truncate" style={{ color: "var(--pixel-text)" }}>{poke?.name || displayName(entry.slug)}</div>
+            <div className="flex gap-1 flex-wrap">
+              {(poke?.types || rarityInfo?.types || []).map((t) => <TypeBadge key={t} type={t} />)}
+            </div>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {STAT_ORDER.map((key) => {
+            const value = stats[key] ?? 0;
+            const pct = Math.max(2, Math.min(100, (value / STAT_MAX_REFERENCE) * 100));
+            return (
+              <div key={key} className="flex items-center gap-2">
+                <div className="font-pixel-body text-[10px] w-16 shrink-0" style={{ color: "var(--pixel-text)" }}>{STAT_LABELS[key]}</div>
+                <div className="flex-1 h-3" style={{ background: "var(--pixel-bg)", border: "1px solid #00000055" }}>
+                  <div style={{ width: `${pct}%`, height: "100%", background: STAT_COLORS[key] }} />
+                </div>
+                <div className="font-pixel-body text-[11px] w-8 text-right shrink-0 font-bold" style={{ color: "var(--pixel-text)" }}>{value}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="h-[2px] w-full my-3" style={{ background: "#00000055" }} />
+        <div className="flex items-center justify-between">
+          <span className="font-pixel-body text-xs font-bold" style={{ color: "var(--pixel-text)" }}>Total (BST)</span>
+          <span className="font-pixel-body text-sm font-bold" style={{ color: "var(--pixel-gold)" }}>{bst}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PokemonCard({ entry, api, onUpdateMoves }) {
   const [poke, setPoke] = useState(null);
   const [showEditMoves, setShowEditMoves] = useState(false);
+  const [showStats, setShowStats] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -12490,13 +12623,22 @@ function PokemonCard({ entry, api, onUpdateMoves }) {
             </span>
           ))}
         </div>
-        <button
-          onClick={() => setShowEditMoves(true)}
-          className="font-pixel-body text-[11px] px-2.5 py-1 font-semibold self-center"
-          style={{ background: "var(--pixel-bg)", color: "var(--pixel-gold)", border: "2px solid var(--pixel-gold)" }}
-        >
-          Editar movimientos
-        </button>
+        <div className="flex gap-1.5 justify-center">
+          <button
+            onClick={() => setShowEditMoves(true)}
+            className="font-pixel-body text-[11px] px-2.5 py-1 font-semibold"
+            style={{ background: "var(--pixel-bg)", color: "var(--pixel-gold)", border: "2px solid var(--pixel-gold)" }}
+          >
+            Editar movimientos
+          </button>
+          <button
+            onClick={() => setShowStats(true)}
+            className="font-pixel-body text-[11px] px-2.5 py-1 font-semibold"
+            style={{ background: "var(--pixel-bg)", color: "var(--pixel-text)", border: "2px solid #3a4a70" }}
+          >
+            Ver stats
+          </button>
+        </div>
       </div>
 
       <MoveEditModal
@@ -12505,6 +12647,13 @@ function PokemonCard({ entry, api, onUpdateMoves }) {
         api={api}
         onConfirm={(moves) => { onUpdateMoves(entry, moves); setShowEditMoves(false); }}
         onClose={() => setShowEditMoves(false)}
+      />
+      <PokemonStatsModal
+        open={showStats}
+        entry={entry}
+        poke={poke}
+        rarityInfo={rarityInfo}
+        onClose={() => setShowStats(false)}
       />
     </PixelFrame>
   );
