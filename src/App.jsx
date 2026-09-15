@@ -5937,8 +5937,8 @@ function TeamStatusRow({ team, activeIndex }) {
               transform: isActive ? "scale(1.15)" : "scale(1)",
             }}
           >
-            {p.sprite
-              ? <img src={p.sprite} alt={p.name} className="w-6 h-6 object-contain" style={{ filter: fainted ? "grayscale(100%)" : "none" }} />
+            {p.pixelSprite
+              ? <img src={p.pixelSprite} alt={p.name} className="w-6 h-6 object-contain pixel-render" style={{ filter: fainted ? "grayscale(100%)" : "none" }} />
               : <span className="text-[9px] text-[#5c6178]">{p.name[0]}</span>}
             {fainted && (
               <span className="absolute inset-0 flex items-center justify-center text-[#e3350d] text-[13px] font-bold leading-none">×</span>
@@ -6034,7 +6034,7 @@ function TeamPicker({ team, onChoose, showHp, disabled, excludeIndex }) {
             className="rounded-lg p-3 text-left disabled:opacity-40 flex items-center gap-3"
             style={{ background: "#14161f", border: "1px solid #262a3a" }}
           >
-            {p.sprite && <img src={p.sprite} alt={p.name} className="w-12 h-12 object-contain" />}
+            {p.pixelSprite && <img src={p.pixelSprite} alt={p.name} className="w-12 h-12 object-contain pixel-render" />}
             <div className="flex-1 min-w-0">
               <div className="text-white font-semibold text-sm truncate">{p.name}</div>
               <div className="text-[11px] text-[#8a8fa3]">
@@ -6233,7 +6233,7 @@ function BattlerCard({ poke, label, side, activeIndex, hpOverride, hitFx }) {
   return (
     <div className="rounded-xl p-3 flex-1" style={{ background: "#14161f", border: "1px solid #262a3a" }}>
       <div className="flex items-center gap-3 mb-2">
-        {poke.sprite && (
+        {poke.pixelSprite && (
           <div key={activeIndex} className="relative shrink-0 w-14 h-14">
             <div className="absolute inset-0 rounded-full battle-sprite-flash" />
             {showFx && hitFx.kind && <div className={`battle-hit-flash battle-hit-flash-${hitFx.kind}`} />}
@@ -6242,9 +6242,9 @@ function BattlerCard({ poke, label, side, activeIndex, hpOverride, hitFx }) {
               <div className="battle-crit-text font-display text-xs font-bold" style={{ color: "#f2b705" }}>¡CRÍTICO!</div>
             )}
             <img
-              src={poke.sprite}
+              src={poke.pixelSprite}
               alt={poke.name}
-              className={`relative w-14 h-14 object-contain ${side === "right" ? "battle-sprite-enter-right" : "battle-sprite-enter-left"} ${showFx ? "battle-hit-shake" : ""} ${fainted ? "battle-sprite-faint" : ""}`}
+              className={`relative w-14 h-14 object-contain pixel-render ${side === "right" ? "battle-sprite-enter-right" : "battle-sprite-enter-left"} ${showFx ? "battle-hit-shake" : ""} ${fainted ? "battle-sprite-faint" : ""}`}
             />
           </div>
         )}
@@ -7185,7 +7185,7 @@ function InteractiveBattle({ api, trainerA, trainerB, userSide, difficulty, onFi
                     className="rounded-lg p-3 text-left disabled:opacity-40 flex items-center gap-3"
                     style={{ background: "#14161f", border: "1px solid #262a3a" }}
                   >
-                    {p.sprite && <img src={p.sprite} alt={p.name} className="w-10 h-10 object-contain" style={{ filter: fainted ? "grayscale(100%)" : "none" }} />}
+                    {p.pixelSprite && <img src={p.pixelSprite} alt={p.name} className="w-10 h-10 object-contain pixel-render" style={{ filter: fainted ? "grayscale(100%)" : "none" }} />}
                     <div className="flex-1 min-w-0">
                       <div className="text-white font-semibold text-sm truncate">
                         {p.name} {fainted && <span className="text-[#e3350d] text-[10px] font-bold">(debilitado)</span>}
@@ -9256,7 +9256,7 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
     setDuplicateWarning(null);
   }
 
-  const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
+  const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.pixelShinySprite || sprites[slug]?.pixelSprite) : sprites[slug]?.pixelSprite);
 
   if (phase === "confirm") {
     if (!hasCustomTrainerTeam(selectedTrainer)) {
@@ -9306,7 +9306,7 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
                   className="rounded-lg p-2 flex items-center gap-2"
                   style={{ background: "#14161f", border: c.shiny ? "1px solid #f2b70566" : "1px solid #262a3a" }}
                 >
-                  {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                  {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0 pixel-render" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
                   <div className="min-w-0">
                     <div className="text-white text-xs font-semibold truncate flex items-center gap-1">
                       {p?.name || displayName(c.slug)}
@@ -9433,7 +9433,7 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
                   className="rounded-lg p-2 text-left flex items-center gap-2"
                   style={{ background: selected ? "#e3350d1e" : "#14161f", border: selected ? "1.5px solid #e3350d" : "1px solid #262a3a" }}
                 >
-                  {spriteOf(p.slug, p.shiny) ? <img src={spriteOf(p.slug, p.shiny)} alt={p.slug} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                  {spriteOf(p.slug, p.shiny) ? <img src={spriteOf(p.slug, p.shiny)} alt={p.slug} className="w-9 h-9 object-contain shrink-0 pixel-render" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
                   <div className="min-w-0">
                     <div className="text-white text-xs font-semibold truncate">{info?.name || displayName(p.slug)}</div>
                     <div className="flex gap-0.5 flex-wrap">{(info?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
@@ -9457,7 +9457,7 @@ function DraftMode({ api, collection, customTrainers, coins, setCoins, onTournam
                   className="rounded-lg p-2 text-left flex items-center gap-2"
                   style={{ background: selected ? "#5fae5f1e" : "#14161f", border: selected ? "1.5px solid #5fae5f" : "1px solid #262a3a" }}
                 >
-                  {spriteOf(p.slug, false) ? <img src={spriteOf(p.slug, false)} alt={p.slug} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                  {spriteOf(p.slug, false) ? <img src={spriteOf(p.slug, false)} alt={p.slug} className="w-9 h-9 object-contain shrink-0 pixel-render" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
                   <div className="min-w-0">
                     <div className="text-white text-xs font-semibold truncate">{info?.name || displayName(p.slug)}</div>
                     <div className="flex gap-0.5 flex-wrap">{(info?.types || []).map((t) => <TypeBadge key={t} type={t} />)}</div>
@@ -10692,7 +10692,7 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
     setShowItemPanel(false);
   }
 
-  const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.shinySprite || sprites[slug]?.sprite) : sprites[slug]?.sprite);
+  const spriteOf = (slug, shiny) => (shiny ? (sprites[slug]?.pixelShinySprite || sprites[slug]?.pixelSprite) : sprites[slug]?.pixelSprite);
 
   if (phase === "select") {
     return (
@@ -10766,7 +10766,7 @@ function BattleTowerMode({ api, collection, customTrainers, purchasedTrainerIds,
                 const sprite = spriteOf(c.slug, c.shiny);
                 return (
                   <div key={i} className="rounded-lg p-2 flex items-center gap-2" style={{ background: "#14161f", border: c.shiny ? "1px solid #f2b70566" : "1px solid #262a3a" }}>
-                    {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
+                    {sprite ? <img src={sprite} alt={p?.name} className="w-9 h-9 object-contain shrink-0 pixel-render" /> : <Loader2 className="animate-spin shrink-0" size={14} color="#4c5066" />}
                     <div className="min-w-0">
                       <div className="text-white text-xs font-semibold truncate flex items-center gap-1">
                         {p?.name || displayName(c.slug)}
